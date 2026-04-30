@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="panel">
+  <h2>Table Management</h2>
+  <form method="post" class="grid grid-4">
+    <label>Table Name <input name="name" required /></label>
+    <label>Seating <input name="seating_capacity" type="number" min="1" required /></label>
+    <label>Description <input name="metadata_note" /></label>
+    <label><input type="checkbox" name="active" checked /> Active</label>
+    <button type="submit">Add Table</button>
+  </form>
+</section>
+<section class="panel">
+  <table>
+    <tr><th>Edit</th><th>QR Slug</th><th>QR Download</th><th>Delete</th></tr>
+    {% for table in tables %}
+    <tr>
+      <td>
+        <form method="post" action="{{ url_for('cafe.update_table', table_id=table.id) }}" class="inline">
+          <input name="name" value="{{ table.name }}" required />
+          <input name="seating_capacity" value="{{ table.seating_capacity }}" type="number" min="1" required />
+          <label>Description <input name="metadata_note" value="{{ table.metadata_note or '' }}" /></label>
+          <label><input type="checkbox" name="active" {% if table.active %}checked{% endif %} /> Active</label>
+          <button type="submit">Save</button>
+        </form>
+      </td>
+      <td>{{ table.qr_slug }}</td>
+      <td>
+        <a class="button-link" href="{{ url_for('cafe.table_qr_download', table_id=table.id) }}">Download QR PNG</a>
+      </td>
+      <td>
+        <form method="post" action="{{ url_for('cafe.delete_table', table_id=table.id) }}" class="inline">
+          <button type="submit">Delete</button>
+        </form>
+      </td>
+    </tr>
+    {% endfor %}
+  </table>
+</section>
+{% endblock %}

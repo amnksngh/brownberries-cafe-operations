@@ -1,0 +1,109 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="panel">
+  <h2>My Staff Portal</h2>
+  <p class="muted">Log attendance, submit leave requests, and view your own staff information.</p>
+</section>
+
+<section class="split">
+  <article class="panel">
+    <h3>My Information</h3>
+    {% if profile %}
+    <p><strong>Joining Date:</strong> {{ profile.joining_date or "-" }}</p>
+    <p><strong>Phone:</strong> {{ profile.phone or "-" }}</p>
+    <p><strong>Alternate Contact:</strong> {{ profile.alternate_contact or "-" }}</p>
+    <p><strong>Address:</strong> {{ profile.address or "-" }}</p>
+    <p><strong>PAN:</strong> {{ profile.pan_number or "-" }}</p>
+    <p><strong>Bank:</strong> {{ profile.bank_name or "-" }}</p>
+    <p><strong>Account Name:</strong> {{ profile.bank_account_name or "-" }}</p>
+    <p><strong>Account Number:</strong> {{ profile.bank_account_number or "-" }}</p>
+    <p><strong>IFSC:</strong> {{ profile.bank_ifsc or "-" }}</p>
+    {% else %}
+    <p class="muted">Profile details are not yet added by admin.</p>
+    {% endif %}
+  </article>
+
+  <article class="panel">
+    <h3>Mark Attendance</h3>
+    <form method="post" class="grid">
+      <input type="hidden" name="action" value="attendance" />
+      <label>Date<input type="date" name="attendance_date" required /></label>
+      <label>Status
+        <select name="status">
+          <option value="present">Present</option>
+          <option value="absent">Absent</option>
+          <option value="half-day">Half Day</option>
+          <option value="on-leave">On Leave</option>
+        </select>
+      </label>
+      <label>Notes<input name="notes" /></label>
+      <button type="submit">Submit Attendance</button>
+    </form>
+  </article>
+</section>
+
+<section class="split">
+  <article class="panel">
+    <h3>Apply Leave</h3>
+    <form method="post" class="grid">
+      <input type="hidden" name="action" value="leave" />
+      <label>Leave Type
+        <select name="leave_type">
+          <option value="casual">Casual</option>
+          <option value="sick">Sick</option>
+          <option value="planned">Planned</option>
+        </select>
+      </label>
+      <label>Start Date<input type="date" name="start_date" required /></label>
+      <label>End Date<input type="date" name="end_date" required /></label>
+      <label>Reason<input name="reason" /></label>
+      <button type="submit">Submit Leave Request</button>
+    </form>
+  </article>
+
+  <article class="panel">
+    <h3>My Leave Requests</h3>
+    <div style="overflow:auto">
+      <table>
+        <thead>
+          <tr><th>Type</th><th>Dates</th><th>Status</th><th>Remarks</th></tr>
+        </thead>
+        <tbody>
+          {% for leave in leave_logs %}
+          <tr>
+            <td>{{ leave.leave_type }}</td>
+            <td>{{ leave.start_date }} to {{ leave.end_date }}</td>
+            <td>{{ leave.status }}</td>
+            <td>{{ leave.admin_remarks or "-" }}</td>
+          </tr>
+          {% else %}
+          <tr><td colspan="4">No leave requests yet.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </article>
+</section>
+
+<section class="panel">
+  <h3>My Attendance History</h3>
+  <div style="overflow:auto">
+    <table>
+      <thead>
+        <tr><th>Date</th><th>Status</th><th>Notes</th></tr>
+      </thead>
+      <tbody>
+        {% for log in attendance_logs %}
+        <tr>
+          <td>{{ log.attendance_date }}</td>
+          <td>{{ log.status }}</td>
+          <td>{{ log.notes or "-" }}</td>
+        </tr>
+        {% else %}
+        <tr><td colspan="3">No attendance records yet.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endblock %}

@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="panel">
+  <h2>Issue / Reissue / Return</h2>
+  <form method="post" class="grid grid-4">
+    <label>Member
+      <select name="member_id">{% for m in members %}<option value="{{ m.id }}">{{ m.full_name }}</option>{% endfor %}</select>
+    </label>
+    <label>Book
+      <select name="book_id">{% for b in books %}<option value="{{ b.id }}">{{ b.title }} ({{ b.available_copies }})</option>{% endfor %}</select>
+    </label>
+    <label>Issue Date <input type="date" name="issue_date" required /></label>
+    <label>Due Date <input type="date" name="due_date" required /></label>
+    <label>Weekly Fee/Book <input name="weekly_fee_per_book" type="number" step="0.01" value="10" /></label>
+    <label>Late Fee/Day <input name="late_fee_per_day" type="number" step="0.01" value="5" /></label>
+    <button type="submit">Issue Book</button>
+  </form>
+</section>
+<section class="panel">
+  <table>
+    <tr><th>ID</th><th>Member</th><th>Book</th><th>Due</th><th>Status</th><th>Charge</th><th>Actions</th></tr>
+    {% for loan in loans %}
+    <tr>
+      <td>{{ loan.id }}</td>
+      <td>{{ loan.member.full_name }}</td>
+      <td>{{ loan.book.title }}</td>
+      <td>{{ loan.due_date }}</td>
+      <td>{{ loan.status }}</td>
+      <td>{{ "%.2f"|format(loan.total_charge) }}</td>
+      <td>
+        {% if loan.status == "issued" %}
+        <form method="post" action="{{ url_for('library.reissue', loan_id=loan.id) }}" class="inline">
+          <button type="submit">Reissue +7d</button>
+        </form>
+        <form method="post" action="{{ url_for('library.return_book', loan_id=loan.id) }}" class="inline">
+          <input name="return_date" type="date" required />
+          <input name="damage_fee" type="number" step="0.01" placeholder="Damage" />
+          <input name="lost_fee" type="number" step="0.01" placeholder="Lost" />
+          <button type="submit">Return</button>
+        </form>
+        {% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+  </table>
+</section>
+{% endblock %}

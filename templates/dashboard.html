@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="hero-band" style="background-image:url('{{ url_for('static', filename='images/cafe-interior-1.jpeg') }}')">
+  <div class="hero-overlay">
+    <h2>Brownberries Operations Hub</h2>
+    <p>Manage live cafe and library workflows in one place.</p>
+  </div>
+</section>
+<section class="stats">
+  <article class="metric"><h3>Open Cafe Orders</h3><p>{{ open_orders }}</p></article>
+  <article class="metric"><h3>Active Library Issues</h3><p>{{ active_loans }}</p></article>
+  <article class="metric"><h3>Due Tomorrow</h3><p>{{ due_tomorrow }}</p></article>
+</section>
+<section class="panel">
+  <h2>Quick Access</h2>
+  <div class="links">
+    <a href="{{ url_for('cafe.home') }}">Cafe System</a>
+    <a href="{{ url_for('library.home') }}">Book Library</a>
+    <a href="{{ url_for('main.users') }}">User Management</a>
+  </div>
+</section>
+{% endblock %}

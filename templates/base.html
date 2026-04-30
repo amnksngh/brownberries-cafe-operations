@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Brownberries Cafe</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand-wrap">
+        <img
+          src="{{ url_for('static', filename='images/cafe-logo.png') }}"
+          alt="Brownberries Cafe Logo"
+          class="brand-logo"
+          onerror="this.style.display='none'"
+        />
+        <div>
+          <h1>Brownberries Cafe</h1>
+          <p>Cafe + Library Operations</p>
+        </div>
+      </div>
+      {% if g.current_user %}
+      <nav>
+        <a href="{{ url_for('main.dashboard') }}">Home</a>
+        <a href="{{ url_for('cafe.home') }}">Cafe</a>
+        {% if g.current_user.role in ["admin", "manager", "cashier"] %}
+        <a href="{{ url_for('cafe.cashier') }}">Cashier</a>
+        {% endif %}
+        <a href="{{ url_for('cafe.kitchen_display') }}">Kitchen Display</a>
+        {% if g.current_user.role == "admin" %}
+        <a href="{{ url_for('cafe.staff') }}">Staff</a>
+        {% else %}
+        <a href="{{ url_for('cafe.my_staff') }}">My Staff</a>
+        {% endif %}
+        <a href="{{ url_for('library.home') }}">Library</a>
+        <a href="{{ url_for('main.logout') }}">Logout</a>
+      </nav>
+      {% endif %}
+    </header>
+    <main class="container">
+      {% with messages = get_flashed_messages(with_categories=true) %}
+      {% if messages %}
+      <div class="flash-wrap">
+        {% for category, message in messages %}
+        <div class="flash {{ category }}">{{ message }}</div>
+        {% endfor %}
+      </div>
+      {% endif %}
+      {% endwith %}
+      {% block content %}{% endblock %}
+    </main>
+  </body>
+</html>

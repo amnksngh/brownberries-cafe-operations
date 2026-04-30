@@ -1,0 +1,306 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="panel">
+  {% if not table %}
+  <h2>Table Not Found</h2>
+  <p>Please check the QR code slug and try again.</p>
+  {% else %}
+  <h2>Welcome - {{ table.name }}</h2>
+  <p><strong>Description:</strong> {{ table.metadata_note or "-" }}</p>
+  {% endif %}
+</section>
+
+{% if table %}
+<section class="panel">
+  <h2>Filter Menu</h2>
+  <form method="get" class="grid grid-4">
+    <input type="hidden" name="slug" value="{{ table.qr_slug }}" />
+    <label>Type
+      <select name="item_type">
+        <option value="">All</option>
+        {% for t in item_types %}
+        <option value="{{ t }}" {% if selected_item_type == t %}selected{% endif %}>{{ t }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>Category
+      <select name="category_id">
+        <option value="">All</option>
+        {% for c in categories %}
+        <option value="{{ c.id }}" {% if selected_category_id == c.id %}selected{% endif %}>{{ c.name }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>Subcategory
+      <select name="subcategory_id">
+        <option value="">All</option>
+        {% for s in subcategories %}
+        <option value="{{ s.id }}" {% if selected_subcategory_id == s.id %}selected{% endif %}>{{ s.name }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <button type="submit">Apply Filters</button>
+    <a class="button-link" href="{{ url_for('main.table_qr_page', slug=table.qr_slug) }}">Reset</a>
+  </form>
+</section>
+
+<form method="post" action="{{ url_for('cafe.table_order') }}" id="qr-order-form" class="grid">
+  <input type="hidden" name="slug" value="{{ table.qr_slug }}" />
+
+  <section class="panel">
+    <h2>Menu Items</h2>
+    <table class="qr-menu-table">
+      <tr>
+        <th>Item</th>
+        <th>Details</th>
+        <th>Qty</th>
+        <th>Add</th>
+      </tr>
+      {% for item in menu_items %}
+      <tr>
+        <td>
+          <div class="item-preview">
+            {% if item.image_url %}
+            <img src="{{ item.image_url }}" alt="{{ item.name }}" class="thumb-image qr-thumb" />
+            {% else %}
+            <div class="thumb-image qr-thumb placeholder">No Image</div>
+            {% endif %}
+          </div>
+        </td>
+        <td>
+          <strong>{{ item.name }}</strong><br />
+          <span class="muted">{{ item.category.name }}{% if item.subcategory %}, {{ item.subcategory.name }}{% endif %}, {{ item.item_type }}</span><br />
+          <button
+            type="button"
+            class="desc-btn"
+            data-name="{{ item.name }}"
+            data-description="{{ item.description or 'No description available.' }}"
+          >View Description</button><br />
+          <span class="muted">Calories: {{ item.calories or "-" }} | Ordered: {{ item_frequency.get(item.id, 0) }}</span>
+        </td>
+        <td>
+          <div class="qty-control">
+            <button type="button" class="qty-btn" data-role="minus">-</button>
+            <input type="number" min="1" value="1" class="qty-input" />
+            <button type="button" class="qty-btn" data-role="plus">+</button>
+          </div>
+        </td>
+        <td>
+          <button
+            type="button"
+            class="add-to-cart-btn"
+            data-item-id="{{ item.id }}"
+            data-item-name="{{ item.name }}"
+            data-item-price="{{ item.price }}"
+          >Add</button>
+        </td>
+      </tr>
+      {% endfor %}
+    </table>
+
+    <div class="pager">
+      {% if page > 1 %}
+      <a class="button-link" href="{{ url_for('main.table_qr_page', slug=table.qr_slug, item_type=selected_item_type, category_id=selected_category_id, subcategory_id=selected_subcategory_id, page=page-1) }}">Previous</a>
+      {% endif %}
+      <span>Page {{ page }} of {{ total_pages }}</span>
+      {% if page < total_pages %}
+      <a class="button-link" href="{{ url_for('main.table_qr_page', slug=table.qr_slug, item_type=selected_item_type, category_id=selected_category_id, subcategory_id=selected_subcategory_id, page=page+1) }}">Next</a>
+      {% endif %}
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>Cart</h2>
+    <div id="cart-lines" class="cart-lines"></div>
+    <p><strong>Total:</strong> <span id="cart-total">0.00</span></p>
+    <input type="hidden" id="cart-payload" name="cart_payload" />
+    <button type="submit">Place Order</button>
+  </section>
+</form>
+
+<section class="panel">
+  <h2>Current Unpaid Orders for {{ table.name }}</h2>
+  <table id="table-orders-board">
+    <tr><th>Order</th><th>Status</th><th>Items</th><th>Total</th></tr>
+    {% for order in table_orders %}
+    <tr data-order-id="{{ order.id }}">
+      <td>#{{ order.id }}</td>
+      <td class="order-status">{{ order.status }}</td>
+      <td>
+        {% for oi in order.order_items %}
+        <div>{{ oi.menu_item.name }} x {{ oi.quantity }}</div>
+        {% endfor %}
+      </td>
+      <td>{{ "%.2f"|format(order.total_amount) }}</td>
+    </tr>
+    {% else %}
+    <tr id="orders-empty"><td colspan="4">No unpaid orders for this table.</td></tr>
+    {% endfor %}
+  </table>
+</section>
+
+<div id="desc-modal" class="desc-modal hidden">
+  <div class="desc-dialog">
+    <h3 id="desc-title"></h3>
+    <p id="desc-body"></p>
+    <button type="button" id="desc-close">Close</button>
+  </div>
+</div>
+
+<script src="{{ url_for('static', filename='js/socket.io.min.js') }}"></script>
+<script>
+  const tableId = {{ table.id }};
+  const cart = {};
+  const cartLines = document.getElementById("cart-lines");
+  const cartPayloadInput = document.getElementById("cart-payload");
+  const cartTotal = document.getElementById("cart-total");
+  const orderForm = document.getElementById("qr-order-form");
+  const ordersBoard = document.getElementById("table-orders-board");
+  const descModal = document.getElementById("desc-modal");
+  const descTitle = document.getElementById("desc-title");
+  const descBody = document.getElementById("desc-body");
+  const descClose = document.getElementById("desc-close");
+
+  function playReadyChime() {
+    try {
+      const AudioCtx = window.AudioContext || window.webkitAudioContext;
+      if (!AudioCtx) return;
+      const ctx = new AudioCtx();
+      const now = ctx.currentTime;
+      [880, 1174, 1318].forEach((freq, i) => {
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = "sine";
+        osc.frequency.value = freq;
+        gain.gain.value = 0.001;
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        const start = now + i * 0.12;
+        const end = start + 0.15;
+        gain.gain.exponentialRampToValueAtTime(0.12, start + 0.02);
+        gain.gain.exponentialRampToValueAtTime(0.001, end);
+        osc.start(start);
+        osc.stop(end);
+      });
+    } catch (e) {}
+  }
+
+  function normalizeQty(value) {
+    const num = Number(value);
+    if (!Number.isFinite(num) || num < 1) return 1;
+    return Math.floor(num);
+  }
+
+  function renderCart() {
+    const entries = Object.values(cart);
+    if (entries.length === 0) {
+      cartLines.innerHTML = '<p class="muted">No items in cart.</p>';
+      cartTotal.textContent = "0.00";
+      cartPayloadInput.value = "";
+      return;
+    }
+    let total = 0;
+    cartLines.innerHTML = entries.map((line) => {
+      total += line.price * line.quantity;
+      return `<div class="cart-line"><span>${line.name}</span><span>${line.quantity}</span><span>${(line.price * line.quantity).toFixed(2)}</span><button type="button" data-remove="${line.menu_item_id}">Remove</button></div>`;
+    }).join("");
+    cartTotal.textContent = total.toFixed(2);
+    cartPayloadInput.value = JSON.stringify(entries.map((line) => ({
+      menu_item_id: line.menu_item_id,
+      quantity: line.quantity
+    })));
+  }
+
+  document.querySelectorAll(".qty-control").forEach((wrap) => {
+    const input = wrap.querySelector(".qty-input");
+    const minus = wrap.querySelector('[data-role="minus"]');
+    const plus = wrap.querySelector('[data-role="plus"]');
+    minus.addEventListener("click", () => { input.value = Math.max(1, normalizeQty(input.value) - 1); });
+    plus.addEventListener("click", () => { input.value = normalizeQty(input.value) + 1; });
+  });
+
+  document.querySelectorAll(".add-to-cart-btn").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const row = btn.closest("tr");
+      const qtyInput = row.querySelector(".qty-input");
+      const quantity = normalizeQty(qtyInput.value);
+      const menu_item_id = Number(btn.dataset.itemId);
+      const name = btn.dataset.itemName;
+      const price = Number(btn.dataset.itemPrice);
+      if (!cart[menu_item_id]) cart[menu_item_id] = { menu_item_id, name, price, quantity: 0 };
+      cart[menu_item_id].quantity += quantity;
+      qtyInput.value = 1;
+      renderCart();
+    });
+  });
+
+  document.querySelectorAll(".desc-btn").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      descTitle.textContent = btn.dataset.name || "Item Description";
+      descBody.textContent = btn.dataset.description || "No description available.";
+      descModal.classList.remove("hidden");
+    });
+  });
+
+  descClose.addEventListener("click", () => {
+    descModal.classList.add("hidden");
+  });
+  descModal.addEventListener("click", (event) => {
+    if (event.target === descModal) descModal.classList.add("hidden");
+  });
+
+  document.querySelectorAll(".qr-thumb").forEach((img) => {
+    img.addEventListener("click", () => {
+      img.classList.toggle("zoomed");
+    });
+  });
+
+  cartLines.addEventListener("click", (event) => {
+    const removeId = event.target.getAttribute("data-remove");
+    if (!removeId) return;
+    delete cart[Number(removeId)];
+    renderCart();
+  });
+
+  orderForm.addEventListener("submit", (event) => {
+    if (Object.keys(cart).length < 1) {
+      event.preventDefault();
+      alert("Please add at least one item to cart.");
+    }
+  });
+
+  function upsertOrderRow(order) {
+    if (order.table_id !== tableId) return;
+    let row = ordersBoard.querySelector(`tr[data-order-id="${order.id}"]`);
+    const empty = document.getElementById("orders-empty");
+    if (empty) empty.remove();
+
+    if (["paid", "cancelled"].includes(order.status)) {
+      if (row) row.remove();
+      return;
+    }
+
+    const itemHtml = order.items.map((i) => `<div>${i.name} x ${i.qty}</div>`).join("");
+    const rowHtml = `
+      <td>#${order.id}</td>
+      <td class="order-status">${order.status}</td>
+      <td>${itemHtml}</td>
+      <td>${Number(order.total_amount).toFixed(2)}</td>
+    `;
+    if (!row) {
+      row = document.createElement("tr");
+      row.dataset.orderId = order.id;
+      ordersBoard.appendChild(row);
+    }
+    row.innerHTML = rowHtml;
+    if (order.status === "ready") playReadyChime();
+  }
+
+  const socket = io("/table");
+  socket.on("order_created", upsertOrderRow);
+  socket.on("order_updated", upsertOrderRow);
+
+  renderCart();
+</script>
+{% endif %}
+{% endblock %}

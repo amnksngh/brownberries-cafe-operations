@@ -1,0 +1,269 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="panel">
+  <h2>Staff Management</h2>
+  <p class="muted">Admin-only controls for staff records, payroll details, attendance and leave decisions.</p>
+</section>
+
+<section class="panel">
+  <h3>Add New Staff</h3>
+  <form method="post" class="grid grid-4">
+    <input type="hidden" name="action" value="create" />
+    <label>Full Name<input name="full_name" required /></label>
+    <label>Email<input type="email" name="email" required /></label>
+    <label>Password<input type="password" name="password" required /></label>
+    <label>Role
+      <select name="role" required>
+        <option value="staff">Staff</option>
+        <option value="manager">Manager</option>
+        <option value="barista">Barista</option>
+        <option value="cashier">Cashier</option>
+        <option value="admin">Admin</option>
+      </select>
+    </label>
+    <label>Joining Date<input type="date" name="joining_date" /></label>
+    <label>Phone<input name="phone" /></label>
+    <label>Alternate Contact<input name="alternate_contact" /></label>
+    <label>PAN<input name="pan_number" /></label>
+    <label>Account Name<input name="bank_account_name" /></label>
+    <label>Account Number<input name="bank_account_number" /></label>
+    <label>IFSC<input name="bank_ifsc" /></label>
+    <label>Bank Name<input name="bank_name" /></label>
+    <label class="full">Address<input name="address" /></label>
+    <button type="submit">Add Staff Member</button>
+  </form>
+</section>
+
+<section class="panel">
+  <h3>Active Staff</h3>
+  <div style="overflow:auto">
+    <table>
+      <thead>
+        <tr>
+          <th>Profile</th>
+          <th>Joining</th>
+          <th>Contact</th>
+          <th>PAN</th>
+          <th>Bank Details</th>
+          <th>Attendance Today</th>
+          <th>Latest Attendance</th>
+          <th>Leaves</th>
+          <th>Update</th>
+          <th>Archive</th>
+          <th>Delete</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for s in active_profiles %}
+        <tr>
+          <td>
+            <strong>{{ s.user.full_name }}</strong><br />
+            {{ s.user.email }}<br />
+            <span class="muted">{{ s.user.role }}</span>
+          </td>
+          <td>{{ s.joining_date or "-" }}</td>
+          <td>
+            {{ s.phone or "-" }}<br />
+            {{ s.alternate_contact or "-" }}<br />
+            <span class="muted">{{ s.address or "-" }}</span>
+          </td>
+          <td>{{ s.pan_number or "-" }}</td>
+          <td>
+            {{ s.bank_name or "-" }}<br />
+            {{ s.bank_account_name or "-" }}<br />
+            {{ s.bank_account_number or "-" }}<br />
+            {{ s.bank_ifsc or "-" }}
+          </td>
+          <td>
+            {% set mark = attendance_today.get(s.user_id) %}
+            {% if mark %}
+              {{ mark.status }}<br />
+              <span class="muted">{{ mark.attendance_date }}</span>
+            {% else %}
+              <span class="muted">Not logged</span>
+            {% endif %}
+          </td>
+          <td>
+            {% set last_mark = attendance_latest.get(s.user_id) %}
+            {% if last_mark %}
+              {{ last_mark.status }}<br />
+              <span class="muted">{{ last_mark.attendance_date }}</span>
+            {% else %}
+              <span class="muted">No history</span>
+            {% endif %}
+          </td>
+          <td>
+            {% set leaves = leave_summary.get(s.user_id, {"pending": 0, "approved": 0}) %}
+            Pending: {{ leaves.pending }}<br />
+            Approved: {{ leaves.approved }}
+          </td>
+          <td>
+            <form method="post" class="grid">
+              <input type="hidden" name="action" value="update" />
+              <input type="hidden" name="user_id" value="{{ s.user_id }}" />
+              <label>Name<input name="full_name" value="{{ s.user.full_name }}" required /></label>
+              <label>Email<input type="email" name="email" value="{{ s.user.email }}" required /></label>
+              <label>Role
+                <select name="role" required>
+                  <option value="staff" {% if s.user.role == "staff" %}selected{% endif %}>Staff</option>
+                  <option value="manager" {% if s.user.role == "manager" %}selected{% endif %}>Manager</option>
+                  <option value="barista" {% if s.user.role == "barista" %}selected{% endif %}>Barista</option>
+                  <option value="cashier" {% if s.user.role == "cashier" %}selected{% endif %}>Cashier</option>
+                  <option value="admin" {% if s.user.role == "admin" %}selected{% endif %}>Admin</option>
+                </select>
+              </label>
+              <label>Joining<input type="date" name="joining_date" value="{{ s.joining_date or '' }}" /></label>
+              <label>Phone<input name="phone" value="{{ s.phone or '' }}" /></label>
+              <label>Alt Contact<input name="alternate_contact" value="{{ s.alternate_contact or '' }}" /></label>
+              <label>PAN<input name="pan_number" value="{{ s.pan_number or '' }}" /></label>
+              <label>Account Name<input name="bank_account_name" value="{{ s.bank_account_name or '' }}" /></label>
+              <label>Account No<input name="bank_account_number" value="{{ s.bank_account_number or '' }}" /></label>
+              <label>IFSC<input name="bank_ifsc" value="{{ s.bank_ifsc or '' }}" /></label>
+              <label>Bank<input name="bank_name" value="{{ s.bank_name or '' }}" /></label>
+              <label>Address<input name="address" value="{{ s.address or '' }}" /></label>
+              <label>Reset Password<input type="password" name="password" /></label>
+              <label><input type="checkbox" name="active" {% if s.user.active %}checked{% endif %} /> Active</label>
+              <button type="submit">Save</button>
+            </form>
+          </td>
+          <td>
+            <form method="post">
+              <input type="hidden" name="action" value="archive" />
+              <input type="hidden" name="user_id" value="{{ s.user_id }}" />
+              <button type="submit">Archive</button>
+            </form>
+          </td>
+          <td>
+            {% set is_cafe_admin = (s.user.email == "admin@brownberries.local") or (s.user.role == "admin" and s.user.full_name|lower == "cafe admin") %}
+            {% if is_cafe_admin %}
+              <button type="button" disabled>Admin Protected</button>
+            {% else %}
+              <form method="post">
+                <input type="hidden" name="action" value="delete" />
+                <input type="hidden" name="user_id" value="{{ s.user_id }}" />
+                <button type="submit">Delete</button>
+              </form>
+            {% endif %}
+          </td>
+        </tr>
+        {% else %}
+        <tr><td colspan="11">No staff found.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section class="panel">
+  <h3>Attendance Calendar</h3>
+  <form method="get" class="grid grid-4">
+    <label>Staff Member
+      <select name="attendance_user_id" required>
+        {% for s in active_profiles %}
+        <option value="{{ s.user_id }}" {% if attendance_user_id == s.user_id %}selected{% endif %}>{{ s.user.full_name }} ({{ s.user.role }})</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>Month
+      <select name="attendance_month">
+        {% for m in range(1,13) %}
+        <option value="{{ m }}" {% if attendance_month == m %}selected{% endif %}>{{ m }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>Year
+      <input type="number" min="2000" max="2100" name="attendance_year" value="{{ attendance_year }}" />
+    </label>
+    <button type="submit">View Calendar</button>
+  </form>
+  <p class="muted">Present = green, Half Day = yellow, Absent = red, On Leave = blue.</p>
+  <div class="attendance-calendar">
+    <div class="cal-head">Mon</div>
+    <div class="cal-head">Tue</div>
+    <div class="cal-head">Wed</div>
+    <div class="cal-head">Thu</div>
+    <div class="cal-head">Fri</div>
+    <div class="cal-head">Sat</div>
+    <div class="cal-head">Sun</div>
+    {% for week in attendance_month_rows %}
+      {% for day in week %}
+        {% if day == 0 %}
+        <div class="cal-cell empty"></div>
+        {% else %}
+        {% set st = selected_attendance_map.get(day) %}
+        <div class="cal-cell">
+          <span class="day-dot {% if st == 'present' %}st-present{% elif st == 'half-day' %}st-half{% elif st == 'absent' %}st-absent{% elif st == 'on-leave' %}st-leave{% endif %}">{{ day }}</span>
+        </div>
+        {% endif %}
+      {% endfor %}
+    {% endfor %}
+  </div>
+  {% if attendance_user_id %}
+  <p>
+    <a class="button-link" href="{{ url_for('cafe.export_staff_attendance', user_id=attendance_user_id, month=attendance_month, year=attendance_year) }}">Download Attendance (Month/Year)</a>
+  </p>
+  {% endif %}
+</section>
+
+<section class="panel">
+  <h3>Leave Requests</h3>
+  <div style="overflow:auto">
+    <table>
+      <thead>
+        <tr>
+          <th>Staff</th>
+          <th>Type</th>
+          <th>Dates</th>
+          <th>Reason</th>
+          <th>Status</th>
+          <th>Admin Action</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for leave in leave_requests %}
+        <tr>
+          <td>{{ leave.user.full_name }}</td>
+          <td>{{ leave.leave_type }}</td>
+          <td>{{ leave.start_date }} to {{ leave.end_date }}</td>
+          <td>{{ leave.reason or "-" }}</td>
+          <td>{{ leave.status }}</td>
+          <td>
+            <form method="post" class="grid">
+              <input type="hidden" name="action" value="leave_decision" />
+              <input type="hidden" name="leave_id" value="{{ leave.id }}" />
+              <label>Decision
+                <select name="decision">
+                  <option value="pending" {% if leave.status == "pending" %}selected{% endif %}>Pending</option>
+                  <option value="approved" {% if leave.status == "approved" %}selected{% endif %}>Approved</option>
+                  <option value="rejected" {% if leave.status == "rejected" %}selected{% endif %}>Rejected</option>
+                </select>
+              </label>
+              <label>Remarks<input name="admin_remarks" value="{{ leave.admin_remarks or '' }}" /></label>
+              <button type="submit">Update</button>
+            </form>
+          </td>
+        </tr>
+        {% else %}
+        <tr><td colspan="6">No leave requests yet.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section class="panel">
+  <h3>Archived Staff</h3>
+  <div style="overflow:auto">
+    <table>
+      <thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Archived</th></tr></thead>
+      <tbody>
+        {% for s in archived_profiles %}
+        <tr><td>{{ s.user.full_name }}</td><td>{{ s.user.email }}</td><td>{{ s.user.role }}</td><td>Yes</td></tr>
+        {% else %}
+        <tr><td colspan="4">No archived staff members.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endblock %}

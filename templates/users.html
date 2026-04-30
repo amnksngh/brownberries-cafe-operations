@@ -1,0 +1,60 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="panel">
+  <h2>User Management</h2>
+  <p class="muted">Use this for login accounts and access roles. For cafe staff profile details (PAN, salary account, attendance, leave), use <a href="{{ url_for('cafe.staff') }}">Staff Management</a>.</p>
+  <form method="post" class="grid grid-4">
+    <label>Name <input name="full_name" required /></label>
+    <label>Email <input name="email" type="email" required /></label>
+    <label>Password <input name="password" type="password" required /></label>
+    <label>Role
+      <select name="role">
+        <option value="admin">admin</option>
+        <option value="manager">manager</option>
+        <option value="staff">staff</option>
+        <option value="barista">barista</option>
+        <option value="librarian">librarian</option>
+      </select>
+    </label>
+    <label><input type="checkbox" name="active" checked /> Active</label>
+    <button type="submit">Add User</button>
+  </form>
+</section>
+<section class="panel">
+  <table>
+    <tr><th>Edit User</th><th>Delete</th></tr>
+    {% for user in users %}
+    {% set is_cafe_admin = (user.email == "admin@brownberries.local") or (user.role == "admin" and user.full_name|lower == "cafe admin") %}
+    <tr>
+      <td>
+        <form method="post" action="{{ url_for('main.update_user', user_id=user.id) }}" class="grid grid-4">
+          <label>Name <input name="full_name" value="{{ user.full_name }}" required /></label>
+          <label>Email <input name="email" type="email" value="{{ user.email }}" required /></label>
+          <label>New Password (optional) <input name="password" type="password" /></label>
+          <label>Role
+            <select name="role">
+              <option value="admin" {% if user.role == "admin" %}selected{% endif %}>admin</option>
+              <option value="manager" {% if user.role == "manager" %}selected{% endif %}>manager</option>
+              <option value="staff" {% if user.role == "staff" %}selected{% endif %}>staff</option>
+              <option value="barista" {% if user.role == "barista" %}selected{% endif %}>barista</option>
+              <option value="librarian" {% if user.role == "librarian" %}selected{% endif %}>librarian</option>
+            </select>
+          </label>
+          <label><input type="checkbox" name="active" {% if user.active %}checked{% endif %} /> Active</label>
+          <button type="submit">Save Changes</button>
+        </form>
+      </td>
+      <td>
+        {% if is_cafe_admin %}
+        <button type="button" disabled>Cafe Admin Protected</button>
+        {% else %}
+        <form method="post" action="{{ url_for('main.delete_user', user_id=user.id) }}" class="inline">
+          <button type="submit">Delete User</button>
+        </form>
+        {% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+  </table>
+</section>
+{% endblock %}

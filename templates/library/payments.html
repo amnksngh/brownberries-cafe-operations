@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="panel">
+  <h2>Library Payment Status</h2>
+  <form method="post" class="grid grid-4">
+    <label>Member
+      <select name="member_id">{% for m in members %}<option value="{{ m.id }}">{{ m.full_name }}</option>{% endfor %}</select>
+    </label>
+    <label>Amount <input name="amount" type="number" step="0.01" required /></label>
+    <label>Payment Type
+      <select name="payment_type">
+        <option>QR</option>
+        <option>Cash</option>
+        <option>Card Tap</option>
+        <option>Card Dip</option>
+      </select>
+    </label>
+    <label>Reference <input name="reference" /></label>
+    <label>Note <input name="note" /></label>
+    <button type="submit">Record Payment</button>
+  </form>
+</section>
+<section class="panel">
+  <table>
+    <tr><th>Date</th><th>Member</th><th>Amount</th><th>Type</th><th>Reference</th></tr>
+    {% for p in payments %}
+    <tr>
+      <td>{{ p.created_at.strftime("%Y-%m-%d") }}</td>
+      <td>{{ p.member.full_name }}</td>
+      <td>{{ "%.2f"|format(p.amount) }}</td>
+      <td>{{ p.payment_type }}</td>
+      <td>{{ p.reference or "-" }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+</section>
+{% endblock %}

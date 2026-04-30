@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="panel">
+  <h2>Books Inventory</h2>
+  <form method="post" class="grid grid-4">
+    <label>Title <input name="title" required /></label>
+    <label>Author <input name="author" required /></label>
+    <label>Category <input name="category" /></label>
+    <label>Shelf No <input name="shelf_no" required /></label>
+    <label>Total Copies <input name="total_copies" type="number" min="1" required /></label>
+    <button type="submit">Add Book</button>
+  </form>
+</section>
+<section class="panel">
+  <table>
+    <tr><th>Title</th><th>Author</th><th>Shelf</th><th>Total</th><th>Available</th></tr>
+    {% for b in books %}
+    <tr>
+      <td>{{ b.title }}</td>
+      <td>{{ b.author }}</td>
+      <td>{{ b.shelf_no }}</td>
+      <td>{{ b.total_copies }}</td>
+      <td>{{ b.available_copies }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+</section>
+{% endblock %}

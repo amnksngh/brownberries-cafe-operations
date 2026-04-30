@@ -1,0 +1,175 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="panel">
+  <h2>Catalog Management</h2>
+  <div class="split">
+    <div class="panel">
+      <h3>Categories</h3>
+      <form method="post" action="{{ url_for('cafe.add_category') }}" class="grid">
+        <label>Add Category <input name="name" required /></label>
+        <button type="submit">Add Category</button>
+      </form>
+      <table>
+        <tr><th>Name</th><th>Actions</th></tr>
+        {% for c in categories %}
+        <tr>
+          <td>
+            <form method="post" action="{{ url_for('cafe.update_category', category_id=c.id) }}" class="inline">
+              <input name="name" value="{{ c.name }}" required />
+              <button type="submit">Save</button>
+            </form>
+          </td>
+          <td>
+            <form method="post" action="{{ url_for('cafe.delete_category', category_id=c.id) }}" class="inline">
+              <button type="submit">Delete</button>
+            </form>
+          </td>
+        </tr>
+        {% endfor %}
+      </table>
+    </div>
+
+    <div class="panel">
+      <h3>Subcategories</h3>
+      <form method="post" action="{{ url_for('cafe.add_subcategory') }}" class="grid">
+        <label>Name <input name="name" required /></label>
+        <button type="submit">Add Subcategory</button>
+      </form>
+      <table>
+        <tr><th>Name</th><th>Actions</th></tr>
+        {% for s in subcategories %}
+        <tr>
+          <td>
+            <form method="post" action="{{ url_for('cafe.update_subcategory', subcategory_id=s.id) }}" class="inline">
+              <input name="name" value="{{ s.name }}" required />
+          </td>
+          <td>
+              <button type="submit">Save</button>
+            </form>
+            <form method="post" action="{{ url_for('cafe.delete_subcategory', subcategory_id=s.id) }}" class="inline">
+              <button type="submit">Delete</button>
+            </form>
+          </td>
+        </tr>
+        {% endfor %}
+      </table>
+    </div>
+  </div>
+
+  <div class="panel">
+    <h3>Types</h3>
+    <form method="post" action="{{ url_for('cafe.add_type') }}" class="grid grid-3">
+      <label>Add Type <input name="name" required placeholder="Veg / Beverage / Dessert" /></label>
+      <button type="submit">Add Type</button>
+    </form>
+    <table>
+      <tr><th>Type</th><th>Actions</th></tr>
+      {% for t in menu_types %}
+      <tr>
+        <td>
+          <form method="post" action="{{ url_for('cafe.update_type', type_id=t.id) }}" class="inline">
+            <input name="name" value="{{ t.name }}" required />
+            <button type="submit">Save</button>
+          </form>
+        </td>
+        <td>
+          <form method="post" action="{{ url_for('cafe.delete_type', type_id=t.id) }}" class="inline">
+            <button type="submit">Delete</button>
+          </form>
+        </td>
+      </tr>
+      {% endfor %}
+    </table>
+  </div>
+</section>
+
+<section class="panel">
+  <h2>Add Menu Item</h2>
+  <form method="post" class="grid grid-4">
+    <label>Category
+      <select name="category_id" required>
+        {% for c in categories %}<option value="{{ c.id }}">{{ c.name }}</option>{% endfor %}
+      </select>
+    </label>
+    <label>Subcategory
+      <select name="subcategory_id">
+        <option value="">--</option>
+        {% for s in subcategories %}<option value="{{ s.id }}">{{ s.name }}</option>{% endfor %}
+      </select>
+    </label>
+    <label>Type
+      <select name="menu_type_id" required>
+        {% for t in menu_types %}<option value="{{ t.id }}">{{ t.name }}</option>{% endfor %}
+      </select>
+    </label>
+    <label>Name <input name="name" required /></label>
+    <label>Image URL <input name="image_url" /></label>
+    <label>Description <input name="description" /></label>
+    <label>Calories <input name="calories" type="number" min="0" /></label>
+    <label>Price <input name="price" type="number" min="0" step="0.01" required /></label>
+    <label><input type="checkbox" name="available" checked /> Available</label>
+    <button type="submit">Add Item</button>
+  </form>
+</section>
+
+<section class="panel">
+  <h2>Menu Items</h2>
+  <table>
+    <tr><th>Item</th><th>Edit Item</th><th>Delete</th></tr>
+    {% for item in items %}
+    <tr>
+      <td>
+        <div class="item-preview">
+          {% if item.image_url %}
+          <img src="{{ item.image_url }}" alt="{{ item.name }}" class="thumb-image" />
+          {% else %}
+          <div class="thumb-image placeholder">No Image</div>
+          {% endif %}
+          <div>
+            <strong>{{ item.name }}</strong>
+          </div>
+        </div>
+      </td>
+      <td>
+        <form method="post" action="{{ url_for('cafe.update_menu_item', item_id=item.id) }}" class="grid grid-4">
+          <label>Category
+            <select name="category_id" required>
+              {% for c in categories %}
+              <option value="{{ c.id }}" {% if item.category_id == c.id %}selected{% endif %}>{{ c.name }}</option>
+              {% endfor %}
+            </select>
+          </label>
+          <label>Subcategory
+            <select name="subcategory_id">
+              <option value="">--</option>
+              {% for s in subcategories %}
+              <option value="{{ s.id }}" {% if item.subcategory_id == s.id %}selected{% endif %}>{{ s.name }}</option>
+              {% endfor %}
+            </select>
+          </label>
+          <label>Type
+            <select name="menu_type_id" required>
+              {% for t in menu_types %}
+              <option value="{{ t.id }}" {% if item.item_type == t.name %}selected{% endif %}>{{ t.name }}</option>
+              {% endfor %}
+            </select>
+          </label>
+          <label>Name <input name="name" value="{{ item.name }}" required /></label>
+          <label>Image URL <input name="image_url" value="{{ item.image_url or '' }}" /></label>
+          <label>Description <input name="description" value="{{ item.description or '' }}" /></label>
+          <label>Calories <input name="calories" type="number" min="0" value="{{ item.calories or '' }}" /></label>
+          <label>Price <input name="price" type="number" min="0" step="0.01" value="{{ item.price }}" required /></label>
+          <label><input type="checkbox" name="available" {% if item.available %}checked{% endif %} /> Available</label>
+          <button type="submit">Save</button>
+        </form>
+      </td>
+      <td>
+        <form method="post" action="{{ url_for('cafe.delete_menu_item', item_id=item.id) }}" class="inline">
+          <button type="submit">Delete</button>
+        </form>
+      </td>
+    </tr>
+    {% endfor %}
+  </table>
+</section>
+{% endblock %}

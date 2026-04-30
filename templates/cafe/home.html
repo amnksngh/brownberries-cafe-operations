@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="hero-band compact" style="background-image:url('{{ url_for('static', filename='images/cafe-interior-2.jpeg') }}')">
+  <div class="hero-overlay">
+    <h2>Cafe Operations</h2>
+    <p>Tables, menu, orders, kitchen, inventory, and reporting.</p>
+  </div>
+</section>
+<section class="stats">
+  <article class="metric"><h3>Tables</h3><p>{{ tables }}</p></article>
+  <article class="metric"><h3>Open Orders</h3><p>{{ open_orders }}</p></article>
+  <article class="metric"><h3>Low Stock</h3><p>{{ low_stock }}</p></article>
+</section>
+<section class="panel">
+  <h2>Cafe Modules</h2>
+  <div class="links">
+    <a href="{{ url_for('cafe.tables') }}">Table Management</a>
+    <a href="{{ url_for('cafe.menu') }}">Menu Management</a>
+    <a href="{{ url_for('cafe.orders') }}">Table Ordering</a>
+    {% if g.current_user.role in ["admin", "manager", "cashier"] %}
+    <a href="{{ url_for('cafe.cashier') }}">Cashier Desk</a>
+    {% endif %}
+    <a href="{{ url_for('cafe.kitchen_display') }}">Kitchen Display</a>
+    <a href="{{ url_for('cafe.inventory') }}">Inventory Management</a>
+    {% if g.current_user.role == "admin" %}
+    <a href="{{ url_for('cafe.staff') }}">Staff Management</a>
+    {% else %}
+    <a href="{{ url_for('cafe.my_staff') }}">My Staff Portal</a>
+    {% endif %}
+    <a href="{{ url_for('cafe.stats') }}">Statistics Dashboard</a>
+  </div>
+</section>
+{% endblock %}

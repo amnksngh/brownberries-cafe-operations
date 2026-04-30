@@ -1,0 +1,77 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="panel">
+  <h2>Cashier Desk</h2>
+  <p class="muted">Collect payment, mark orders paid, and clear table for next customers.</p>
+  <form method="get" class="grid grid-4">
+    <label>Table
+      <select name="table_id">
+        {% for t in tables %}
+        <option value="{{ t.id }}" {% if selected_table and selected_table.id == t.id %}selected{% endif %}>{{ t.name }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <button type="submit">Load Table</button>
+  </form>
+</section>
+
+{% if selected_table %}
+<section class="panel">
+  <h3>{{ selected_table.name }} - Unpaid Orders</h3>
+  <p><strong>Total Pending:</strong> {{ "%.2f"|format(table_total) }}</p>
+  <div style="overflow:auto">
+    <table>
+      <thead>
+        <tr><th>Order</th><th>Status</th><th>Items</th><th>Total</th><th>Mark Paid</th></tr>
+      </thead>
+      <tbody>
+        {% for order in unpaid_orders %}
+        <tr>
+          <td>#{{ order.id }}</td>
+          <td>{{ order.status }}</td>
+          <td>
+            {% for oi in order.order_items %}
+            <div>{{ oi.menu_item.name }} x {{ oi.quantity }}</div>
+            {% endfor %}
+          </td>
+          <td>{{ "%.2f"|format(order.total_amount) }}</td>
+          <td>
+            <form method="post" action="{{ url_for('cafe.mark_order_paid', order_id=order.id) }}" class="grid">
+              <label>Payment Type
+                <select name="payment_type">
+                  <option>Cash</option>
+                  <option>QR</option>
+                  <option>Card Tap</option>
+                  <option>Card Dip</option>
+                </select>
+              </label>
+              <label>Reference <input name="payment_reference" /></label>
+              <button type="submit">Mark Paid</button>
+            </form>
+          </td>
+        </tr>
+        {% else %}
+        <tr><td colspan="5">No unpaid orders for this table.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section class="panel">
+  <h3>Clear Table Orders</h3>
+  <form method="post" action="{{ url_for('cafe.clear_table_orders', table_id=selected_table.id) }}" class="grid grid-4">
+    <label>Payment Type
+      <select name="payment_type">
+        <option>Cash</option>
+        <option>QR</option>
+        <option>Card Tap</option>
+        <option>Card Dip</option>
+      </select>
+    </label>
+    <label>Reference<input name="payment_reference" /></label>
+    <button type="submit">Clear All Unpaid Orders For Table</button>
+  </form>
+</section>
+{% endif %}
+{% endblock %}

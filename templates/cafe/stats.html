@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="panel">
+  <h2>Statistics Dashboard</h2>
+  <form method="get" class="grid grid-3">
+    <label>From <input type="datetime-local" name="from" /></label>
+    <label>To <input type="datetime-local" name="to" /></label>
+    <button type="submit">Apply</button>
+  </form>
+  <p><strong>Total Sales:</strong> {{ "%.2f"|format(total_sales) }}</p>
+  <a class="button-link" href="{{ url_for('cafe.export_stats') }}">Download Excel</a>
+</section>
+<section class="panel">
+  <table>
+    <tr><th>ID</th><th>Table</th><th>Status</th><th>Payment</th><th>Total</th></tr>
+    {% for order in orders %}
+    <tr>
+      <td>{{ order.id }}</td>
+      <td>{{ order.table.name }}</td>
+      <td>{{ order.status }}</td>
+      <td>{{ order.payment_type or "-" }}</td>
+      <td>{{ "%.2f"|format(order.total_amount) }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+</section>
+{% endblock %}

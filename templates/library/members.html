@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="panel">
+  <h2>Membership Management</h2>
+  <form method="post" class="grid grid-4">
+    <label>Name <input name="full_name" required /></label>
+    <label>Phone <input name="phone" required /></label>
+    <label>Email <input name="email" type="email" /></label>
+    <label>Address <input name="address" /></label>
+    <label>Plan
+      <select name="subscription_plan_id">
+        <option value="">--</option>
+        {% for p in plans %}<option value="{{ p.id }}">{{ p.name }}</option>{% endfor %}
+      </select>
+    </label>
+    <label>Subscription Start <input type="date" name="subscription_start_date" /></label>
+    <label>Card Number <input name="card_number" /></label>
+    <label><input type="checkbox" name="active" checked /> Active</label>
+    <button type="submit">Add Member</button>
+  </form>
+</section>
+<section class="panel">
+  <table>
+    <tr><th>Name</th><th>Phone</th><th>Plan</th><th>Subscription End</th><th>Status</th></tr>
+    {% for m in members %}
+    <tr>
+      <td>{{ m.full_name }}</td>
+      <td>{{ m.phone }}</td>
+      <td>{{ m.subscription_plan.name if m.subscription_plan else "-" }}</td>
+      <td>{{ m.subscription_end_date or "-" }}</td>
+      <td>{{ "Active" if m.active else "Inactive" }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+</section>
+{% endblock %}

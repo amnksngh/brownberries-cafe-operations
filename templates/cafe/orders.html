@@ -1,0 +1,236 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="panel">
+  <h2>Table Ordering</h2>
+  <form method="get" class="grid grid-4">
+    <label>Table
+      <select name="table_id">
+        {% for t in tables %}
+        <option value="{{ t.id }}" {% if selected_table_id == t.id %}selected{% endif %}>{{ t.name }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>Category
+      <select name="category_id">
+        <option value="">All</option>
+        {% for c in categories %}
+        <option value="{{ c.id }}" {% if selected_category_id == c.id %}selected{% endif %}>{{ c.name }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>Subcategory
+      <select name="subcategory_id">
+        <option value="">All</option>
+        {% for s in subcategories %}
+        <option value="{{ s.id }}" {% if selected_subcategory_id == s.id %}selected{% endif %}>{{ s.name }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>Type
+      <select name="item_type">
+        <option value="">All</option>
+        {% for t in item_types %}
+        <option value="{{ t }}" {% if selected_item_type == t %}selected{% endif %}>{{ t }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <button type="submit">Apply Filters</button>
+  </form>
+</section>
+
+<form method="post" id="staff-order-form" class="grid">
+  <section class="panel">
+    <div class="grid grid-4">
+      <label>Table
+        <select name="table_id">
+          {% for t in tables %}
+          <option value="{{ t.id }}" {% if selected_table_id == t.id %}selected{% endif %}>{{ t.name }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>Status
+        <select name="status">
+          <option value="open">Open</option>
+          <option value="paid">Paid</option>
+          <option value="cancelled">Cancelled</option>
+        </select>
+      </label>
+      <label>Payment Type
+        <select name="payment_type">
+          <option value="">--</option>
+          <option>QR</option>
+          <option>Cash</option>
+          <option>Card Tap</option>
+          <option>Card Dip</option>
+        </select>
+      </label>
+      <label>Payment Ref <input name="payment_reference" /></label>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h3>Menu Items</h3>
+    <div class="item-grid">
+      {% for item in menu_items %}
+      <article class="item-card">
+        <h4 class="item-name">{{ item.name }}</h4>
+        {% if item.image_url %}
+        <img src="{{ item.image_url }}" alt="{{ item.name }}" class="item-image" />
+        {% else %}
+        <div class="item-image placeholder">No Image</div>
+        {% endif %}
+        <p class="muted item-meta">{{ item.category.name }}{% if item.subcategory %}, {{ item.subcategory.name }}{% endif %}, {{ item.item_type }}</p>
+        <p class="item-desc">{{ item.description or "-" }}</p>
+        <p class="item-calories">Calories: {{ item.calories or "-" }}</p>
+        <div class="qty-control">
+          <button type="button" class="qty-btn" data-role="minus">-</button>
+          <input type="number" min="1" value="1" class="qty-input" />
+          <button type="button" class="qty-btn" data-role="plus">+</button>
+        </div>
+        <button
+          type="button"
+          class="add-to-cart-btn"
+          data-item-id="{{ item.id }}"
+          data-item-name="{{ item.name }}"
+          data-item-price="{{ item.price }}"
+        >Add</button>
+      </article>
+      {% endfor %}
+    </div>
+  </section>
+
+  <section class="panel">
+    <h3>Cart</h3>
+    <div id="cart-lines" class="cart-lines"></div>
+    <p><strong>Total:</strong> <span id="cart-total">0.00</span></p>
+    <input type="hidden" id="cart-payload" name="cart_payload" />
+    <button type="submit">Place Order</button>
+  </section>
+</form>
+
+<section class="panel">
+  <h3>Current Unpaid Orders for Selected Table</h3>
+  {% if g.current_user.role in ["admin", "manager", "cashier"] and selected_table_id %}
+  <form method="post" action="{{ url_for('cafe.clear_table_orders', table_id=selected_table_id) }}" class="grid grid-4" style="margin-bottom:0.6rem;">
+    <label>Payment Type
+      <select name="payment_type">
+        <option>Cash</option>
+        <option>QR</option>
+        <option>Card Tap</option>
+        <option>Card Dip</option>
+      </select>
+    </label>
+    <label>Reference<input name="payment_reference" /></label>
+    <button type="submit">Clear Table (Mark All Unpaid as Paid)</button>
+  </form>
+  {% endif %}
+  <table>
+    <tr><th>Order</th><th>Status</th><th>Items</th><th>Total</th>{% if g.current_user.role in ["admin", "manager", "cashier"] %}<th>Payment</th>{% endif %}</tr>
+    {% for order in table_orders %}
+    <tr>
+      <td>#{{ order.id }}</td>
+      <td>{{ order.status }}</td>
+      <td>
+        {% for oi in order.order_items %}
+        <div>{{ oi.menu_item.name }} x {{ oi.quantity }}</div>
+        {% endfor %}
+      </td>
+      <td>{{ "%.2f"|format(order.total_amount) }}</td>
+      {% if g.current_user.role in ["admin", "manager", "cashier"] %}
+      <td>
+        <form method="post" action="{{ url_for('cafe.mark_order_paid', order_id=order.id) }}" class="grid">
+          <label>Type
+            <select name="payment_type">
+              <option {% if order.payment_type == "Cash" %}selected{% endif %}>Cash</option>
+              <option {% if order.payment_type == "QR" %}selected{% endif %}>QR</option>
+              <option {% if order.payment_type == "Card Tap" %}selected{% endif %}>Card Tap</option>
+              <option {% if order.payment_type == "Card Dip" %}selected{% endif %}>Card Dip</option>
+            </select>
+          </label>
+          <label>Ref <input name="payment_reference" value="{{ order.payment_reference or '' }}" /></label>
+          <button type="submit">Mark Paid</button>
+        </form>
+      </td>
+      {% endif %}
+    </tr>
+    {% else %}
+    <tr><td colspan="{% if g.current_user.role in ['admin', 'manager', 'cashier'] %}5{% else %}4{% endif %}">No unpaid orders for this table.</td></tr>
+    {% endfor %}
+  </table>
+</section>
+
+<script>
+  const cart = {};
+  const cartLines = document.getElementById("cart-lines");
+  const cartPayloadInput = document.getElementById("cart-payload");
+  const cartTotal = document.getElementById("cart-total");
+  const orderForm = document.getElementById("staff-order-form");
+
+  function normalizeQty(value) {
+    const num = Number(value);
+    if (!Number.isFinite(num) || num < 1) return 1;
+    return Math.floor(num);
+  }
+
+  function renderCart() {
+    const entries = Object.values(cart);
+    if (entries.length === 0) {
+      cartLines.innerHTML = '<p class="muted">No items in cart.</p>';
+      cartTotal.textContent = "0.00";
+      cartPayloadInput.value = "";
+      return;
+    }
+    let total = 0;
+    cartLines.innerHTML = entries.map((line) => {
+      total += line.price * line.quantity;
+      return `<div class="cart-line"><span>${line.name}</span><span>${line.quantity}</span><span>${(line.price * line.quantity).toFixed(2)}</span><button type="button" data-remove="${line.menu_item_id}">Remove</button></div>`;
+    }).join("");
+    cartTotal.textContent = total.toFixed(2);
+    cartPayloadInput.value = JSON.stringify(entries.map((line) => ({
+      menu_item_id: line.menu_item_id,
+      quantity: line.quantity
+    })));
+  }
+
+  document.querySelectorAll(".qty-control").forEach((wrap) => {
+    const input = wrap.querySelector(".qty-input");
+    const minus = wrap.querySelector('[data-role="minus"]');
+    const plus = wrap.querySelector('[data-role="plus"]');
+    minus.addEventListener("click", () => { input.value = Math.max(1, normalizeQty(input.value) - 1); });
+    plus.addEventListener("click", () => { input.value = normalizeQty(input.value) + 1; });
+  });
+
+  document.querySelectorAll(".add-to-cart-btn").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const card = btn.closest(".item-card");
+      const qtyInput = card.querySelector(".qty-input");
+      const quantity = normalizeQty(qtyInput.value);
+      const menu_item_id = Number(btn.dataset.itemId);
+      const name = btn.dataset.itemName;
+      const price = Number(btn.dataset.itemPrice);
+      if (!cart[menu_item_id]) {
+        cart[menu_item_id] = { menu_item_id, name, price, quantity: 0 };
+      }
+      cart[menu_item_id].quantity += quantity;
+      qtyInput.value = 1;
+      renderCart();
+    });
+  });
+
+  cartLines.addEventListener("click", (event) => {
+    const removeId = event.target.getAttribute("data-remove");
+    if (!removeId) return;
+    delete cart[Number(removeId)];
+    renderCart();
+  });
+
+  orderForm.addEventListener("submit", (event) => {
+    if (Object.keys(cart).length < 1) {
+      event.preventDefault();
+      alert("Please add at least one item to cart.");
+    }
+  });
+
+  renderCart();
+</script>
+{% endblock %}

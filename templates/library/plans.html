@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="panel">
+  <h2>Subscription Types</h2>
+  <form method="post" class="grid grid-4">
+    <label>Name <input name="name" placeholder="Monthly" required /></label>
+    <label>Duration (days) <input name="duration_days" type="number" required /></label>
+    <label>Weekly Reissue Fee/Book <input name="weekly_reissue_fee_per_book" type="number" step="0.01" value="10" /></label>
+    <label>Late Fee/Day <input name="late_fee_per_day" type="number" step="0.01" value="5" /></label>
+    <label><input type="checkbox" name="active" checked /> Active</label>
+    <button type="submit">Save Plan</button>
+  </form>
+</section>
+<section class="panel">
+  <table>
+    <tr><th>Name</th><th>Duration</th><th>Weekly Fee</th><th>Late Fee/Day</th></tr>
+    {% for p in plans %}
+    <tr>
+      <td>{{ p.name }}</td>
+      <td>{{ p.duration_days }}</td>
+      <td>{{ p.weekly_reissue_fee_per_book }}</td>
+      <td>{{ p.late_fee_per_day }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+</section>
+{% endblock %}

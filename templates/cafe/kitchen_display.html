@@ -1,0 +1,89 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="panel">
+  <h2>Kitchen Display - Live Orders</h2>
+  <p class="muted">Auto-refreshing via WebSocket</p>
+</section>
+<section id="kitchen-board" class="kitchen-grid">
+  {% for order in orders %}
+  <article class="k-card" data-order-id="{{ order.id }}">
+    <h3>Order #{{ order.id }} - {{ order.table.name }}</h3>
+    <p>Status: <strong class="status">{{ order.status }}</strong></p>
+    <p>Total: {{ "%.2f"|format(order.total_amount) }}</p>
+    <ul>
+      {% for oi in order.order_items %}
+      <li>{{ oi.menu_item.name }} x {{ oi.quantity }}</li>
+      {% endfor %}
+    </ul>
+    <div class="k-actions">
+      <form method="post" action="{{ url_for('cafe.update_order_status', order_id=order.id) }}" class="inline">
+        <input type="hidden" name="status" value="preparing" />
+        <button type="submit">Preparing</button>
+      </form>
+      <form method="post" action="{{ url_for('cafe.update_order_status', order_id=order.id) }}" class="inline">
+        <input type="hidden" name="status" value="ready" />
+        <button type="submit">Ready</button>
+      </form>
+      <form method="post" action="{{ url_for('cafe.update_order_status', order_id=order.id) }}" class="inline">
+        <input type="hidden" name="status" value="served" />
+        <button type="submit">Served</button>
+      </form>
+      <form method="post" action="{{ url_for('cafe.update_order_status', order_id=order.id) }}" class="inline">
+        <input type="hidden" name="status" value="cancelled" />
+        <button type="submit">Cancel</button>
+      </form>
+    </div>
+  </article>
+  {% endfor %}
+</section>
+<script src="{{ url_for('static', filename='js/socket.io.min.js') }}"></script>
+<script>
+  const board = document.getElementById("kitchen-board");
+  const socket = io("/kitchen");
+
+  function upsertOrder(order) {
+    let card = board.querySelector(`[data-order-id="${order.id}"]`);
+    const listItems = order.items.map((i) => `<li>${i.name} x ${i.qty}</li>`).join("");
+    const html = `
+      <h3>Order #${order.id} - ${order.table}</h3>
+      <p>Status: <strong class="status">${order.status}</strong></p>
+      <p>Total: ${order.total_amount.toFixed(2)}</p>
+      <ul>${listItems}</ul>
+      <div class="k-actions">
+        <form method="post" action="/cafe/orders/${order.id}/status" class="inline">
+          <input type="hidden" name="status" value="preparing" />
+          <button type="submit">Preparing</button>
+        </form>
+        <form method="post" action="/cafe/orders/${order.id}/status" class="inline">
+          <input type="hidden" name="status" value="ready" />
+          <button type="submit">Ready</button>
+        </form>
+        <form method="post" action="/cafe/orders/${order.id}/status" class="inline">
+          <input type="hidden" name="status" value="served" />
+          <button type="submit">Served</button>
+        </form>
+        <form method="post" action="/cafe/orders/${order.id}/status" class="inline">
+          <input type="hidden" name="status" value="cancelled" />
+          <button type="submit">Cancel</button>
+        </form>
+      </div>`;
+
+    if (!card) {
+      card = document.createElement("article");
+      card.className = "k-card";
+      card.dataset.orderId = order.id;
+      board.prepend(card);
+    }
+    card.innerHTML = html;
+    if (["served", "cancelled", "paid"].includes(order.status)) {
+      setTimeout(() => {
+        const existing = board.querySelector(`[data-order-id="${order.id}"]`);
+        if (existing) existing.remove();
+      }, 400);
+    }
+  }
+
+  socket.on("order_created", upsertOrder);
+  socket.on("order_updated", upsertOrder);
+</script>
+{% endblock %}

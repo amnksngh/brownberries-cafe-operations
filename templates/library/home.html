@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="hero-band compact" style="background-image:url('{{ url_for('static', filename='images/cafe-front.jpeg') }}')">
+  <div class="hero-overlay">
+    <h2>Library Operations</h2>
+    <p>Memberships, issues, returns, subscriptions, and payments.</p>
+  </div>
+</section>
+<section class="stats">
+  <article class="metric"><h3>Active Issues</h3><p>{{ active_loans }}</p></article>
+  <article class="metric"><h3>Due Tomorrow</h3><p>{{ due_tomorrow }}</p></article>
+  <article class="metric"><h3>Members</h3><p>{{ members }}</p></article>
+</section>
+<section class="panel">
+  <h2>Library Modules</h2>
+  <div class="links">
+    <a href="{{ url_for('library.loans') }}">Issue a Book</a>
+    <a href="{{ url_for('library.members') }}">Add a Member</a>
+    <a href="{{ url_for('library.loans') }}">Return a Book</a>
+    <a href="{{ url_for('library.books') }}">Books Inventory</a>
+    <a href="{{ url_for('library.payments') }}">Payment Status</a>
+    <a href="{{ url_for('library.plans') }}">Subscription Types</a>
+    <a href="{{ url_for('library.export_stats') }}">Download Excel</a>
+  </div>
+</section>
+{% endblock %}
