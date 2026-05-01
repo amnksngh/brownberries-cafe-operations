@@ -14,21 +14,23 @@
       </select>
     </label>
     <label>Subscription Start <input type="date" name="subscription_start_date" /></label>
-    <label>Card Number <input name="card_number" /></label>
+    <label>Card Number <input name="card_number" placeholder="Optional custom card number" /></label>
     <label><input type="checkbox" name="active" checked /> Active</label>
     <button type="submit">Add Member</button>
   </form>
 </section>
 <section class="panel">
   <table>
-    <tr><th>Name</th><th>Phone</th><th>Plan</th><th>Subscription End</th><th>Status</th></tr>
+    <tr><th>Name</th><th>Member ID</th><th>Phone</th><th>Plan</th><th>Subscription End</th><th>Status</th><th>Card</th></tr>
     {% for m in members %}
     <tr>
       <td>{{ m.full_name }}</td>
+      <td>{{ m.member_code or "-" }}</td>
       <td>{{ m.phone }}</td>
       <td>{{ m.subscription_plan.name if m.subscription_plan else "-" }}</td>
       <td>{{ m.subscription_end_date or "-" }}</td>
       <td>{{ "Active" if m.active else "Inactive" }}</td>
+      <td><a class="button-link" href="{{ url_for('library.member_card', member_id=m.id) }}">Download Card</a></td>
     </tr>
     {% endfor %}
   </table>

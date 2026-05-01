@@ -28,7 +28,7 @@
         <a href="{{ url_for('cafe.cashier') }}">Cashier</a>
         {% endif %}
         <a href="{{ url_for('cafe.kitchen_display') }}">Kitchen Display</a>
-        {% if g.current_user.role == "admin" %}
+        {% if g.current_user.role in ["admin", "manager"] %}
         <a href="{{ url_for('cafe.staff') }}">Staff</a>
         {% else %}
         <a href="{{ url_for('cafe.my_staff') }}">My Staff</a>

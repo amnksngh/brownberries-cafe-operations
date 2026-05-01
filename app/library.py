@@ -1,6 +1,11 @@
+import os
+import random
+import string
 from datetime import date, timedelta
+from io import BytesIO
 
 from flask import Blueprint, Response, flash, redirect, render_template, request, url_for
+from PIL import Image, ImageDraw, ImageFont
 from openpyxl import Workbook
 
 from .auth_helpers import login_required, roles_required
@@ -8,6 +13,13 @@ from .extensions import db
 from .models import Book, LibraryLoan, LibraryMember, LibraryPayment, SubscriptionPlan
 
 bp = Blueprint("library", __name__, url_prefix="/library")
+BOOK_GENRES = [
+    "Fiction", "Non-Fiction", "Mystery", "Thriller", "Romance", "Fantasy", "Science Fiction",
+    "Horror", "Historical", "Biography", "Autobiography", "Self-Help", "Philosophy", "Poetry",
+    "Drama", "Children", "Young Adult", "Travel", "Health", "Business", "Technology",
+    "Politics", "Religion", "Spirituality", "Comics", "Graphic Novel", "Crime", "Adventure",
+    "Education", "Reference", "Classic", "Satire", "Cookbook",
+]
 
 
 def _loan_charge(loan: LibraryLoan) -> float:
@@ -15,6 +27,36 @@ def _loan_charge(loan: LibraryLoan) -> float:
     late_days = max(0, (today - loan.due_date).days)
     late_fee = late_days * loan.late_fee_per_day
     return round(late_fee + loan.damage_fee + loan.lost_fee, 2)
+
+
+def _generate_member_code() -> str:
+    while True:
+        code = "BBL-" + "".join(random.choices(string.ascii_uppercase + string.digits, k=8))
+        if not LibraryMember.query.filter_by(member_code=code).first():
+            return code
+
+
+def _build_member_card(member: LibraryMember):
+    canvas = Image.new("RGB", (960, 540), "#f4efe6")
+    draw = ImageDraw.Draw(canvas)
+    font = ImageFont.load_default()
+    draw.rectangle((20, 20, 940, 520), outline="#3f2b1d", width=4)
+    logo_path = os.path.join(bp.root_path, "..", "static", "images", "cafe-logo.png")
+    logo_path = os.path.abspath(logo_path)
+    if os.path.exists(logo_path):
+        logo = Image.open(logo_path).convert("RGBA").resize((130, 130))
+        canvas.paste(logo, (50, 45), logo)
+    draw.text((220, 62), "Brownberries Library Membership Card", fill="#2f2118", font=font)
+    draw.text((220, 100), f"Member ID: {member.member_code or '-'}", fill="#2f2118", font=font)
+    draw.text((220, 130), f"Name: {member.full_name}", fill="#2f2118", font=font)
+    draw.text((220, 160), f"Phone: {member.phone}", fill="#2f2118", font=font)
+    draw.text((220, 190), f"Email: {member.email or '-'}", fill="#2f2118", font=font)
+    draw.text((220, 220), f"Plan: {member.subscription_plan.name if member.subscription_plan else '-'}", fill="#2f2118", font=font)
+    draw.text((220, 250), f"Valid Till: {member.subscription_end_date or '-'}", fill="#2f2118", font=font)
+    out = BytesIO()
+    canvas.save(out, format="PNG")
+    out.seek(0)
+    return out
 
 
 @bp.route("/")
@@ -47,6 +89,7 @@ def members():
             phone=request.form["phone"].strip(),
             email=request.form.get("email", "").strip() or None,
             address=request.form.get("address", "").strip() or None,
+            member_code=_generate_member_code(),
             subscription_plan_id=plan_id,
             subscription_start_date=start_date,
             subscription_end_date=end_date,
@@ -64,24 +107,74 @@ def members():
     )
 
 
+@bp.route("/members/<int:member_id>/card")
+@roles_required("admin", "manager", "librarian")
+def member_card(member_id):
+    member = LibraryMember.query.get_or_404(member_id)
+    output = _build_member_card(member)
+    filename = f"{member.full_name.lower().replace(' ', '-')}-library-card.png"
+    return Response(
+        output.getvalue(),
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Content-Type": "image/png",
+        },
+    )
+
+
 @bp.route("/books", methods=["GET", "POST"])
 @roles_required("admin", "manager", "librarian")
 def books():
     if request.method == "POST":
-        total = int(request.form["total_copies"])
-        book = Book(
-            title=request.form["title"].strip(),
-            author=request.form["author"].strip(),
-            category=request.form.get("category", "").strip() or None,
-            shelf_no=request.form["shelf_no"].strip(),
-            total_copies=total,
-            available_copies=total,
+        action = request.form.get("action", "create")
+        if action == "create":
+            total = int(request.form["total_copies"])
+            book = Book(
+                title=request.form["title"].strip(),
+                author=request.form["author"].strip(),
+                genre=request.form.get("genre", "").strip() or None,
+                category=request.form.get("category", "").strip() or None,
+                shelf_no=request.form["shelf_no"].strip(),
+                total_copies=total,
+                available_copies=total,
+            )
+            db.session.add(book)
+            db.session.commit()
+            flash("Book added.", "success")
+            return redirect(url_for("library.books"))
+        if action == "update":
+            book = Book.query.get_or_404(int(request.form["book_id"]))
+            prev_total = book.total_copies
+            new_total = int(request.form["total_copies"])
+            delta = new_total - prev_total
+            book.title = request.form["title"].strip()
+            book.author = request.form["author"].strip()
+            book.genre = request.form.get("genre", "").strip() or None
+            book.category = request.form.get("category", "").strip() or None
+            book.shelf_no = request.form["shelf_no"].strip()
+            book.total_copies = new_total
+            book.available_copies = max(0, book.available_copies + delta)
+            db.session.commit()
+            flash("Book updated.", "success")
+            return redirect(url_for("library.books", q=request.args.get("q", "")))
+    q = (request.args.get("q") or "").strip()
+    query = Book.query
+    if q:
+        like = f"%{q}%"
+        query = query.filter(
+            db.or_(
+                Book.title.ilike(like),
+                Book.author.ilike(like),
+                Book.genre.ilike(like),
+                Book.shelf_no.ilike(like),
+            )
         )
-        db.session.add(book)
-        db.session.commit()
-        flash("Book added.", "success")
-        return redirect(url_for("library.books"))
-    return render_template("library/books.html", books=Book.query.order_by(Book.title).all())
+    return render_template(
+        "library/books.html",
+        books=query.order_by(Book.title).all(),
+        book_genres=BOOK_GENRES,
+        q=q,
+    )
 
 
 @bp.route("/plans", methods=["GET", "POST"])

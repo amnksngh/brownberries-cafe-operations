@@ -1,8 +1,12 @@
 {% extends "base.html" %}
 {% block content %}
 <section class="panel">
-  <h2>Kitchen Display - Live Orders</h2>
+  <h2>{{ "Barista Counter Display" if station == "barista" else "Kitchen Display" }} - Live Orders</h2>
   <p class="muted">Auto-refreshing via WebSocket</p>
+  <p>
+    <a class="button-link" href="{{ url_for('cafe.kitchen_display', station='kitchen') }}">Kitchen</a>
+    <a class="button-link" href="{{ url_for('cafe.kitchen_display', station='barista') }}">Barista Counter</a>
+  </p>
 </section>
 <section id="kitchen-board" class="kitchen-grid">
   {% for order in orders %}
@@ -12,7 +16,9 @@
     <p>Total: {{ "%.2f"|format(order.total_amount) }}</p>
     <ul>
       {% for oi in order.order_items %}
+      {% if oi.menu_item and oi.menu_item.prep_station == station %}
       <li>{{ oi.menu_item.name }} x {{ oi.quantity }}</li>
+      {% endif %}
       {% endfor %}
     </ul>
     <div class="k-actions">
@@ -40,10 +46,17 @@
 <script>
   const board = document.getElementById("kitchen-board");
   const socket = io("/kitchen");
+  const station = "{{ station }}";
 
   function upsertOrder(order) {
+    const stationItems = order.items.filter((i) => i.prep_station === station);
+    if (stationItems.length < 1) {
+      const existing = board.querySelector(`[data-order-id="${order.id}"]`);
+      if (existing) existing.remove();
+      return;
+    }
     let card = board.querySelector(`[data-order-id="${order.id}"]`);
-    const listItems = order.items.map((i) => `<li>${i.name} x ${i.qty}</li>`).join("");
+    const listItems = stationItems.map((i) => `<li>${i.name} x ${i.qty}</li>`).join("");
     const html = `
       <h3>Order #${order.id} - ${order.table}</h3>
       <p>Status: <strong class="status">${order.status}</strong></p>

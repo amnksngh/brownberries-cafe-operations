@@ -2,34 +2,47 @@
 {% block content %}
 <section class="panel">
   <h2>Staff Management</h2>
-  <p class="muted">Admin-only controls for staff records, payroll details, attendance and leave decisions.</p>
+  <p class="muted">Add/update staff accounts, profile records, attendance, leaves and documents.</p>
 </section>
 
 <section class="panel">
   <h3>Add New Staff</h3>
-  <form method="post" class="grid grid-4">
+  <form method="post" enctype="multipart/form-data" class="grid grid-4">
     <input type="hidden" name="action" value="create" />
     <label>Full Name<input name="full_name" required /></label>
     <label>Email<input type="email" name="email" required /></label>
     <label>Password<input type="password" name="password" required /></label>
     <label>Role
       <select name="role" required>
-        <option value="staff">Staff</option>
-        <option value="manager">Manager</option>
-        <option value="barista">Barista</option>
-        <option value="cashier">Cashier</option>
-        <option value="admin">Admin</option>
+        {% for role in staff_role_options %}
+        <option value="{{ role }}">{{ role.replace('_', ' ').title() }}</option>
+        {% endfor %}
       </select>
     </label>
     <label>Joining Date<input type="date" name="joining_date" /></label>
+    <label>DOB<input type="date" name="dob" /></label>
+    <label>Marital Status<input name="marital_status" /></label>
+    <label>Gender<input name="gender" /></label>
     <label>Phone<input name="phone" /></label>
     <label>Alternate Contact<input name="alternate_contact" /></label>
+    <label>Address<input name="address" /></label>
     <label>PAN<input name="pan_number" /></label>
+    <label>Govt ID Type
+      <select name="govt_id_type">
+        <option value="">--</option>
+        <option value="Aadhar">Aadhar</option>
+        <option value="PAN">PAN</option>
+        <option value="Driving License">Driving License</option>
+        <option value="Passport">Passport</option>
+      </select>
+    </label>
+    <label>Govt ID Number<input name="govt_id_number" /></label>
+    <label>Govt ID Upload<input type="file" name="govt_id_file" /></label>
+    <label>Photo Upload<input type="file" name="photo_file" accept="image/*" /></label>
     <label>Account Name<input name="bank_account_name" /></label>
     <label>Account Number<input name="bank_account_number" /></label>
     <label>IFSC<input name="bank_ifsc" /></label>
     <label>Bank Name<input name="bank_name" /></label>
-    <label class="full">Address<input name="address" /></label>
     <button type="submit">Add Staff Member</button>
   </form>
 </section>
@@ -40,114 +53,89 @@
     <table>
       <thead>
         <tr>
-          <th>Profile</th>
-          <th>Joining</th>
-          <th>Contact</th>
-          <th>PAN</th>
-          <th>Bank Details</th>
-          <th>Attendance Today</th>
-          <th>Latest Attendance</th>
-          <th>Leaves</th>
-          <th>Update</th>
-          <th>Archive</th>
-          <th>Delete</th>
+          <th>Profile</th><th>Attendance</th><th>Leaves</th><th>Edit</th><th>Actions</th>
         </tr>
       </thead>
       <tbody>
         {% for s in active_profiles %}
+        {% set is_cafe_admin = (s.user.email == "admin@brownberries.local") or (s.user.role == "admin" and s.user.full_name|lower == "cafe admin") %}
         <tr>
           <td>
             <strong>{{ s.user.full_name }}</strong><br />
             {{ s.user.email }}<br />
-            <span class="muted">{{ s.user.role }}</span>
-          </td>
-          <td>{{ s.joining_date or "-" }}</td>
-          <td>
-            {{ s.phone or "-" }}<br />
-            {{ s.alternate_contact or "-" }}<br />
-            <span class="muted">{{ s.address or "-" }}</span>
-          </td>
-          <td>{{ s.pan_number or "-" }}</td>
-          <td>
-            {{ s.bank_name or "-" }}<br />
-            {{ s.bank_account_name or "-" }}<br />
-            {{ s.bank_account_number or "-" }}<br />
-            {{ s.bank_ifsc or "-" }}
+            {{ s.user.role.replace('_', ' ').title() }}<br />
+            Joined: {{ s.joining_date or "-" }}<br />
+            DOB: {{ s.dob or "-" }}<br />
+            {{ s.gender or "-" }}, {{ s.marital_status or "-" }}<br />
+            Govt ID: {{ s.govt_id_type or "-" }} / {{ s.govt_id_number or "-" }}
           </td>
           <td>
             {% set mark = attendance_today.get(s.user_id) %}
-            {% if mark %}
-              {{ mark.status }}<br />
-              <span class="muted">{{ mark.attendance_date }}</span>
-            {% else %}
-              <span class="muted">Not logged</span>
-            {% endif %}
-          </td>
-          <td>
+            Today: {{ mark.status if mark else "Not logged" }}<br />
             {% set last_mark = attendance_latest.get(s.user_id) %}
-            {% if last_mark %}
-              {{ last_mark.status }}<br />
-              <span class="muted">{{ last_mark.attendance_date }}</span>
-            {% else %}
-              <span class="muted">No history</span>
-            {% endif %}
+            Last: {{ last_mark.status if last_mark else "-" }}{% if last_mark %} ({{ last_mark.attendance_date }}){% endif %}
           </td>
           <td>
             {% set leaves = leave_summary.get(s.user_id, {"pending": 0, "approved": 0}) %}
-            Pending: {{ leaves.pending }}<br />
-            Approved: {{ leaves.approved }}
+            Pending: {{ leaves.pending }}<br />Approved: {{ leaves.approved }}
           </td>
           <td>
-            <form method="post" class="grid">
+            <form method="post" enctype="multipart/form-data" class="grid">
               <input type="hidden" name="action" value="update" />
               <input type="hidden" name="user_id" value="{{ s.user_id }}" />
               <label>Name<input name="full_name" value="{{ s.user.full_name }}" required /></label>
               <label>Email<input type="email" name="email" value="{{ s.user.email }}" required /></label>
               <label>Role
                 <select name="role" required>
-                  <option value="staff" {% if s.user.role == "staff" %}selected{% endif %}>Staff</option>
-                  <option value="manager" {% if s.user.role == "manager" %}selected{% endif %}>Manager</option>
-                  <option value="barista" {% if s.user.role == "barista" %}selected{% endif %}>Barista</option>
-                  <option value="cashier" {% if s.user.role == "cashier" %}selected{% endif %}>Cashier</option>
-                  <option value="admin" {% if s.user.role == "admin" %}selected{% endif %}>Admin</option>
+                  {% for role in staff_role_options %}
+                  <option value="{{ role }}" {% if s.user.role == role %}selected{% endif %}>{{ role.replace('_', ' ').title() }}</option>
+                  {% endfor %}
                 </select>
               </label>
               <label>Joining<input type="date" name="joining_date" value="{{ s.joining_date or '' }}" /></label>
+              <label>DOB<input type="date" name="dob" value="{{ s.dob or '' }}" /></label>
+              <label>Marital Status<input name="marital_status" value="{{ s.marital_status or '' }}" /></label>
+              <label>Gender<input name="gender" value="{{ s.gender or '' }}" /></label>
               <label>Phone<input name="phone" value="{{ s.phone or '' }}" /></label>
               <label>Alt Contact<input name="alternate_contact" value="{{ s.alternate_contact or '' }}" /></label>
+              <label>Address<input name="address" value="{{ s.address or '' }}" /></label>
               <label>PAN<input name="pan_number" value="{{ s.pan_number or '' }}" /></label>
+              <label>Govt ID Type<input name="govt_id_type" value="{{ s.govt_id_type or '' }}" /></label>
+              <label>Govt ID Number<input name="govt_id_number" value="{{ s.govt_id_number or '' }}" /></label>
+              <label>New Govt ID Upload<input type="file" name="govt_id_file" /></label>
+              <label>New Photo Upload<input type="file" name="photo_file" accept="image/*" /></label>
               <label>Account Name<input name="bank_account_name" value="{{ s.bank_account_name or '' }}" /></label>
               <label>Account No<input name="bank_account_number" value="{{ s.bank_account_number or '' }}" /></label>
               <label>IFSC<input name="bank_ifsc" value="{{ s.bank_ifsc or '' }}" /></label>
               <label>Bank<input name="bank_name" value="{{ s.bank_name or '' }}" /></label>
-              <label>Address<input name="address" value="{{ s.address or '' }}" /></label>
               <label>Reset Password<input type="password" name="password" /></label>
               <label><input type="checkbox" name="active" {% if s.user.active %}checked{% endif %} /> Active</label>
               <button type="submit">Save</button>
             </form>
           </td>
           <td>
-            <form method="post">
+            <p><a class="button-link" href="{{ url_for('cafe.download_staff_id_card', user_id=s.user_id) }}">Download Staff ID</a></p>
+            {% if s.govt_id_file_path %}
+            <p><a class="button-link" href="{{ url_for('cafe.download_staff_govt_id', user_id=s.user_id) }}">Download Govt ID</a></p>
+            {% endif %}
+            <form method="post" class="inline">
               <input type="hidden" name="action" value="archive" />
               <input type="hidden" name="user_id" value="{{ s.user_id }}" />
               <button type="submit">Archive</button>
             </form>
-          </td>
-          <td>
-            {% set is_cafe_admin = (s.user.email == "admin@brownberries.local") or (s.user.role == "admin" and s.user.full_name|lower == "cafe admin") %}
             {% if is_cafe_admin %}
-              <button type="button" disabled>Admin Protected</button>
+            <button type="button" disabled>Admin Protected</button>
             {% else %}
-              <form method="post">
-                <input type="hidden" name="action" value="delete" />
-                <input type="hidden" name="user_id" value="{{ s.user_id }}" />
-                <button type="submit">Delete</button>
-              </form>
+            <form method="post" class="inline">
+              <input type="hidden" name="action" value="delete" />
+              <input type="hidden" name="user_id" value="{{ s.user_id }}" />
+              <button type="submit">Delete</button>
+            </form>
             {% endif %}
           </td>
         </tr>
         {% else %}
-        <tr><td colspan="11">No staff found.</td></tr>
+        <tr><td colspan="5">No staff found.</td></tr>
         {% endfor %}
       </tbody>
     </table>
@@ -155,7 +143,7 @@
 </section>
 
 <section class="panel">
-  <h3>Attendance Calendar</h3>
+  <h3>Attendance Calendar & Entry</h3>
   <form method="get" class="grid grid-4">
     <label>Staff Member
       <select name="attendance_user_id" required>
@@ -165,43 +153,48 @@
       </select>
     </label>
     <label>Month
-      <select name="attendance_month">
-        {% for m in range(1,13) %}
-        <option value="{{ m }}" {% if attendance_month == m %}selected{% endif %}>{{ m }}</option>
+      <select name="attendance_month">{% for m in range(1,13) %}<option value="{{ m }}" {% if attendance_month == m %}selected{% endif %}>{{ m }}</option>{% endfor %}</select>
+    </label>
+    <label>Year<input type="number" min="2000" max="2100" name="attendance_year" value="{{ attendance_year }}" /></label>
+    <button type="submit">View Calendar</button>
+  </form>
+  <form method="post" class="grid grid-4">
+    <input type="hidden" name="action" value="attendance_for_user" />
+    <label>Staff
+      <select name="target_user_id" required>
+        {% for s in active_profiles %}
+        <option value="{{ s.user_id }}" {% if attendance_user_id == s.user_id %}selected{% endif %}>{{ s.user.full_name }}</option>
         {% endfor %}
       </select>
     </label>
-    <label>Year
-      <input type="number" min="2000" max="2100" name="attendance_year" value="{{ attendance_year }}" />
+    <label>Date<input type="date" name="attendance_date" required /></label>
+    <label>Status
+      <select name="status">
+        <option value="present">Present</option>
+        <option value="half-day">Half Day</option>
+        <option value="absent">Absent</option>
+        <option value="on-leave">On Leave</option>
+      </select>
     </label>
-    <button type="submit">View Calendar</button>
+    <label>Notes<input name="notes" /></label>
+    <button type="submit">Save Attendance</button>
   </form>
   <p class="muted">Present = green, Half Day = yellow, Absent = red, On Leave = blue.</p>
   <div class="attendance-calendar">
-    <div class="cal-head">Mon</div>
-    <div class="cal-head">Tue</div>
-    <div class="cal-head">Wed</div>
-    <div class="cal-head">Thu</div>
-    <div class="cal-head">Fri</div>
-    <div class="cal-head">Sat</div>
-    <div class="cal-head">Sun</div>
+    <div class="cal-head">Mon</div><div class="cal-head">Tue</div><div class="cal-head">Wed</div><div class="cal-head">Thu</div><div class="cal-head">Fri</div><div class="cal-head">Sat</div><div class="cal-head">Sun</div>
     {% for week in attendance_month_rows %}
       {% for day in week %}
         {% if day == 0 %}
         <div class="cal-cell empty"></div>
         {% else %}
         {% set st = selected_attendance_map.get(day) %}
-        <div class="cal-cell">
-          <span class="day-dot {% if st == 'present' %}st-present{% elif st == 'half-day' %}st-half{% elif st == 'absent' %}st-absent{% elif st == 'on-leave' %}st-leave{% endif %}">{{ day }}</span>
-        </div>
+        <div class="cal-cell"><span class="day-dot {% if st == 'present' %}st-present{% elif st == 'half-day' %}st-half{% elif st == 'absent' %}st-absent{% elif st == 'on-leave' %}st-leave{% endif %}">{{ day }}</span></div>
         {% endif %}
       {% endfor %}
     {% endfor %}
   </div>
   {% if attendance_user_id %}
-  <p>
-    <a class="button-link" href="{{ url_for('cafe.export_staff_attendance', user_id=attendance_user_id, month=attendance_month, year=attendance_year) }}">Download Attendance (Month/Year)</a>
-  </p>
+  <p><a class="button-link" href="{{ url_for('cafe.export_staff_attendance', user_id=attendance_user_id, month=attendance_month, year=attendance_year) }}">Download Attendance (Month/Year)</a></p>
   {% endif %}
 </section>
 
@@ -209,16 +202,7 @@
   <h3>Leave Requests</h3>
   <div style="overflow:auto">
     <table>
-      <thead>
-        <tr>
-          <th>Staff</th>
-          <th>Type</th>
-          <th>Dates</th>
-          <th>Reason</th>
-          <th>Status</th>
-          <th>Admin Action</th>
-        </tr>
-      </thead>
+      <thead><tr><th>Staff</th><th>Type</th><th>Dates</th><th>Reason</th><th>Status</th><th>Admin Action</th></tr></thead>
       <tbody>
         {% for leave in leave_requests %}
         <tr>
@@ -245,22 +229,6 @@
         </tr>
         {% else %}
         <tr><td colspan="6">No leave requests yet.</td></tr>
-        {% endfor %}
-      </tbody>
-    </table>
-  </div>
-</section>
-
-<section class="panel">
-  <h3>Archived Staff</h3>
-  <div style="overflow:auto">
-    <table>
-      <thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Archived</th></tr></thead>
-      <tbody>
-        {% for s in archived_profiles %}
-        <tr><td>{{ s.user.full_name }}</td><td>{{ s.user.email }}</td><td>{{ s.user.role }}</td><td>Yes</td></tr>
-        {% else %}
-        <tr><td colspan="4">No archived staff members.</td></tr>
         {% endfor %}
       </tbody>
     </table>

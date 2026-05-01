@@ -10,10 +10,14 @@
     <h3>My Information</h3>
     {% if profile %}
     <p><strong>Joining Date:</strong> {{ profile.joining_date or "-" }}</p>
+    <p><strong>DOB:</strong> {{ profile.dob or "-" }}</p>
+    <p><strong>Gender:</strong> {{ profile.gender or "-" }}</p>
+    <p><strong>Marital Status:</strong> {{ profile.marital_status or "-" }}</p>
     <p><strong>Phone:</strong> {{ profile.phone or "-" }}</p>
     <p><strong>Alternate Contact:</strong> {{ profile.alternate_contact or "-" }}</p>
     <p><strong>Address:</strong> {{ profile.address or "-" }}</p>
     <p><strong>PAN:</strong> {{ profile.pan_number or "-" }}</p>
+    <p><strong>Govt ID:</strong> {{ profile.govt_id_type or "-" }} / {{ profile.govt_id_number or "-" }}</p>
     <p><strong>Bank:</strong> {{ profile.bank_name or "-" }}</p>
     <p><strong>Account Name:</strong> {{ profile.bank_account_name or "-" }}</p>
     <p><strong>Account Number:</strong> {{ profile.bank_account_number or "-" }}</p>
@@ -83,6 +87,17 @@
       </table>
     </div>
   </article>
+</section>
+
+<section class="panel">
+  <h3>Change Password</h3>
+  <form method="post" class="grid grid-4">
+    <input type="hidden" name="action" value="change_password" />
+    <label>Current Password<input type="password" name="current_password" required /></label>
+    <label>New Password<input type="password" name="new_password" required /></label>
+    <label>Confirm New Password<input type="password" name="confirm_password" required /></label>
+    <button type="submit">Update Password</button>
+  </form>
 </section>
 
 <section class="panel">

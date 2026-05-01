@@ -3,8 +3,17 @@
 <section class="panel">
   <h2>Books Inventory</h2>
   <form method="post" class="grid grid-4">
+    <input type="hidden" name="action" value="create" />
     <label>Title <input name="title" required /></label>
     <label>Author <input name="author" required /></label>
+    <label>Genre
+      <select name="genre">
+        <option value="">--</option>
+        {% for genre in book_genres %}
+        <option value="{{ genre }}">{{ genre }}</option>
+        {% endfor %}
+      </select>
+    </label>
     <label>Category <input name="category" /></label>
     <label>Shelf No <input name="shelf_no" required /></label>
     <label>Total Copies <input name="total_copies" type="number" min="1" required /></label>
@@ -12,15 +21,40 @@
   </form>
 </section>
 <section class="panel">
+  <form method="get" class="grid grid-4">
+    <label>Search Books <input name="q" value="{{ q or '' }}" placeholder="Title, author, genre, shelf..." /></label>
+    <button type="submit">Search</button>
+  </form>
   <table>
-    <tr><th>Title</th><th>Author</th><th>Shelf</th><th>Total</th><th>Available</th></tr>
+    <tr><th>Title</th><th>Author</th><th>Genre</th><th>Shelf</th><th>Total</th><th>Available</th><th>Edit</th></tr>
     {% for b in books %}
     <tr>
       <td>{{ b.title }}</td>
       <td>{{ b.author }}</td>
+      <td>{{ b.genre or "-" }}</td>
       <td>{{ b.shelf_no }}</td>
       <td>{{ b.total_copies }}</td>
       <td>{{ b.available_copies }}</td>
+      <td>
+        <form method="post" class="grid">
+          <input type="hidden" name="action" value="update" />
+          <input type="hidden" name="book_id" value="{{ b.id }}" />
+          <label>Title <input name="title" value="{{ b.title }}" required /></label>
+          <label>Author <input name="author" value="{{ b.author }}" required /></label>
+          <label>Genre
+            <select name="genre">
+              <option value="">--</option>
+              {% for genre in book_genres %}
+              <option value="{{ genre }}" {% if b.genre == genre %}selected{% endif %}>{{ genre }}</option>
+              {% endfor %}
+            </select>
+          </label>
+          <label>Category <input name="category" value="{{ b.category or '' }}" /></label>
+          <label>Shelf <input name="shelf_no" value="{{ b.shelf_no }}" required /></label>
+          <label>Total <input type="number" name="total_copies" min="1" value="{{ b.total_copies }}" required /></label>
+          <button type="submit">Save</button>
+        </form>
+      </td>
     </tr>
     {% endfor %}
   </table>

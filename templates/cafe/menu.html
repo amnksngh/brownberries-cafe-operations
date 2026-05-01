@@ -103,6 +103,13 @@
       </select>
     </label>
     <label>Name <input name="name" required /></label>
+    <label>Prep Station
+      <select name="prep_station" required>
+        {% for st in prep_station_options %}
+        <option value="{{ st }}">{{ st|title }}</option>
+        {% endfor %}
+      </select>
+    </label>
     <label>Image URL <input name="image_url" /></label>
     <label>Description <input name="description" /></label>
     <label>Calories <input name="calories" type="number" min="0" /></label>
@@ -115,7 +122,7 @@
 <section class="panel">
   <h2>Menu Items</h2>
   <table>
-    <tr><th>Item</th><th>Edit Item</th><th>Delete</th></tr>
+    <tr><th>Item</th><th>Station</th><th>Edit Item</th><th>Delete</th></tr>
     {% for item in items %}
     <tr>
       <td>
@@ -129,6 +136,9 @@
             <strong>{{ item.name }}</strong>
           </div>
         </div>
+      </td>
+      <td>
+        {{ item.prep_station|title }}
       </td>
       <td>
         <form method="post" action="{{ url_for('cafe.update_menu_item', item_id=item.id) }}" class="grid grid-4">
@@ -155,6 +165,13 @@
             </select>
           </label>
           <label>Name <input name="name" value="{{ item.name }}" required /></label>
+          <label>Prep Station
+            <select name="prep_station" required>
+              {% for st in prep_station_options %}
+              <option value="{{ st }}" {% if item.prep_station == st %}selected{% endif %}>{{ st|title }}</option>
+              {% endfor %}
+            </select>
+          </label>
           <label>Image URL <input name="image_url" value="{{ item.image_url or '' }}" /></label>
           <label>Description <input name="description" value="{{ item.description or '' }}" /></label>
           <label>Calories <input name="calories" type="number" min="0" value="{{ item.calories or '' }}" /></label>

@@ -20,9 +20,10 @@
     {% if g.current_user.role in ["admin", "manager", "cashier"] %}
     <a href="{{ url_for('cafe.cashier') }}">Cashier Desk</a>
     {% endif %}
-    <a href="{{ url_for('cafe.kitchen_display') }}">Kitchen Display</a>
+    <a href="{{ url_for('cafe.kitchen_display', station='kitchen') }}">Kitchen Display</a>
+    <a href="{{ url_for('cafe.kitchen_display', station='barista') }}">Barista Counter Display</a>
     <a href="{{ url_for('cafe.inventory') }}">Inventory Management</a>
-    {% if g.current_user.role == "admin" %}
+    {% if g.current_user.role in ["admin", "manager"] %}
     <a href="{{ url_for('cafe.staff') }}">Staff Management</a>
     {% else %}
     <a href="{{ url_for('cafe.my_staff') }}">My Staff Portal</a>

@@ -111,4 +111,5 @@ if __name__ == "__main__":
         debug=debug_mode,
         use_reloader=debug_mode,
         ssl_context=ssl_context,
+        allow_unsafe_werkzeug=True,
     )

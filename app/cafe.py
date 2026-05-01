@@ -1,13 +1,16 @@
 import json
 import calendar
+import os
 from datetime import date, datetime
 from io import BytesIO
 from uuid import uuid4
 
 import qrcode
+from PIL import Image, ImageDraw, ImageFont
 from flask import Blueprint, Response, current_app, flash, g, redirect, render_template, request, url_for
 from openpyxl import Workbook
-from werkzeug.security import generate_password_hash
+from werkzeug.security import check_password_hash, generate_password_hash
+from werkzeug.utils import secure_filename
 
 from .auth_helpers import login_required, roles_required
 from .extensions import db, socketio
@@ -28,11 +31,25 @@ from .models import (
 
 bp = Blueprint("cafe", __name__, url_prefix="/cafe")
 
-STAFF_ROLES = ("admin", "manager", "staff", "barista", "cashier")
+STAFF_ROLE_OPTIONS = (
+    "admin",
+    "manager",
+    "cashier",
+    "staff",
+    "server",
+    "chef",
+    "barista",
+    "librarian",
+    "inventory_manager",
+    "cleaner",
+    "delivery_partner",
+)
+STAFF_ROLES = STAFF_ROLE_OPTIONS
+PREP_STATION_OPTIONS = ("kitchen", "barista")
 
 
 def _is_staff_user(user: User) -> bool:
-    return user.role in STAFF_ROLES and user.email != "qr.guest@brownberries.local"
+    return user.role in STAFF_ROLE_OPTIONS and user.email != "qr.guest@brownberries.local"
 
 
 def _ensure_staff_profile(user: User) -> StaffProfile:
@@ -50,6 +67,51 @@ def _is_protected_admin(user: User) -> bool:
     )
 
 
+def _save_uploaded_file(file_obj, subdir: str, prefix: str):
+    if not file_obj or not file_obj.filename:
+        return None
+    root = current_app.config["UPLOADS_ROOT"]
+    ext = os.path.splitext(secure_filename(file_obj.filename))[1].lower() or ".bin"
+    filename = f"{prefix}-{uuid4().hex[:10]}{ext}"
+    folder = os.path.join(root, subdir)
+    os.makedirs(folder, exist_ok=True)
+    full_path = os.path.join(folder, filename)
+    file_obj.save(full_path)
+    return os.path.relpath(full_path, root)
+
+
+def _build_staff_id_card(user: User, profile: StaffProfile):
+    canvas = Image.new("RGB", (960, 540), "#f6eee5")
+    draw = ImageDraw.Draw(canvas)
+    title_font = ImageFont.load_default()
+    text_font = ImageFont.load_default()
+    draw.rectangle((24, 24, 936, 516), outline="#3f2b1d", width=4)
+    logo_path = os.path.join(current_app.static_folder, "images", "cafe-logo.png")
+    if os.path.exists(logo_path):
+        logo = Image.open(logo_path).convert("RGBA").resize((140, 140))
+        canvas.paste(logo, (50, 42), logo)
+    draw.text((220, 58), "Brownberries Cafe Staff ID", fill="#2b1d13", font=title_font)
+    draw.text((220, 95), f"Name: {user.full_name}", fill="#2b1d13", font=text_font)
+    draw.text((220, 122), f"Role: {user.role.replace('_', ' ').title()}", fill="#2b1d13", font=text_font)
+    draw.text((220, 149), f"Email: {user.email}", fill="#2b1d13", font=text_font)
+    draw.text((220, 176), f"Phone: {profile.phone or '-'}", fill="#2b1d13", font=text_font)
+    draw.text((220, 203), f"DOB: {profile.dob or '-'}", fill="#2b1d13", font=text_font)
+    draw.text((220, 230), f"Gender: {profile.gender or '-'}", fill="#2b1d13", font=text_font)
+    draw.text((220, 257), f"Govt ID: {(profile.govt_id_type or '-')} / {(profile.govt_id_number or '-')}", fill="#2b1d13", font=text_font)
+    draw.text((220, 284), f"Joined: {profile.joining_date or '-'}", fill="#2b1d13", font=text_font)
+    photo_box = (50, 220, 180, 380)
+    draw.rectangle(photo_box, outline="#7d6654", width=2)
+    if profile.photo_file_path:
+        photo_path = os.path.join(current_app.config["UPLOADS_ROOT"], profile.photo_file_path)
+        if os.path.exists(photo_path):
+            photo = Image.open(photo_path).convert("RGB").resize((120, 150))
+            canvas.paste(photo, (55, 225))
+    out = BytesIO()
+    canvas.save(out, format="PNG")
+    out.seek(0)
+    return out
+
+
 def _serialize_order(order: CafeOrder):
     return {
         "id": order.id,
@@ -63,6 +125,7 @@ def _serialize_order(order: CafeOrder):
             {
                 "name": item.menu_item.name if item.menu_item else "-",
                 "qty": item.quantity,
+                "prep_station": item.menu_item.prep_station if item.menu_item else "kitchen",
             }
             for item in order.order_items
         ],
@@ -308,6 +371,7 @@ def menu():
             description=request.form.get("description", "").strip() or None,
             calories=int(request.form["calories"]) if request.form.get("calories") else None,
             price=float(request.form["price"]),
+            prep_station=request.form.get("prep_station", "kitchen"),
             available=True if request.form.get("available") else False,
         )
         db.session.add(item)
@@ -320,6 +384,7 @@ def menu():
         categories=MenuCategory.query.order_by(MenuCategory.name).all(),
         subcategories=MenuSubcategory.query.order_by(MenuSubcategory.name).all(),
         menu_types=MenuType.query.order_by(MenuType.name).all(),
+        prep_station_options=PREP_STATION_OPTIONS,
     )
 
 
@@ -508,6 +573,7 @@ def update_menu_item(item_id):
     item.description = request.form.get("description", "").strip() or None
     item.calories = int(request.form["calories"]) if request.form.get("calories") else None
     item.price = float(request.form["price"])
+    item.prep_station = request.form.get("prep_station", "kitchen")
     item.available = True if request.form.get("available") else False
     db.session.commit()
     flash("Menu item updated.", "success")
@@ -528,7 +594,7 @@ def delete_menu_item(item_id):
 
 
 @bp.route("/orders", methods=["GET", "POST"])
-@roles_required("admin", "manager", "staff", "barista", "cashier")
+@roles_required("admin", "manager", "staff", "server", "barista", "chef", "cashier")
 def orders():
     if request.method == "POST":
         selected_table_id = int(request.form["table_id"])
@@ -702,18 +768,31 @@ def table_order():
 
 
 @bp.route("/kitchen")
-@roles_required("admin", "manager", "staff", "barista", "cashier")
+@roles_required("admin", "manager", "staff", "server", "barista", "chef", "cashier")
 def kitchen_display():
+    station = (request.args.get("station") or "kitchen").strip().lower()
+    if station not in PREP_STATION_OPTIONS:
+        station = "kitchen"
     orders = (
         CafeOrder.query.filter(CafeOrder.status.in_(["open", "preparing", "ready"]))
         .order_by(CafeOrder.created_at.asc())
         .all()
     )
-    return render_template("cafe/kitchen_display.html", orders=orders)
+    station_orders = []
+    for order in orders:
+        if any((oi.menu_item and oi.menu_item.prep_station == station) for oi in order.order_items):
+            station_orders.append(order)
+    return render_template("cafe/kitchen_display.html", orders=station_orders, station=station)
+
+
+@bp.route("/barista")
+@roles_required("admin", "manager", "staff", "server", "barista", "chef", "cashier")
+def barista_display():
+    return redirect(url_for("cafe.kitchen_display", station="barista"))
 
 
 @bp.route("/orders/<int:order_id>/status", methods=["POST"])
-@roles_required("admin", "manager", "staff", "barista", "cashier")
+@roles_required("admin", "manager", "staff", "server", "barista", "chef", "cashier")
 def update_order_status(order_id):
     order = CafeOrder.query.get_or_404(order_id)
     new_status = request.form["status"]
@@ -730,7 +809,7 @@ def update_order_status(order_id):
 
 
 @bp.route("/inventory", methods=["GET", "POST"])
-@roles_required("admin", "manager", "barista")
+@roles_required("admin", "manager", "barista", "inventory_manager")
 def inventory():
     if request.method == "POST":
         item = InventoryItem(
@@ -800,7 +879,7 @@ def export_stats():
 
 
 @bp.route("/staff", methods=["GET", "POST"])
-@roles_required("admin")
+@roles_required("admin", "manager")
 def staff():
     if request.method == "POST":
         action = request.form.get("action", "create")
@@ -812,7 +891,7 @@ def staff():
                 flash("A user with this email already exists.", "error")
                 return redirect(url_for("cafe.staff"))
             role = request.form.get("role", "staff")
-            if role not in ["manager", "staff", "barista", "admin"]:
+            if role not in STAFF_ROLE_OPTIONS:
                 role = "staff"
 
             new_user = User(
@@ -831,6 +910,9 @@ def staff():
                 if request.form.get("joining_date")
                 else None
             )
+            profile.dob = date.fromisoformat(request.form["dob"]) if request.form.get("dob") else None
+            profile.marital_status = request.form.get("marital_status", "").strip() or None
+            profile.gender = request.form.get("gender", "").strip() or None
             profile.phone = request.form.get("phone", "").strip() or None
             profile.alternate_contact = request.form.get("alternate_contact", "").strip() or None
             profile.address = request.form.get("address", "").strip() or None
@@ -839,6 +921,14 @@ def staff():
             profile.bank_account_number = request.form.get("bank_account_number", "").strip() or None
             profile.bank_ifsc = request.form.get("bank_ifsc", "").strip() or None
             profile.bank_name = request.form.get("bank_name", "").strip() or None
+            profile.govt_id_type = request.form.get("govt_id_type", "").strip() or None
+            profile.govt_id_number = request.form.get("govt_id_number", "").strip() or None
+            govt_doc = request.files.get("govt_id_file")
+            if govt_doc and govt_doc.filename:
+                profile.govt_id_file_path = _save_uploaded_file(govt_doc, "staff_docs", f"govt-{new_user.id}")
+            photo_file = request.files.get("photo_file")
+            if photo_file and photo_file.filename:
+                profile.photo_file_path = _save_uploaded_file(photo_file, "staff_photos", f"photo-{new_user.id}")
             profile.archived = False
             db.session.commit()
             flash("Staff member added.", "success")
@@ -855,6 +945,8 @@ def staff():
                 flash("Another user already has this email.", "error")
                 return redirect(url_for("cafe.staff"))
             user.role = request.form.get("role", user.role)
+            if user.role not in STAFF_ROLE_OPTIONS:
+                user.role = "staff"
             user.active = True if request.form.get("active") else False
             new_password = request.form.get("password", "").strip()
             if new_password:
@@ -865,6 +957,9 @@ def staff():
                 if request.form.get("joining_date")
                 else None
             )
+            profile.dob = date.fromisoformat(request.form["dob"]) if request.form.get("dob") else None
+            profile.marital_status = request.form.get("marital_status", "").strip() or None
+            profile.gender = request.form.get("gender", "").strip() or None
             profile.phone = request.form.get("phone", "").strip() or None
             profile.alternate_contact = request.form.get("alternate_contact", "").strip() or None
             profile.address = request.form.get("address", "").strip() or None
@@ -873,6 +968,14 @@ def staff():
             profile.bank_account_number = request.form.get("bank_account_number", "").strip() or None
             profile.bank_ifsc = request.form.get("bank_ifsc", "").strip() or None
             profile.bank_name = request.form.get("bank_name", "").strip() or None
+            profile.govt_id_type = request.form.get("govt_id_type", "").strip() or None
+            profile.govt_id_number = request.form.get("govt_id_number", "").strip() or None
+            govt_doc = request.files.get("govt_id_file")
+            if govt_doc and govt_doc.filename:
+                profile.govt_id_file_path = _save_uploaded_file(govt_doc, "staff_docs", f"govt-{user.id}")
+            photo_file = request.files.get("photo_file")
+            if photo_file and photo_file.filename:
+                profile.photo_file_path = _save_uploaded_file(photo_file, "staff_photos", f"photo-{user.id}")
             profile.archived = not user.active
             db.session.commit()
             flash("Staff member updated.", "success")
@@ -914,6 +1017,30 @@ def staff():
             db.session.commit()
             flash("Leave request updated.", "success")
             return redirect(url_for("cafe.staff"))
+
+        if action == "attendance_for_user":
+            target_user_id = int(request.form["target_user_id"])
+            attendance_date = date.fromisoformat(request.form["attendance_date"])
+            status = request.form.get("status", "present").strip()
+            notes = request.form.get("notes", "").strip() or None
+            existing = StaffAttendance.query.filter_by(
+                user_id=target_user_id, attendance_date=attendance_date
+            ).first()
+            if existing:
+                existing.status = status
+                existing.notes = notes
+            else:
+                db.session.add(
+                    StaffAttendance(
+                        user_id=target_user_id,
+                        attendance_date=attendance_date,
+                        status=status,
+                        notes=notes,
+                    )
+                )
+            db.session.commit()
+            flash("Attendance saved for selected staff member.", "success")
+            return redirect(url_for("cafe.staff", attendance_user_id=target_user_id))
 
     staff_users = (
         User.query.filter(User.role.in_(STAFF_ROLES), User.email != "qr.guest@brownberries.local")
@@ -985,11 +1112,12 @@ def staff():
         attendance_year=selected_year,
         attendance_month_rows=month_rows,
         selected_attendance_map=selected_attendance_map,
+        staff_role_options=STAFF_ROLE_OPTIONS,
     )
 
 
 @bp.route("/staff/attendance/export")
-@roles_required("admin")
+@roles_required("admin", "manager")
 def export_staff_attendance():
     user_id = request.args.get("user_id", type=int)
     month = request.args.get("month", type=int)
@@ -1028,6 +1156,46 @@ def export_staff_attendance():
         headers={
             "Content-Disposition": f'attachment; filename="{filename}"',
             "Content-Type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        },
+    )
+
+
+@bp.route("/staff/<int:user_id>/id-card")
+@roles_required("admin", "manager")
+def download_staff_id_card(user_id):
+    user = User.query.get_or_404(user_id)
+    profile = _ensure_staff_profile(user)
+    output = _build_staff_id_card(user, profile)
+    filename = f"{user.full_name.lower().replace(' ', '-')}-staff-id.png"
+    return Response(
+        output.getvalue(),
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Content-Type": "image/png",
+        },
+    )
+
+
+@bp.route("/staff/<int:user_id>/govt-id")
+@roles_required("admin", "manager")
+def download_staff_govt_id(user_id):
+    user = User.query.get_or_404(user_id)
+    profile = _ensure_staff_profile(user)
+    if not profile.govt_id_file_path:
+        flash("No Govt ID file uploaded for this staff member.", "error")
+        return redirect(url_for("cafe.staff"))
+    full_path = os.path.join(current_app.config["UPLOADS_ROOT"], profile.govt_id_file_path)
+    if not os.path.exists(full_path):
+        flash("Govt ID file is missing from storage.", "error")
+        return redirect(url_for("cafe.staff"))
+    with open(full_path, "rb") as f:
+        data = f.read()
+    filename = os.path.basename(full_path)
+    return Response(
+        data,
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Content-Type": "application/octet-stream",
         },
     )
 
@@ -1087,6 +1255,24 @@ def my_staff():
             )
             db.session.commit()
             flash("Leave request submitted.", "success")
+            return redirect(url_for("cafe.my_staff"))
+
+        if action == "change_password":
+            current_password = request.form.get("current_password", "")
+            new_password = request.form.get("new_password", "")
+            confirm_password = request.form.get("confirm_password", "")
+            if not check_password_hash(user.password_hash, current_password):
+                flash("Current password is incorrect.", "error")
+                return redirect(url_for("cafe.my_staff"))
+            if len(new_password) < 6:
+                flash("New password must be at least 6 characters.", "error")
+                return redirect(url_for("cafe.my_staff"))
+            if new_password != confirm_password:
+                flash("New password and confirmation do not match.", "error")
+                return redirect(url_for("cafe.my_staff"))
+            user.password_hash = generate_password_hash(new_password)
+            db.session.commit()
+            flash("Password changed successfully.", "success")
             return redirect(url_for("cafe.my_staff"))
 
     attendance_logs = (

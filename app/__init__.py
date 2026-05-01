@@ -1,6 +1,8 @@
 import os
+from pathlib import Path
 
 from flask import Flask
+from sqlalchemy import text
 from werkzeug.security import generate_password_hash
 
 from .auth_helpers import load_current_user
@@ -9,6 +11,41 @@ from .extensions import db, socketio
 from .library import bp as library_bp
 from .main import bp as main_bp
 from .models import SubscriptionPlan, User
+
+
+def _ensure_sqlite_schema_columns():
+    # Lightweight forward-compatible schema patching for SQLite deployments without migrations.
+    column_specs = {
+        "menu_item": {
+            "prep_station": "TEXT NOT NULL DEFAULT 'kitchen'",
+        },
+        "staff_profile": {
+            "dob": "DATE",
+            "marital_status": "TEXT",
+            "gender": "TEXT",
+            "govt_id_type": "TEXT",
+            "govt_id_number": "TEXT",
+            "govt_id_file_path": "TEXT",
+            "photo_file_path": "TEXT",
+        },
+        "library_member": {
+            "member_code": "TEXT",
+        },
+        "book": {
+            "genre": "TEXT",
+        },
+    }
+    for table_name, cols in column_specs.items():
+        existing = {
+            row[1]
+            for row in db.session.execute(text(f"PRAGMA table_info({table_name})")).fetchall()
+        }
+        for col, spec in cols.items():
+            if col not in existing:
+                db.session.execute(
+                    text(f"ALTER TABLE {table_name} ADD COLUMN {col} {spec}")
+                )
+    db.session.commit()
 
 
 def create_app():
@@ -25,11 +62,19 @@ def create_app():
         PUBLIC_BASE_URL=os.getenv("PUBLIC_BASE_URL", "").strip()
         or "https://transactions-computers-blvd-directions.trycloudflare.com",
     )
+    Path(app.instance_path).mkdir(parents=True, exist_ok=True)
+    uploads_root = Path(app.instance_path) / "uploads"
+    (uploads_root / "staff_ids").mkdir(parents=True, exist_ok=True)
+    (uploads_root / "staff_docs").mkdir(parents=True, exist_ok=True)
+    (uploads_root / "staff_photos").mkdir(parents=True, exist_ok=True)
+    (uploads_root / "library_cards").mkdir(parents=True, exist_ok=True)
+    app.config["UPLOADS_ROOT"] = str(uploads_root)
 
     db.init_app(app)
     socketio.init_app(app)
     with app.app_context():
         db.create_all()
+        _ensure_sqlite_schema_columns()
     app.before_request(load_current_user)
     app.register_blueprint(main_bp)
     app.register_blueprint(cafe_bp)
