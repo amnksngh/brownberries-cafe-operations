@@ -3,6 +3,9 @@
 <section class="panel">
   <h2>Staff Management</h2>
   <p class="muted">Add/update staff accounts, profile records, attendance, leaves and documents.</p>
+  {% if g.current_user.role == "admin" %}
+  <p><a class="button-link" href="{{ url_for('cafe.user_types') }}">Manage User Types & Access</a></p>
+  {% endif %}
 </section>
 
 <section class="panel">
@@ -16,6 +19,14 @@
       <select name="role" required>
         {% for role in staff_role_options %}
         <option value="{{ role }}">{{ role.replace('_', ' ').title() }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>User Type
+      <select name="user_type_id">
+        <option value="">--</option>
+        {% for ut in user_types %}
+        <option value="{{ ut.id }}">{{ ut.name }}</option>
         {% endfor %}
       </select>
     </label>
@@ -71,9 +82,9 @@
           </td>
           <td>
             {% set mark = attendance_today.get(s.user_id) %}
-            Today: {{ mark.status if mark else "Not logged" }}<br />
+            Today: {{ mark.status.replace("_"," ").title() if mark else "Not logged" }}<br />
             {% set last_mark = attendance_latest.get(s.user_id) %}
-            Last: {{ last_mark.status if last_mark else "-" }}{% if last_mark %} ({{ last_mark.attendance_date }}){% endif %}
+            Last: {{ last_mark.status.replace("_"," ").title() if last_mark else "-" }}{% if last_mark %} ({{ last_mark.attendance_date }}){% endif %}
           </td>
           <td>
             {% set leaves = leave_summary.get(s.user_id, {"pending": 0, "approved": 0}) %}
@@ -89,6 +100,14 @@
                 <select name="role" required>
                   {% for role in staff_role_options %}
                   <option value="{{ role }}" {% if s.user.role == role %}selected{% endif %}>{{ role.replace('_', ' ').title() }}</option>
+                  {% endfor %}
+                </select>
+              </label>
+              <label>User Type
+                <select name="user_type_id">
+                  <option value="">--</option>
+                  {% for ut in user_types %}
+                  <option value="{{ ut.id }}" {% if s.user.user_type_id == ut.id %}selected{% endif %}>{{ ut.name }}</option>
                   {% endfor %}
                 </select>
               </label>
@@ -170,10 +189,11 @@
     <label>Date<input type="date" name="attendance_date" required /></label>
     <label>Status
       <select name="status">
-        <option value="present">Present</option>
-        <option value="half-day">Half Day</option>
+        <option value="present_all_day">Present All Day</option>
+        <option value="first_half">First Half</option>
+        <option value="second_half">Second Half</option>
         <option value="absent">Absent</option>
-        <option value="on-leave">On Leave</option>
+        <option value="on_leave">On Leave</option>
       </select>
     </label>
     <label>Notes<input name="notes" /></label>
@@ -188,7 +208,7 @@
         <div class="cal-cell empty"></div>
         {% else %}
         {% set st = selected_attendance_map.get(day) %}
-        <div class="cal-cell"><span class="day-dot {% if st == 'present' %}st-present{% elif st == 'half-day' %}st-half{% elif st == 'absent' %}st-absent{% elif st == 'on-leave' %}st-leave{% endif %}">{{ day }}</span></div>
+        <div class="cal-cell"><span class="day-dot {% if st in ['present','present_all_day'] %}st-present{% elif st in ['half-day','first_half','second_half'] %}st-half{% elif st == 'absent' %}st-absent{% elif st in ['on-leave','on_leave'] %}st-leave{% endif %}">{{ day }}</span></div>
         {% endif %}
       {% endfor %}
     {% endfor %}

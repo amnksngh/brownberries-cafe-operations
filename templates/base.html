@@ -23,6 +23,7 @@
       {% if g.current_user %}
       <nav>
         <a href="{{ url_for('main.dashboard') }}">Home</a>
+        <a href="{{ url_for('main.profile') }}">Profile</a>
         <a href="{{ url_for('cafe.home') }}">Cafe</a>
         {% if g.current_user.role in ["admin", "manager", "cashier"] %}
         <a href="{{ url_for('cafe.cashier') }}">Cashier</a>

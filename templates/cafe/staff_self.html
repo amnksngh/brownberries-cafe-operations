@@ -34,10 +34,11 @@
       <label>Date<input type="date" name="attendance_date" required /></label>
       <label>Status
         <select name="status">
-          <option value="present">Present</option>
+          <option value="present_all_day">Present All Day</option>
+          <option value="first_half">First Half</option>
+          <option value="second_half">Second Half</option>
           <option value="absent">Absent</option>
-          <option value="half-day">Half Day</option>
-          <option value="on-leave">On Leave</option>
+          <option value="on_leave">On Leave</option>
         </select>
       </label>
       <label>Notes<input name="notes" /></label>
@@ -111,7 +112,7 @@
         {% for log in attendance_logs %}
         <tr>
           <td>{{ log.attendance_date }}</td>
-          <td>{{ log.status }}</td>
+          <td>{{ log.status.replace("_", " ").title() if log.status else "-" }}</td>
           <td>{{ log.notes or "-" }}</td>
         </tr>
         {% else %}

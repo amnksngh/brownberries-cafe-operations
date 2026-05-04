@@ -5,6 +5,7 @@ from ipaddress import ip_address
 from pathlib import Path
 
 from app import create_app
+from app.deploy_config import load_deployment_config
 from app.extensions import socketio
 
 app = create_app()
@@ -72,13 +73,15 @@ def _ensure_ip_cert(lan_ip: str):
 
 
 if __name__ == "__main__":
-    host = os.getenv("HOST", "0.0.0.0")
-    port = int(os.getenv("PORT", "5050"))
-    enable_https = os.getenv("ENABLE_HTTPS", "0") == "1"
-    cert_file = os.getenv("SSL_CERT_FILE", "").strip()
-    key_file = os.getenv("SSL_KEY_FILE", "").strip()
+    deploy_cfg = load_deployment_config(app.instance_path)
+    host = deploy_cfg.get("HOST", "0.0.0.0")
+    port = int(str(deploy_cfg.get("PORT", "5050")))
+    enable_https = str(deploy_cfg.get("ENABLE_HTTPS", "0")) == "1"
+    cert_file = str(deploy_cfg.get("SSL_CERT_FILE", "")).strip()
+    key_file = str(deploy_cfg.get("SSL_KEY_FILE", "")).strip()
     scheme = "https" if enable_https else "http"
-    lan_ip = _detect_lan_ip()
+    lan_ip_override = str(deploy_cfg.get("LAN_IP_OVERRIDE", "")).strip()
+    lan_ip = lan_ip_override or _detect_lan_ip()
     if enable_https and cert_file and key_file:
         ssl_context = (cert_file, key_file)
     elif enable_https:
@@ -99,7 +102,7 @@ if __name__ == "__main__":
             print(f"Cert: {generated_cert_file}")
             print(f"Key:  {generated_key_file}")
 
-    debug_mode = os.getenv("DEBUG", "1") == "1"
+    debug_mode = str(deploy_cfg.get("DEBUG", "1")) == "1"
     if enable_https:
         # Keep HTTPS stable for mobile browsers; avoid auto-reloader cert churn.
         debug_mode = False

@@ -4,6 +4,39 @@ from flask import g, redirect, request, session, url_for
 
 from .models import User
 
+ENDPOINT_PERMISSIONS = {
+    "cafe.home": "can_access_cafe",
+    "cafe.staff": "can_manage_staff",
+    "cafe.user_types": "can_manage_staff",
+    "cafe.menu": "can_manage_menu",
+    "cafe.add_category": "can_manage_menu",
+    "cafe.add_subcategory": "can_manage_menu",
+    "cafe.add_type": "can_manage_menu",
+    "cafe.update_category": "can_manage_menu",
+    "cafe.update_subcategory": "can_manage_menu",
+    "cafe.update_type": "can_manage_menu",
+    "cafe.delete_category": "can_manage_menu",
+    "cafe.delete_subcategory": "can_manage_menu",
+    "cafe.delete_type": "can_manage_menu",
+    "cafe.update_menu_item": "can_manage_menu",
+    "cafe.delete_menu_item": "can_manage_menu",
+    "cafe.orders": "can_manage_orders",
+    "cafe.kitchen_display": "can_manage_kitchen",
+    "cafe.barista_display": "can_manage_kitchen",
+    "cafe.inventory": "can_manage_inventory",
+    "cafe.cashier": "can_manage_cashier",
+    "cafe.stats": "can_manage_stats",
+    "cafe.export_stats": "can_manage_stats",
+    "library.home": "can_access_library",
+    "library.members": "can_manage_library_members",
+    "library.books": "can_manage_library_books",
+    "library.loans": "can_manage_library_loans",
+    "library.reissue": "can_manage_library_loans",
+    "library.return_book": "can_manage_library_loans",
+    "library.payments": "can_manage_library_payments",
+    "library.plans": "can_manage_library_plans",
+}
+
 
 def load_current_user():
     user_id = session.get("user_id")
@@ -26,9 +59,13 @@ def roles_required(*roles):
         def wrapped(*args, **kwargs):
             if not g.current_user:
                 return redirect(url_for("main.login", next=request.path))
-            if g.current_user.role not in roles:
-                return redirect(url_for("main.dashboard"))
-            return view(*args, **kwargs)
+            if g.current_user.role in roles:
+                return view(*args, **kwargs)
+            user_type = getattr(g.current_user, "user_type", None)
+            perm_name = ENDPOINT_PERMISSIONS.get(request.endpoint or "")
+            if user_type and perm_name and getattr(user_type, perm_name, False):
+                return view(*args, **kwargs)
+            return redirect(url_for("main.dashboard"))
 
         return wrapped
 

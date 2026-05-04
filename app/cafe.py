@@ -24,6 +24,7 @@ from .models import (
     MenuSubcategory,
     MenuType,
     StaffAttendance,
+    UserType,
     StaffLeaveRequest,
     StaffProfile,
     User,
@@ -594,7 +595,7 @@ def delete_menu_item(item_id):
 
 
 @bp.route("/orders", methods=["GET", "POST"])
-@roles_required("admin", "manager", "staff", "server", "barista", "chef", "cashier")
+@login_required
 def orders():
     if request.method == "POST":
         selected_table_id = int(request.form["table_id"])
@@ -768,7 +769,7 @@ def table_order():
 
 
 @bp.route("/kitchen")
-@roles_required("admin", "manager", "staff", "server", "barista", "chef", "cashier")
+@login_required
 def kitchen_display():
     station = (request.args.get("station") or "kitchen").strip().lower()
     if station not in PREP_STATION_OPTIONS:
@@ -786,7 +787,7 @@ def kitchen_display():
 
 
 @bp.route("/barista")
-@roles_required("admin", "manager", "staff", "server", "barista", "chef", "cashier")
+@login_required
 def barista_display():
     return redirect(url_for("cafe.kitchen_display", station="barista"))
 
@@ -899,6 +900,7 @@ def staff():
                 email=email,
                 password_hash=generate_password_hash(request.form["password"]),
                 role=role,
+                user_type_id=int(request.form["user_type_id"]) if request.form.get("user_type_id") else None,
                 active=True,
             )
             db.session.add(new_user)
@@ -947,6 +949,7 @@ def staff():
             user.role = request.form.get("role", user.role)
             if user.role not in STAFF_ROLE_OPTIONS:
                 user.role = "staff"
+            user.user_type_id = int(request.form["user_type_id"]) if request.form.get("user_type_id") else None
             user.active = True if request.form.get("active") else False
             new_password = request.form.get("password", "").strip()
             if new_password:
@@ -1021,7 +1024,7 @@ def staff():
         if action == "attendance_for_user":
             target_user_id = int(request.form["target_user_id"])
             attendance_date = date.fromisoformat(request.form["attendance_date"])
-            status = request.form.get("status", "present").strip()
+            status = request.form.get("status", "present_all_day").strip()
             notes = request.form.get("notes", "").strip() or None
             existing = StaffAttendance.query.filter_by(
                 user_id=target_user_id, attendance_date=attendance_date
@@ -1113,7 +1116,69 @@ def staff():
         attendance_month_rows=month_rows,
         selected_attendance_map=selected_attendance_map,
         staff_role_options=STAFF_ROLE_OPTIONS,
+        user_types=UserType.query.order_by(UserType.name.asc()).all(),
     )
+
+
+@bp.route("/user-types", methods=["GET", "POST"])
+@roles_required("admin")
+def user_types():
+    if request.method == "POST":
+        action = request.form.get("action", "create")
+        if action == "create":
+            name = request.form.get("name", "").strip()
+            if not name:
+                flash("User type name is required.", "error")
+                return redirect(url_for("cafe.user_types"))
+            if UserType.query.filter(db.func.lower(UserType.name) == name.lower()).first():
+                flash("User type already exists.", "error")
+                return redirect(url_for("cafe.user_types"))
+            ut = UserType(name=name)
+            for field in [
+                "can_access_cafe", "can_access_library", "can_manage_staff", "can_manage_menu",
+                "can_manage_orders", "can_manage_kitchen", "can_manage_inventory", "can_manage_cashier",
+                "can_manage_stats", "can_manage_library_members", "can_manage_library_books",
+                "can_manage_library_loans", "can_manage_library_payments", "can_manage_library_plans",
+                "can_view_staff_profiles", "can_upload_salary",
+            ]:
+                setattr(ut, field, True if request.form.get(field) else False)
+            # Operational requirement: all roles can take orders and view running orders.
+            ut.can_manage_orders = True
+            ut.can_manage_kitchen = True
+            db.session.add(ut)
+            db.session.commit()
+            flash("User type created.", "success")
+            return redirect(url_for("cafe.user_types"))
+        if action == "update":
+            ut = UserType.query.get_or_404(int(request.form["user_type_id"]))
+            ut.name = request.form.get("name", ut.name).strip() or ut.name
+            for field in [
+                "can_access_cafe", "can_access_library", "can_manage_staff", "can_manage_menu",
+                "can_manage_orders", "can_manage_kitchen", "can_manage_inventory", "can_manage_cashier",
+                "can_manage_stats", "can_manage_library_members", "can_manage_library_books",
+                "can_manage_library_loans", "can_manage_library_payments", "can_manage_library_plans",
+                "can_view_staff_profiles", "can_upload_salary",
+            ]:
+                setattr(ut, field, True if request.form.get(f"{field}_{ut.id}") else False)
+            ut.can_manage_orders = True
+            ut.can_manage_kitchen = True
+            db.session.commit()
+            flash("User type updated.", "success")
+            return redirect(url_for("cafe.user_types"))
+        if action == "delete":
+            ut = UserType.query.get_or_404(int(request.form["user_type_id"]))
+            in_use = User.query.filter_by(user_type_id=ut.id).count()
+            if in_use > 0:
+                flash(
+                    f"Cannot delete role '{ut.name}' because it is assigned to {in_use} user(s). Reassign users first.",
+                    "error",
+                )
+                return redirect(url_for("cafe.user_types"))
+            db.session.delete(ut)
+            db.session.commit()
+            flash("Role template deleted.", "success")
+            return redirect(url_for("cafe.user_types"))
+    return render_template("cafe/user_types.html", user_types=UserType.query.order_by(UserType.name.asc()).all())
 
 
 @bp.route("/staff/attendance/export")
@@ -1221,7 +1286,7 @@ def my_staff():
                 user_id=user.id, attendance_date=attendance_date
             ).first()
             if existing:
-                existing.status = request.form.get("status", "present")
+                existing.status = request.form.get("status", "present_all_day")
                 existing.notes = request.form.get("notes", "").strip() or None
                 flash("Attendance updated.", "success")
             else:
@@ -1229,7 +1294,7 @@ def my_staff():
                     StaffAttendance(
                         user_id=user.id,
                         attendance_date=attendance_date,
-                        status=request.form.get("status", "present"),
+                        status=request.form.get("status", "present_all_day"),
                         notes=request.form.get("notes", "").strip() or None,
                     )
                 )

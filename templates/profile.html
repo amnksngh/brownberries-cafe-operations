@@ -1,0 +1,244 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="panel">
+  <h2>Profile</h2>
+  <p class="muted">Manage your personal and workplace information.</p>
+</section>
+
+<section class="profile-layout">
+  <aside class="profile-sidebar panel">
+    <a href="{{ url_for('main.profile', section='personal', user_id=profile_user.id if can_admin_view else None) }}" class="{% if active_section == 'personal' %}active{% endif %}">Personal Information</a>
+    <a href="{{ url_for('main.profile', section='bank', user_id=profile_user.id if can_admin_view else None) }}" class="{% if active_section == 'bank' %}active{% endif %}">Bank Details</a>
+    <a href="{{ url_for('main.profile', section='documents', user_id=profile_user.id if can_admin_view else None) }}" class="{% if active_section == 'documents' %}active{% endif %}">Documents</a>
+    <a href="{{ url_for('main.profile', section='salary', user_id=profile_user.id if can_admin_view else None) }}" class="{% if active_section == 'salary' %}active{% endif %}">Salary Receipts</a>
+    <a href="{{ url_for('main.profile', section='attendance', user_id=profile_user.id if can_admin_view else None) }}" class="{% if active_section == 'attendance' %}active{% endif %}">Attendance</a>
+  </aside>
+
+  <div class="profile-content">
+    {% if can_admin_view %}
+    <section class="panel">
+      <h3>Viewing Profile For</h3>
+      <form method="get" class="grid grid-4">
+        <input type="hidden" name="section" value="{{ active_section }}" />
+        <label>User
+          <select name="user_id">
+            {% for u in managed_users %}
+            <option value="{{ u.id }}" {% if u.id == profile_user.id %}selected{% endif %}>{{ u.full_name }} ({{ u.role }})</option>
+            {% endfor %}
+          </select>
+        </label>
+        <button type="submit">Switch User</button>
+      </form>
+    </section>
+    {% endif %}
+
+    {% if active_section == "personal" %}
+    <section class="panel">
+      <h3>Personal Information</h3>
+      <form method="post" class="grid grid-4">
+        <input type="hidden" name="action" value="personal" />
+        <label>Full Name<input name="full_name" value="{{ profile_user.full_name }}" required /></label>
+        <label>Email<input value="{{ profile_user.email }}" disabled /></label>
+        <label>DOB<input type="date" name="dob" value="{{ profile.dob or '' }}" /></label>
+        <label>Gender<input name="gender" value="{{ profile.gender or '' }}" /></label>
+        <label>Marital Status<input name="marital_status" value="{{ profile.marital_status or '' }}" /></label>
+        <label>Phone<input name="phone" value="{{ profile.phone or '' }}" /></label>
+        <label>Alternate Contact<input name="alternate_contact" value="{{ profile.alternate_contact or '' }}" /></label>
+        <label>Address<input name="address" value="{{ profile.address or '' }}" /></label>
+        <button type="submit">Save Personal Info</button>
+      </form>
+      <h4>Change Password</h4>
+      <form method="post" class="grid grid-4">
+        <input type="hidden" name="action" value="password" />
+        <label>Current Password<input type="password" name="current_password" required /></label>
+        <label>New Password<input type="password" name="new_password" required /></label>
+        <label>Confirm New Password<input type="password" name="confirm_password" required /></label>
+        <button type="submit">Update Password</button>
+      </form>
+    </section>
+    {% endif %}
+
+    {% if active_section == "bank" %}
+    <section class="panel">
+      <h3>Bank Details</h3>
+      <form method="post" class="grid grid-4">
+        <input type="hidden" name="action" value="bank" />
+        <label>Account Name<input name="bank_account_name" value="{{ profile.bank_account_name or '' }}" /></label>
+        <label>Account Number<input name="bank_account_number" value="{{ profile.bank_account_number or '' }}" /></label>
+        <label>IFSC<input name="bank_ifsc" value="{{ profile.bank_ifsc or '' }}" /></label>
+        <label>Bank Name<input name="bank_name" value="{{ profile.bank_name or '' }}" /></label>
+        <button type="submit">Save Bank Details</button>
+      </form>
+    </section>
+    {% endif %}
+
+    {% if active_section == "documents" %}
+    <section class="panel">
+      <h3>My Uploads</h3>
+      <form method="post" enctype="multipart/form-data" class="grid grid-4">
+        <input type="hidden" name="action" value="upload_document" />
+        <label>Document Type
+          <select name="doc_type">
+            <option>Govt ID</option>
+            <option>Address Proof</option>
+            <option>Identity Proof</option>
+            <option>Other</option>
+          </select>
+        </label>
+        <label>Document Number <input name="doc_number" /></label>
+        <label>Upload File <input type="file" name="doc_file" required /></label>
+        <button type="submit">Upload Document</button>
+      </form>
+      <table>
+        <thead><tr><th>Type</th><th>Number</th><th>Status</th><th>Uploaded</th></tr></thead>
+        <tbody>
+          {% for d in documents_uploaded_by_user %}
+          <tr><td>{{ d.doc_type }}</td><td>{{ d.doc_number or "-" }}</td><td>{{ "Released" if d.released_by_admin else "Pending Release" }}</td><td>{{ d.created_at.strftime("%Y-%m-%d") }}</td></tr>
+          {% else %}
+          <tr><td colspan="4">No uploaded documents yet.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </section>
+
+    <section class="panel">
+      <h3>Released Documents (Download)</h3>
+      <table>
+        <thead><tr><th>Type</th><th>Number</th><th>Download</th></tr></thead>
+        <tbody>
+          {% for d in documents_released %}
+          <tr>
+            <td>{{ d.doc_type }}</td>
+            <td>{{ d.doc_number or "-" }}</td>
+            <td><a class="button-link" href="{{ url_for('main.profile_document', doc_type='staff_doc', doc_id=d.id) }}">Download</a></td>
+          </tr>
+          {% else %}
+          <tr><td colspan="3">No documents released yet.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </section>
+
+    {% if can_admin_view %}
+    <section class="panel">
+      <h3>Admin/Manager Release Controls</h3>
+      <table>
+        <thead><tr><th>Type</th><th>Number</th><th>Uploaded By</th><th>Release</th></tr></thead>
+        <tbody>
+          {% for d in documents_for_admin %}
+          <tr>
+            <td>{{ d.doc_type }}</td>
+            <td>{{ d.doc_number or "-" }}</td>
+            <td>{{ d.uploaded_by.full_name if d.uploaded_by else "-" }}</td>
+            <td>
+              <form method="post" class="inline">
+                <input type="hidden" name="action" value="release_document" />
+                <input type="hidden" name="doc_id" value="{{ d.id }}" />
+                <select name="released_by_admin">
+                  <option value="1" {% if d.released_by_admin %}selected{% endif %}>Released</option>
+                  <option value="0" {% if not d.released_by_admin %}selected{% endif %}>Hold</option>
+                </select>
+                <button type="submit">Save</button>
+              </form>
+              <a class="button-link inline" href="{{ url_for('main.profile_document', doc_type='staff_doc', doc_id=d.id) }}">Download</a>
+            </td>
+          </tr>
+          {% else %}
+          <tr><td colspan="4">No documents for this user.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </section>
+    {% endif %}
+    {% endif %}
+
+    {% if active_section == "salary" %}
+    <section class="panel">
+      <h3>Salary Receipts</h3>
+      {% if can_admin_view %}
+      <form method="post" enctype="multipart/form-data" class="grid grid-4">
+        <input type="hidden" name="action" value="upload_salary_receipt" />
+        <label>User
+          <select name="target_user_id">
+            {% for u in managed_users %}
+            <option value="{{ u.id }}" {% if u.id == profile_user.id %}selected{% endif %}>{{ u.full_name }}</option>
+            {% endfor %}
+          </select>
+        </label>
+        <label>Month <input type="number" min="1" max="12" name="salary_month" required /></label>
+        <label>Year <input type="number" min="2000" max="2100" name="salary_year" required /></label>
+        <label>Amount <input type="number" min="0" step="0.01" name="amount" /></label>
+        <label>Note <input name="note" /></label>
+        <label>Receipt File <input type="file" name="receipt_file" required /></label>
+        <button type="submit">Upload Salary Slip</button>
+      </form>
+      {% endif %}
+
+      <table>
+        <thead><tr><th>Month</th><th>Year</th><th>Amount</th><th>Note</th><th>Uploaded By</th><th>Date</th><th>Download</th></tr></thead>
+        <tbody>
+          {% for s in salary_receipts %}
+          <tr>
+            <td>{{ s.salary_month }}</td>
+            <td>{{ s.salary_year }}</td>
+            <td>{{ "%.2f"|format(s.amount or 0) }}</td>
+            <td>{{ s.note or "-" }}</td>
+            <td>{{ s.uploaded_by.full_name if s.uploaded_by else "-" }}</td>
+            <td>{{ s.created_at.strftime("%Y-%m-%d") }}</td>
+            <td><a class="button-link" href="{{ url_for('main.profile_document', doc_type='salary_receipt', receipt_id=s.id) }}">Download</a></td>
+          </tr>
+          {% else %}
+          <tr><td colspan="7">No salary receipts found.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </section>
+    {% endif %}
+
+    {% if active_section == "attendance" %}
+    <section class="panel">
+      <h3>Attendance</h3>
+      <form method="post" class="grid grid-4">
+        <input type="hidden" name="action" value="attendance_status" />
+        <label>Date<input type="date" name="attendance_date" required /></label>
+        <label>Status
+          <select name="status">
+            <option value="present_all_day">Present All Day</option>
+            <option value="first_half">First Half</option>
+            <option value="second_half">Second Half</option>
+            <option value="absent">Absent</option>
+            <option value="on_leave">On Leave</option>
+          </select>
+        </label>
+        <label>Notes<input name="notes" /></label>
+        <button type="submit">Save Attendance Status</button>
+      </form>
+      <form method="post" class="grid grid-4">
+        <input type="hidden" name="action" value="check_in" />
+        <button type="submit">Check-In Now</button>
+      </form>
+      <form method="post" class="grid grid-4">
+        <input type="hidden" name="action" value="check_out" />
+        <button type="submit">Check-Out Now</button>
+      </form>
+      <table>
+        <thead><tr><th>Date</th><th>Status</th><th>Check-In</th><th>Check-Out</th><th>Notes</th></tr></thead>
+        <tbody>
+          {% for a in attendance_logs %}
+          <tr>
+            <td>{{ a.attendance_date }}</td>
+            <td>{{ a.status.replace("_", " ").title() if a.status else "-" }}</td>
+            <td>{{ a.check_in_at.strftime("%H:%M:%S") if a.check_in_at else "-" }}</td>
+            <td>{{ a.check_out_at.strftime("%H:%M:%S") if a.check_out_at else "-" }}</td>
+            <td>{{ a.notes or "-" }}</td>
+          </tr>
+          {% else %}
+          <tr><td colspan="5">No attendance records yet.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </section>
+    {% endif %}
+  </div>
+</section>
+{% endblock %}

@@ -1,0 +1,97 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="panel">
+  <h2>Roles & Access Control</h2>
+  <p class="muted">Create role names and define access using checkboxes. Order-taking and running-order visibility are always enabled for all roles.</p>
+</section>
+
+<section class="panel">
+  <h3>Create Role</h3>
+  <form method="post" class="grid grid-4">
+    <input type="hidden" name="action" value="create" />
+    <label>Name <input name="name" required /></label>
+    {% for field, label in [
+      ("can_access_cafe","Access Cafe"),
+      ("can_access_library","Access Library"),
+      ("can_manage_staff","Manage Staff"),
+      ("can_manage_menu","Manage Menu"),
+      ("can_manage_orders","Manage Orders (Always ON)"),
+      ("can_manage_kitchen","Running Orders View (Always ON)"),
+      ("can_manage_inventory","Manage Inventory"),
+      ("can_manage_cashier","Manage Cashier"),
+      ("can_manage_stats","Manage Stats"),
+      ("can_manage_library_members","Library Members"),
+      ("can_manage_library_books","Library Books"),
+      ("can_manage_library_loans","Library Loans"),
+      ("can_manage_library_payments","Library Payments"),
+      ("can_manage_library_plans","Library Plans"),
+      ("can_view_staff_profiles","View Staff Profiles"),
+      ("can_upload_salary","Upload Salary Receipts")
+    ] %}
+    <label><input type="checkbox" name="{{ field }}" {% if field in ['can_manage_orders','can_manage_kitchen'] %}checked disabled{% endif %} /> {{ label }}</label>
+    {% if field in ['can_manage_orders','can_manage_kitchen'] %}
+    <input type="hidden" name="{{ field }}" value="1" />
+    {% endif %}
+    {% endfor %}
+    <button type="submit">Create Role</button>
+  </form>
+</section>
+
+<section class="panel">
+  <h3>Existing Roles</h3>
+  <div style="overflow:auto">
+    <table>
+      <thead><tr><th>Name</th><th>Permissions</th><th>Actions</th></tr></thead>
+      <tbody>
+        {% for ut in user_types %}
+        <tr>
+          <td>{{ ut.name }}</td>
+          <td>
+            <form method="post" class="grid grid-4">
+              <input type="hidden" name="action" value="update" />
+              <input type="hidden" name="user_type_id" value="{{ ut.id }}" />
+              <label>Name <input name="name" value="{{ ut.name }}" required /></label>
+              {% for field, label in [
+                ("can_access_cafe","Access Cafe"),
+                ("can_access_library","Access Library"),
+                ("can_manage_staff","Manage Staff"),
+                ("can_manage_menu","Manage Menu"),
+                ("can_manage_orders","Manage Orders (Always ON)"),
+                ("can_manage_kitchen","Running Orders View (Always ON)"),
+                ("can_manage_inventory","Manage Inventory"),
+                ("can_manage_cashier","Manage Cashier"),
+                ("can_manage_stats","Manage Stats"),
+                ("can_manage_library_members","Library Members"),
+                ("can_manage_library_books","Library Books"),
+                ("can_manage_library_loans","Library Loans"),
+                ("can_manage_library_payments","Library Payments"),
+                ("can_manage_library_plans","Library Plans"),
+                ("can_view_staff_profiles","View Staff Profiles"),
+                ("can_upload_salary","Upload Salary Receipts")
+              ] %}
+              <label><input type="checkbox" name="{{ field }}_{{ ut.id }}" {% if ut|attr(field) %}checked{% endif %} {% if field in ['can_manage_orders','can_manage_kitchen'] %}disabled{% endif %} /> {{ label }}</label>
+              {% if field in ['can_manage_orders','can_manage_kitchen'] %}
+              <input type="hidden" name="{{ field }}_{{ ut.id }}" value="1" />
+              {% endif %}
+              {% endfor %}
+              <button type="submit">Save {{ ut.name }}</button>
+            </form>
+          </td>
+          <td>
+            <p>Use in Staff Management while creating/updating users.</p>
+            <form method="post" class="inline">
+              <input type="hidden" name="action" value="delete" />
+              <input type="hidden" name="user_type_id" value="{{ ut.id }}" />
+              <button type="submit">Delete Role</button>
+            </form>
+            <p class="muted">Delete is blocked if any user is assigned this role.</p>
+          </td>
+        </tr>
+        {% else %}
+        <tr><td colspan="3">No user types yet.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endblock %}

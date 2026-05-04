@@ -7,6 +7,7 @@ from werkzeug.security import generate_password_hash
 
 from .auth_helpers import load_current_user
 from .cafe import bp as cafe_bp
+from .deploy_config import load_deployment_config
 from .extensions import db, socketio
 from .library import bp as library_bp
 from .main import bp as main_bp
@@ -34,6 +35,13 @@ def _ensure_sqlite_schema_columns():
         "book": {
             "genre": "TEXT",
         },
+        "staff_attendance": {
+            "check_in_at": "DATETIME",
+            "check_out_at": "DATETIME",
+        },
+        "user": {
+            "user_type_id": "INTEGER",
+        },
     }
     for table_name, cols in column_specs.items():
         existing = {
@@ -55,12 +63,15 @@ def create_app():
         template_folder="../templates",
         static_folder="../static",
     )
+    deploy_cfg = load_deployment_config(app.instance_path)
     app.config.update(
         SECRET_KEY="change-this-in-production",
         SQLALCHEMY_DATABASE_URI="sqlite:///brownberries.db",
         SQLALCHEMY_TRACK_MODIFICATIONS=False,
-        PUBLIC_BASE_URL=os.getenv("PUBLIC_BASE_URL", "").strip()
-        or "https://transactions-computers-blvd-directions.trycloudflare.com",
+        PUBLIC_BASE_URL=(
+            deploy_cfg.get("PUBLIC_BASE_URL", "").strip()
+            or "https://brownberriescafe.com"
+        ),
     )
     Path(app.instance_path).mkdir(parents=True, exist_ok=True)
     uploads_root = Path(app.instance_path) / "uploads"
@@ -68,6 +79,7 @@ def create_app():
     (uploads_root / "staff_docs").mkdir(parents=True, exist_ok=True)
     (uploads_root / "staff_photos").mkdir(parents=True, exist_ok=True)
     (uploads_root / "library_cards").mkdir(parents=True, exist_ok=True)
+    (uploads_root / "salary_receipts").mkdir(parents=True, exist_ok=True)
     app.config["UPLOADS_ROOT"] = str(uploads_root)
 
     db.init_app(app)

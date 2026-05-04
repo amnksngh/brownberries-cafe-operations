@@ -16,7 +16,30 @@ class User(TimestampMixin, db.Model):
     email = db.Column(db.String(120), unique=True, nullable=False)
     password_hash = db.Column(db.String(255), nullable=False)
     role = db.Column(db.String(50), nullable=False, default="staff")
+    user_type_id = db.Column(db.Integer, db.ForeignKey("user_type.id"), nullable=True)
     active = db.Column(db.Boolean, default=True, nullable=False)
+    user_type = db.relationship("UserType", backref="users")
+
+
+class UserType(TimestampMixin, db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(80), nullable=False, unique=True)
+    can_access_cafe = db.Column(db.Boolean, default=False, nullable=False)
+    can_access_library = db.Column(db.Boolean, default=False, nullable=False)
+    can_manage_staff = db.Column(db.Boolean, default=False, nullable=False)
+    can_manage_menu = db.Column(db.Boolean, default=False, nullable=False)
+    can_manage_orders = db.Column(db.Boolean, default=False, nullable=False)
+    can_manage_kitchen = db.Column(db.Boolean, default=False, nullable=False)
+    can_manage_inventory = db.Column(db.Boolean, default=False, nullable=False)
+    can_manage_cashier = db.Column(db.Boolean, default=False, nullable=False)
+    can_manage_stats = db.Column(db.Boolean, default=False, nullable=False)
+    can_manage_library_members = db.Column(db.Boolean, default=False, nullable=False)
+    can_manage_library_books = db.Column(db.Boolean, default=False, nullable=False)
+    can_manage_library_loans = db.Column(db.Boolean, default=False, nullable=False)
+    can_manage_library_payments = db.Column(db.Boolean, default=False, nullable=False)
+    can_manage_library_plans = db.Column(db.Boolean, default=False, nullable=False)
+    can_view_staff_profiles = db.Column(db.Boolean, default=False, nullable=False)
+    can_upload_salary = db.Column(db.Boolean, default=False, nullable=False)
 
 
 class CafeTable(TimestampMixin, db.Model):
@@ -124,6 +147,8 @@ class StaffAttendance(TimestampMixin, db.Model):
     user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False)
     attendance_date = db.Column(db.Date, nullable=False, default=date.today)
     status = db.Column(db.String(20), nullable=False, default="present")
+    check_in_at = db.Column(db.DateTime, nullable=True)
+    check_out_at = db.Column(db.DateTime, nullable=True)
     notes = db.Column(db.String(255), nullable=True)
     user = db.relationship("User", backref="attendance_logs")
 
@@ -138,6 +163,31 @@ class StaffLeaveRequest(TimestampMixin, db.Model):
     status = db.Column(db.String(20), nullable=False, default="pending")
     admin_remarks = db.Column(db.String(255), nullable=True)
     user = db.relationship("User", backref="leave_requests")
+
+
+class StaffDocument(TimestampMixin, db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False)
+    uploaded_by_user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False)
+    doc_type = db.Column(db.String(80), nullable=False)
+    doc_number = db.Column(db.String(120), nullable=True)
+    file_path = db.Column(db.String(255), nullable=False)
+    released_by_admin = db.Column(db.Boolean, default=False, nullable=False)
+    user = db.relationship("User", foreign_keys=[user_id], backref="documents")
+    uploaded_by = db.relationship("User", foreign_keys=[uploaded_by_user_id])
+
+
+class SalaryReceipt(TimestampMixin, db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False)
+    uploaded_by_user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False)
+    salary_month = db.Column(db.Integer, nullable=False)
+    salary_year = db.Column(db.Integer, nullable=False)
+    amount = db.Column(db.Float, nullable=True)
+    file_path = db.Column(db.String(255), nullable=False)
+    note = db.Column(db.String(255), nullable=True)
+    user = db.relationship("User", foreign_keys=[user_id], backref="salary_receipts")
+    uploaded_by = db.relationship("User", foreign_keys=[uploaded_by_user_id])
 
 
 class SubscriptionPlan(TimestampMixin, db.Model):
