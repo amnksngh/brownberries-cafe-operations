@@ -1,7 +1,12 @@
-{% extends "base.html" %}
-{% block content %}
+{% extends "library/_layout.html" %}
+{% block library_content %}
 <section class="panel">
   <h2>Issue / Reissue / Return</h2>
+  {% if selected_status == "issued" %}
+  <p class="muted">Showing active issued loans.</p>
+  {% elif selected_status == "due_tomorrow" %}
+  <p class="muted">Showing loans due tomorrow.</p>
+  {% endif %}
   <form method="post" class="grid grid-4">
     <label>Member
       <select name="member_id">{% for m in members %}<option value="{{ m.id }}">{{ m.full_name }}</option>{% endfor %}</select>

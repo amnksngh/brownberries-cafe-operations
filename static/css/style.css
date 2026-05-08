@@ -552,6 +552,28 @@ th {
   min-width: 0;
 }
 
+.library-layout {
+  display: grid;
+  grid-template-columns: 240px 1fr;
+  gap: 0.9rem;
+}
+
+.library-sidebar {
+  display: grid;
+  gap: 0.35rem;
+  align-content: start;
+  height: fit-content;
+}
+
+.library-sidebar a {
+  text-decoration: none;
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0.55rem 0.65rem;
+  background: var(--surface-soft);
+}
+
 .attendance-calendar {
   display: grid;
   grid-template-columns: repeat(7, minmax(40px, 1fr));
@@ -635,6 +657,10 @@ th {
   }
 
   .profile-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .library-layout {
     grid-template-columns: 1fr;
   }
 

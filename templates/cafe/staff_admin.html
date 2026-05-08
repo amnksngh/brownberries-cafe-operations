@@ -4,7 +4,7 @@
   <h2>Staff Management</h2>
   <p class="muted">Add/update staff accounts, profile records, attendance, leaves and documents.</p>
   {% if g.current_user.role == "admin" %}
-  <p><a class="button-link" href="{{ url_for('cafe.user_types') }}">Manage User Types & Access</a></p>
+  <p><a class="button-link" href="{{ url_for('cafe.user_types') }}">Manage Roles</a></p>
   {% endif %}
 </section>
 
@@ -22,38 +22,9 @@
         {% endfor %}
       </select>
     </label>
-    <label>User Type
-      <select name="user_type_id">
-        <option value="">--</option>
-        {% for ut in user_types %}
-        <option value="{{ ut.id }}">{{ ut.name }}</option>
-        {% endfor %}
-      </select>
-    </label>
     <label>Joining Date<input type="date" name="joining_date" /></label>
     <label>DOB<input type="date" name="dob" /></label>
-    <label>Marital Status<input name="marital_status" /></label>
     <label>Gender<input name="gender" /></label>
-    <label>Phone<input name="phone" /></label>
-    <label>Alternate Contact<input name="alternate_contact" /></label>
-    <label>Address<input name="address" /></label>
-    <label>PAN<input name="pan_number" /></label>
-    <label>Govt ID Type
-      <select name="govt_id_type">
-        <option value="">--</option>
-        <option value="Aadhar">Aadhar</option>
-        <option value="PAN">PAN</option>
-        <option value="Driving License">Driving License</option>
-        <option value="Passport">Passport</option>
-      </select>
-    </label>
-    <label>Govt ID Number<input name="govt_id_number" /></label>
-    <label>Govt ID Upload<input type="file" name="govt_id_file" /></label>
-    <label>Photo Upload<input type="file" name="photo_file" accept="image/*" /></label>
-    <label>Account Name<input name="bank_account_name" /></label>
-    <label>Account Number<input name="bank_account_number" /></label>
-    <label>IFSC<input name="bank_ifsc" /></label>
-    <label>Bank Name<input name="bank_name" /></label>
     <button type="submit">Add Staff Member</button>
   </form>
 </section>
@@ -100,14 +71,6 @@
                 <select name="role" required>
                   {% for role in staff_role_options %}
                   <option value="{{ role }}" {% if s.user.role == role %}selected{% endif %}>{{ role.replace('_', ' ').title() }}</option>
-                  {% endfor %}
-                </select>
-              </label>
-              <label>User Type
-                <select name="user_type_id">
-                  <option value="">--</option>
-                  {% for ut in user_types %}
-                  <option value="{{ ut.id }}" {% if s.user.user_type_id == ut.id %}selected{% endif %}>{{ ut.name }}</option>
                   {% endfor %}
                 </select>
               </label>

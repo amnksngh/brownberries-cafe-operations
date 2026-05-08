@@ -32,7 +32,7 @@ from .models import (
 
 bp = Blueprint("cafe", __name__, url_prefix="/cafe")
 
-STAFF_ROLE_OPTIONS = (
+DEFAULT_ROLE_OPTIONS = (
     "admin",
     "manager",
     "cashier",
@@ -45,12 +45,12 @@ STAFF_ROLE_OPTIONS = (
     "cleaner",
     "delivery_partner",
 )
-STAFF_ROLES = STAFF_ROLE_OPTIONS
+STAFF_ROLES = DEFAULT_ROLE_OPTIONS
 PREP_STATION_OPTIONS = ("kitchen", "barista")
 
 
 def _is_staff_user(user: User) -> bool:
-    return user.role in STAFF_ROLE_OPTIONS and user.email != "qr.guest@brownberries.local"
+    return user.role in _get_role_options() and user.email != "qr.guest@brownberries.local"
 
 
 def _ensure_staff_profile(user: User) -> StaffProfile:
@@ -66,6 +66,35 @@ def _is_protected_admin(user: User) -> bool:
     return user.email == "admin@brownberries.local" or (
         user.role == "admin" and user.full_name.strip().lower() == "cafe admin"
     )
+
+
+def _get_role_options():
+    names = {r for r in DEFAULT_ROLE_OPTIONS}
+    names.update({(ut.name or "").strip() for ut in UserType.query.all() if (ut.name or "").strip()})
+    names.update({(u.role or "").strip() for u in User.query.all() if (u.role or "").strip()})
+    return tuple(sorted(names))
+
+
+def _ensure_role_templates_exist():
+    existing = {ut.name.lower(): ut for ut in UserType.query.all() if ut.name}
+    changed = False
+    for role_name in _get_role_options():
+        if role_name.lower() not in existing:
+            ut = UserType(name=role_name)
+            ut.can_access_cafe = True
+            ut.can_manage_orders = True
+            ut.can_manage_kitchen = True
+            db.session.add(ut)
+            changed = True
+    if changed:
+        db.session.commit()
+
+
+def _assign_user_type_from_role(user: User):
+    if not user.role:
+        return
+    ut = UserType.query.filter(db.func.lower(UserType.name) == user.role.lower()).first()
+    user.user_type_id = ut.id if ut else None
 
 
 def _save_uploaded_file(file_obj, subdir: str, prefix: str):
@@ -882,6 +911,7 @@ def export_stats():
 @bp.route("/staff", methods=["GET", "POST"])
 @roles_required("admin", "manager")
 def staff():
+    _ensure_role_templates_exist()
     if request.method == "POST":
         action = request.form.get("action", "create")
 
@@ -892,7 +922,7 @@ def staff():
                 flash("A user with this email already exists.", "error")
                 return redirect(url_for("cafe.staff"))
             role = request.form.get("role", "staff")
-            if role not in STAFF_ROLE_OPTIONS:
+            if role not in _get_role_options():
                 role = "staff"
 
             new_user = User(
@@ -900,9 +930,9 @@ def staff():
                 email=email,
                 password_hash=generate_password_hash(request.form["password"]),
                 role=role,
-                user_type_id=int(request.form["user_type_id"]) if request.form.get("user_type_id") else None,
                 active=True,
             )
+            _assign_user_type_from_role(new_user)
             db.session.add(new_user)
             db.session.flush()
 
@@ -915,22 +945,6 @@ def staff():
             profile.dob = date.fromisoformat(request.form["dob"]) if request.form.get("dob") else None
             profile.marital_status = request.form.get("marital_status", "").strip() or None
             profile.gender = request.form.get("gender", "").strip() or None
-            profile.phone = request.form.get("phone", "").strip() or None
-            profile.alternate_contact = request.form.get("alternate_contact", "").strip() or None
-            profile.address = request.form.get("address", "").strip() or None
-            profile.pan_number = request.form.get("pan_number", "").strip() or None
-            profile.bank_account_name = request.form.get("bank_account_name", "").strip() or None
-            profile.bank_account_number = request.form.get("bank_account_number", "").strip() or None
-            profile.bank_ifsc = request.form.get("bank_ifsc", "").strip() or None
-            profile.bank_name = request.form.get("bank_name", "").strip() or None
-            profile.govt_id_type = request.form.get("govt_id_type", "").strip() or None
-            profile.govt_id_number = request.form.get("govt_id_number", "").strip() or None
-            govt_doc = request.files.get("govt_id_file")
-            if govt_doc and govt_doc.filename:
-                profile.govt_id_file_path = _save_uploaded_file(govt_doc, "staff_docs", f"govt-{new_user.id}")
-            photo_file = request.files.get("photo_file")
-            if photo_file and photo_file.filename:
-                profile.photo_file_path = _save_uploaded_file(photo_file, "staff_photos", f"photo-{new_user.id}")
             profile.archived = False
             db.session.commit()
             flash("Staff member added.", "success")
@@ -947,9 +961,9 @@ def staff():
                 flash("Another user already has this email.", "error")
                 return redirect(url_for("cafe.staff"))
             user.role = request.form.get("role", user.role)
-            if user.role not in STAFF_ROLE_OPTIONS:
+            if user.role not in _get_role_options():
                 user.role = "staff"
-            user.user_type_id = int(request.form["user_type_id"]) if request.form.get("user_type_id") else None
+            _assign_user_type_from_role(user)
             user.active = True if request.form.get("active") else False
             new_password = request.form.get("password", "").strip()
             if new_password:
@@ -1115,7 +1129,7 @@ def staff():
         attendance_year=selected_year,
         attendance_month_rows=month_rows,
         selected_attendance_map=selected_attendance_map,
-        staff_role_options=STAFF_ROLE_OPTIONS,
+        staff_role_options=_get_role_options(),
         user_types=UserType.query.order_by(UserType.name.asc()).all(),
     )
 
@@ -1123,6 +1137,7 @@ def staff():
 @bp.route("/user-types", methods=["GET", "POST"])
 @roles_required("admin")
 def user_types():
+    _ensure_role_templates_exist()
     if request.method == "POST":
         action = request.form.get("action", "create")
         if action == "create":
@@ -1167,7 +1182,9 @@ def user_types():
             return redirect(url_for("cafe.user_types"))
         if action == "delete":
             ut = UserType.query.get_or_404(int(request.form["user_type_id"]))
-            in_use = User.query.filter_by(user_type_id=ut.id).count()
+            in_use = User.query.filter(
+                db.or_(User.user_type_id == ut.id, db.func.lower(User.role) == ut.name.lower())
+            ).count()
             if in_use > 0:
                 flash(
                     f"Cannot delete role '{ut.name}' because it is assigned to {in_use} user(s). Reassign users first.",

@@ -77,6 +77,12 @@ def home():
 @bp.route("/members", methods=["GET", "POST"])
 @roles_required("admin", "manager", "librarian")
 def members():
+    status = (request.args.get("status") or "").strip().lower()
+    members_query = LibraryMember.query
+    if status == "active":
+        members_query = members_query.filter_by(active=True)
+    elif status == "inactive":
+        members_query = members_query.filter_by(active=False)
     if request.method == "POST":
         plan_id = int(request.form["subscription_plan_id"]) if request.form.get("subscription_plan_id") else None
         start_date = date.fromisoformat(request.form["subscription_start_date"]) if request.form.get("subscription_start_date") else None
@@ -102,8 +108,9 @@ def members():
         return redirect(url_for("library.members"))
     return render_template(
         "library/members.html",
-        members=LibraryMember.query.order_by(LibraryMember.full_name).all(),
+        members=members_query.order_by(LibraryMember.full_name).all(),
         plans=SubscriptionPlan.query.filter_by(active=True).order_by(SubscriptionPlan.name).all(),
+        selected_status=status,
     )
 
 
@@ -200,6 +207,18 @@ def plans():
 @bp.route("/loans", methods=["GET", "POST"])
 @roles_required("admin", "manager", "librarian")
 def loans():
+    status = (request.args.get("status") or "").strip().lower()
+    loans_query = LibraryLoan.query
+    if status == "issued":
+        loans_query = loans_query.filter(LibraryLoan.status == "issued")
+    elif status == "due_tomorrow":
+        loans_query = loans_query.filter(
+            LibraryLoan.status == "issued",
+            LibraryLoan.due_date == date.today() + timedelta(days=1),
+        )
+    elif status:
+        loans_query = loans_query.filter(LibraryLoan.status == status)
+
     if request.method == "POST":
         member = LibraryMember.query.get(int(request.form["member_id"]))
         book = Book.query.get(int(request.form["book_id"]))
@@ -228,7 +247,8 @@ def loans():
         "library/loans.html",
         members=LibraryMember.query.filter_by(active=True).order_by(LibraryMember.full_name).all(),
         books=Book.query.order_by(Book.title).all(),
-        loans=LibraryLoan.query.order_by(LibraryLoan.created_at.desc()).all(),
+        loans=loans_query.order_by(LibraryLoan.created_at.desc()).all(),
+        selected_status=status,
     )
 
 

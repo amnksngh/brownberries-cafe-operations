@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="library-layout">
+  <aside class="library-sidebar panel">
+    <h3>Library Modules</h3>
+    <a href="{{ url_for('library.home') }}">Dashboard</a>
+    <a href="{{ url_for('library.loans') }}">Issue / Return</a>
+    <a href="{{ url_for('library.members') }}">Members</a>
+    <a href="{{ url_for('library.books') }}">Books Inventory</a>
+    <a href="{{ url_for('library.payments') }}">Payment Status</a>
+    <a href="{{ url_for('library.plans') }}">Subscription Types</a>
+    <a href="{{ url_for('library.export_stats') }}">Download Excel</a>
+  </aside>
+  <div class="library-content">
+    {% block library_content %}{% endblock %}
+  </div>
+</section>
+{% endblock %}

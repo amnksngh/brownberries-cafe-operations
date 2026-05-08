@@ -1,7 +1,12 @@
-{% extends "base.html" %}
-{% block content %}
+{% extends "library/_layout.html" %}
+{% block library_content %}
 <section class="panel">
   <h2>Membership Management</h2>
+  {% if selected_status == "active" %}
+  <p class="muted">Showing active members.</p>
+  {% elif selected_status == "inactive" %}
+  <p class="muted">Showing inactive members.</p>
+  {% endif %}
   <form method="post" class="grid grid-4">
     <label>Name <input name="full_name" required /></label>
     <label>Phone <input name="phone" required /></label>
