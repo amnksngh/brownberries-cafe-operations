@@ -633,6 +633,32 @@ th {
   border-color: #6d97d6;
 }
 
+.cashier-table-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 0.6rem;
+}
+
+.cashier-table-box {
+  display: grid;
+  gap: 0.2rem;
+  text-decoration: none;
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0.65rem;
+  background: #fff;
+}
+
+.cashier-table-box.running {
+  background: #e5f6ea;
+  border-color: #6fb886;
+}
+
+.cashier-table-box.selected {
+  outline: 2px solid #8c6a54;
+}
+
 @media (max-width: 800px) {
   .topbar {
     flex-direction: column;

@@ -3,6 +3,7 @@ from datetime import date, datetime
 from uuid import uuid4
 
 from flask import Blueprint, Response, current_app, flash, g, redirect, render_template, request, session, url_for
+from sqlalchemy.orm import joinedload
 from werkzeug.security import check_password_hash, generate_password_hash
 from werkzeug.utils import secure_filename
 
@@ -400,36 +401,34 @@ def table_qr_page():
         menu_query = menu_query.filter(MenuItem.subcategory_id == subcategory_id)
     if item_type:
         menu_query = menu_query.filter(MenuItem.item_type == item_type)
-
-    items = menu_query.all()
-    frequency_rows = (
+    frequency_subq = (
         db.session.query(
-            CafeOrderItem.menu_item_id,
+            CafeOrderItem.menu_item_id.label("menu_item_id"),
             db.func.coalesce(db.func.sum(CafeOrderItem.quantity), 0).label("order_qty"),
         )
         .group_by(CafeOrderItem.menu_item_id)
-        .all()
+        .subquery()
     )
-    item_frequency = {row.menu_item_id: int(row.order_qty) for row in frequency_rows}
-
-    # Default behavior: if no filter chosen, show top bought items first.
-    menu_items_sorted = sorted(
-        items,
-        key=lambda item: (-item_frequency.get(item.id, 0), item.name.lower()),
+    ranked_query = (
+        menu_query.outerjoin(frequency_subq, MenuItem.id == frequency_subq.c.menu_item_id)
+        .options(joinedload(MenuItem.category), joinedload(MenuItem.subcategory))
+        .add_columns(db.func.coalesce(frequency_subq.c.order_qty, 0).label("order_qty"))
+        .order_by(db.desc(db.func.coalesce(frequency_subq.c.order_qty, 0)), MenuItem.name.asc())
     )
-
-    total_items = len(menu_items_sorted)
+    total_items = ranked_query.count()
     total_pages = max(1, (total_items + page_size - 1) // page_size)
     if page > total_pages:
         page = total_pages
     start = (page - 1) * page_size
-    end = start + page_size
-    menu_items = menu_items_sorted[start:end]
+    ranked_rows = ranked_query.offset(start).limit(page_size).all()
+    menu_items = [row[0] for row in ranked_rows]
+    item_frequency = {row[0].id: int(row[1] or 0) for row in ranked_rows}
 
     table_orders = []
     if table:
         table_orders = (
-            CafeOrder.query.filter(CafeOrder.table_id == table.id, CafeOrder.status != "paid")
+            CafeOrder.query.options(joinedload(CafeOrder.order_items).joinedload(CafeOrderItem.menu_item))
+            .filter(CafeOrder.table_id == table.id, CafeOrder.status != "paid")
             .order_by(CafeOrder.created_at.desc())
             .all()
         )

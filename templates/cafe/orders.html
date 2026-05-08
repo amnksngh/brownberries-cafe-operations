@@ -3,13 +3,7 @@
 <section class="panel">
   <h2>Table Ordering</h2>
   <form method="get" class="grid grid-4">
-    <label>Table
-      <select name="table_id">
-        {% for t in tables %}
-        <option value="{{ t.id }}" {% if selected_table_id == t.id %}selected{% endif %}>{{ t.name }}</option>
-        {% endfor %}
-      </select>
-    </label>
+    <input type="hidden" name="table_id" value="{{ selected_table_id or '' }}" />
     <label>Category
       <select name="category_id">
         <option value="">All</option>
@@ -36,37 +30,26 @@
     </label>
     <button type="submit">Apply Filters</button>
   </form>
+  <form method="get" class="cashier-table-grid" style="margin-top:0.7rem;">
+    <input type="hidden" name="category_id" value="{{ selected_category_id or '' }}" />
+    <input type="hidden" name="subcategory_id" value="{{ selected_subcategory_id or '' }}" />
+    <input type="hidden" name="item_type" value="{{ selected_item_type or '' }}" />
+    {% for t in tables %}
+    <button
+      type="submit"
+      name="table_id"
+      value="{{ t.id }}"
+      class="cashier-table-box {% if selected_table_id == t.id %}selected{% endif %}"
+    >
+      <strong>{{ t.name }}</strong>
+      <span>Capacity: {{ t.seating_capacity }}</span>
+    </button>
+    {% endfor %}
+  </form>
 </section>
 
 <form method="post" id="staff-order-form" class="grid">
-  <section class="panel">
-    <div class="grid grid-4">
-      <label>Table
-        <select name="table_id">
-          {% for t in tables %}
-          <option value="{{ t.id }}" {% if selected_table_id == t.id %}selected{% endif %}>{{ t.name }}</option>
-          {% endfor %}
-        </select>
-      </label>
-      <label>Status
-        <select name="status">
-          <option value="open">Open</option>
-          <option value="paid">Paid</option>
-          <option value="cancelled">Cancelled</option>
-        </select>
-      </label>
-      <label>Payment Type
-        <select name="payment_type">
-          <option value="">--</option>
-          <option>QR</option>
-          <option>Cash</option>
-          <option>Card Tap</option>
-          <option>Card Dip</option>
-        </select>
-      </label>
-      <label>Payment Ref <input name="payment_reference" /></label>
-    </div>
-  </section>
+  <input type="hidden" name="table_id" id="selected-table-id-input" value="{{ selected_table_id or '' }}" />
 
   <section class="panel">
     <h3>Menu Items</h3>
@@ -165,6 +148,7 @@
   const cartPayloadInput = document.getElementById("cart-payload");
   const cartTotal = document.getElementById("cart-total");
   const orderForm = document.getElementById("staff-order-form");
+  const selectedTableInput = document.getElementById("selected-table-id-input");
 
   function normalizeQty(value) {
     const num = Number(value);
@@ -225,6 +209,11 @@
   });
 
   orderForm.addEventListener("submit", (event) => {
+    if (!selectedTableInput.value) {
+      event.preventDefault();
+      alert("Please select a table first.");
+      return;
+    }
     if (Object.keys(cart).length < 1) {
       event.preventDefault();
       alert("Please add at least one item to cart.");
@@ -232,5 +221,18 @@
   });
 
   renderCart();
+</script>
+<script src="{{ url_for('static', filename='js/socket.io.min.js') }}"></script>
+<script>
+  const orderSocket = io("/table");
+  const activeTableId = Number(document.getElementById("selected-table-id-input")?.value || 0);
+  let reloadTimer = null;
+  function scheduleReload(payload) {
+    if (activeTableId && payload && Number(payload.table_id) !== activeTableId) return;
+    if (reloadTimer) return;
+    reloadTimer = setTimeout(() => window.location.reload(), 300);
+  }
+  orderSocket.on("order_created", scheduleReload);
+  orderSocket.on("order_updated", scheduleReload);
 </script>
 {% endblock %}

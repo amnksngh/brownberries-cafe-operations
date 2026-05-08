@@ -3,16 +3,19 @@
 <section class="panel">
   <h2>Cashier Desk</h2>
   <p class="muted">Collect payment, mark orders paid, and clear table for next customers.</p>
-  <form method="get" class="grid grid-4">
-    <label>Table
-      <select name="table_id">
-        {% for t in tables %}
-        <option value="{{ t.id }}" {% if selected_table and selected_table.id == t.id %}selected{% endif %}>{{ t.name }}</option>
-        {% endfor %}
-      </select>
-    </label>
-    <button type="submit">Load Table</button>
-  </form>
+  <div class="cashier-table-grid">
+    {% for t in tables %}
+    {% set running = running_map.get(t.id, {"count": 0, "total": 0}) %}
+    <a
+      href="{{ url_for('cafe.cashier', table_id=t.id) }}"
+      class="cashier-table-box {% if selected_table and selected_table.id == t.id %}selected{% endif %} {% if running.count > 0 %}running{% endif %}"
+    >
+      <strong>{{ t.name }}</strong>
+      <span>{{ running.count }} running order(s)</span>
+      <span>Pending: {{ "%.2f"|format(running.total) }}</span>
+    </a>
+    {% endfor %}
+  </div>
 </section>
 
 {% if selected_table %}
@@ -37,6 +40,7 @@
           <td>{{ "%.2f"|format(order.total_amount) }}</td>
           <td>
             <form method="post" action="{{ url_for('cafe.mark_order_paid', order_id=order.id) }}" class="grid">
+              <input type="hidden" name="next" value="{{ url_for('cafe.cashier', table_id=selected_table.id) }}" />
               <label>Payment Type
                 <select name="payment_type">
                   <option>Cash</option>
@@ -61,6 +65,7 @@
 <section class="panel">
   <h3>Clear Table Orders</h3>
   <form method="post" action="{{ url_for('cafe.clear_table_orders', table_id=selected_table.id) }}" class="grid grid-4">
+    <input type="hidden" name="next" value="{{ url_for('cafe.cashier', table_id=selected_table.id) }}" />
     <label>Payment Type
       <select name="payment_type">
         <option>Cash</option>
@@ -74,4 +79,17 @@
   </form>
 </section>
 {% endif %}
+<script src="{{ url_for('static', filename='js/socket.io.min.js') }}"></script>
+<script>
+  const cashierSocket = io("/table");
+  const selectedTableId = {{ selected_table.id if selected_table else 0 }};
+  let cashierReloadTimer = null;
+  function cashierScheduleReload(payload) {
+    if (selectedTableId && payload && Number(payload.table_id) !== Number(selectedTableId)) return;
+    if (cashierReloadTimer) return;
+    cashierReloadTimer = setTimeout(() => window.location.reload(), 300);
+  }
+  cashierSocket.on("order_created", cashierScheduleReload);
+  cashierSocket.on("order_updated", cashierScheduleReload);
+</script>
 {% endblock %}

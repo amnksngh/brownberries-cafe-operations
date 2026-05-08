@@ -9,6 +9,7 @@ import qrcode
 from PIL import Image, ImageDraw, ImageFont
 from flask import Blueprint, Response, current_app, flash, g, redirect, render_template, request, url_for
 from openpyxl import Workbook
+from sqlalchemy.orm import joinedload
 from werkzeug.security import check_password_hash, generate_password_hash
 from werkzeug.utils import secure_filename
 
@@ -631,9 +632,9 @@ def orders():
         order = _create_order(
             table_id=selected_table_id,
             ordered_by_user_id=g.current_user.id,
-            status=request.form.get("status", "open"),
-            payment_type=request.form.get("payment_type", "").strip() or None,
-            payment_reference=request.form.get("payment_reference", "").strip() or None,
+            status="open",
+            payment_type=None,
+            payment_reference=None,
         )
         if not order:
             flash("Please add at least one menu item in cart.", "error")
@@ -720,7 +721,10 @@ def mark_order_paid(order_id):
     socketio.emit("order_updated", payload, namespace="/kitchen")
     socketio.emit("order_updated", payload, namespace="/table")
     flash(f"Order #{order.id} marked as paid.", "success")
-    return redirect(url_for("cafe.orders", table_id=order.table_id))
+    next_url = request.form.get("next", "").strip() or request.args.get("next", "").strip()
+    if next_url:
+        return redirect(next_url)
+    return redirect(url_for("cafe.cashier", table_id=order.table_id))
 
 
 @bp.route("/tables/<int:table_id>/clear-orders", methods=["POST"])
@@ -744,7 +748,10 @@ def clear_table_orders(table_id):
         count += 1
     db.session.commit()
     flash(f"Cleared {count} order(s) for {table.name}.", "success")
-    return redirect(url_for("cafe.orders", table_id=table.id))
+    next_url = request.form.get("next", "").strip() or request.args.get("next", "").strip()
+    if next_url:
+        return redirect(next_url)
+    return redirect(url_for("cafe.cashier", table_id=table.id))
 
 
 @bp.route("/cashier")
@@ -752,8 +759,26 @@ def clear_table_orders(table_id):
 def cashier():
     table_id = request.args.get("table_id", type=int)
     tables = CafeTable.query.filter_by(active=True).order_by(CafeTable.name).all()
+    running_rows = (
+        db.session.query(
+            CafeOrder.table_id,
+            db.func.count(CafeOrder.id).label("order_count"),
+            db.func.coalesce(db.func.sum(CafeOrder.total_amount), 0).label("pending_total"),
+        )
+        .filter(CafeOrder.status.notin_(["paid", "cancelled"]))
+        .group_by(CafeOrder.table_id)
+        .all()
+    )
+    running_map = {
+        row.table_id: {
+            "count": int(row.order_count or 0),
+            "total": float(row.pending_total or 0),
+        }
+        for row in running_rows
+    }
     if not table_id and tables:
-        table_id = tables[0].id
+        running_table_ids = [t.id for t in tables if running_map.get(t.id, {}).get("count", 0) > 0]
+        table_id = running_table_ids[0] if running_table_ids else tables[0].id
     selected_table = CafeTable.query.get(table_id) if table_id else None
     unpaid_orders = []
     table_total = 0
@@ -770,6 +795,7 @@ def cashier():
     return render_template(
         "cafe/cashier.html",
         tables=tables,
+        running_map=running_map,
         selected_table=selected_table,
         unpaid_orders=unpaid_orders,
         table_total=table_total,
@@ -804,15 +830,21 @@ def kitchen_display():
     if station not in PREP_STATION_OPTIONS:
         station = "kitchen"
     orders = (
-        CafeOrder.query.filter(CafeOrder.status.in_(["open", "preparing", "ready"]))
+        CafeOrder.query.join(CafeOrderItem, CafeOrderItem.order_id == CafeOrder.id)
+        .join(MenuItem, MenuItem.id == CafeOrderItem.menu_item_id)
+        .filter(
+            CafeOrder.status.in_(["open", "preparing", "ready"]),
+            MenuItem.prep_station == station,
+        )
+        .options(
+            joinedload(CafeOrder.table),
+            joinedload(CafeOrder.order_items).joinedload(CafeOrderItem.menu_item),
+        )
+        .distinct()
         .order_by(CafeOrder.created_at.asc())
         .all()
     )
-    station_orders = []
-    for order in orders:
-        if any((oi.menu_item and oi.menu_item.prep_station == station) for oi in order.order_items):
-            station_orders.append(order)
-    return render_template("cafe/kitchen_display.html", orders=station_orders, station=station)
+    return render_template("cafe/kitchen_display.html", orders=orders, station=station)
 
 
 @bp.route("/barista")
