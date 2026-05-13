@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="panel">
+  <h2>Table Bookings</h2>
+  <p class="muted">Operational view for cashier, managers, and admins.</p>
+  <form method="get" class="grid grid-4">
+    <label>Status
+      <select name="status">
+        <option value="">All</option>
+        {% for st in ["booked","confirmed","arrived","completed","cancelled","no_show"] %}
+        <option value="{{ st }}" {% if selected_status == st %}selected{% endif %}>{{ st.replace('_',' ').title() }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <button type="submit">Apply</button>
+  </form>
+</section>
+
+<section class="panel">
+  <div style="overflow:auto">
+    <table>
+      <tr><th>Name</th><th>Phone</th><th>People</th><th>Date</th><th>Time</th><th>Notes</th><th>Status</th><th>Action</th></tr>
+      {% for b in bookings %}
+      <tr>
+        <td>{{ b.customer_name }}</td>
+        <td>{{ b.phone }}</td>
+        <td>{{ b.people_count }}</td>
+        <td>{{ b.booking_date }}</td>
+        <td>{{ b.start_hour }}:00 - {{ b.end_hour }}:00</td>
+        <td>{{ b.note or "-" }}</td>
+        <td>{{ b.status.replace("_", " ").title() }}</td>
+        <td>
+          <form method="post" class="grid">
+            <input type="hidden" name="booking_id" value="{{ b.id }}" />
+            <label>Update
+              <select name="status">
+                {% for st in ["booked","confirmed","arrived","completed","cancelled","no_show"] %}
+                <option value="{{ st }}" {% if b.status == st %}selected{% endif %}>{{ st.replace('_',' ').title() }}</option>
+                {% endfor %}
+              </select>
+            </label>
+            <button type="submit">Save</button>
+          </form>
+        </td>
+      </tr>
+      {% else %}
+      <tr><td colspan="8">No bookings found.</td></tr>
+      {% endfor %}
+    </table>
+  </div>
+</section>
+{% endblock %}

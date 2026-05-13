@@ -19,6 +19,9 @@ def _ensure_sqlite_schema_columns():
     column_specs = {
         "menu_item": {
             "prep_station": "TEXT NOT NULL DEFAULT 'kitchen'",
+            "category_ids_json": "TEXT",
+            "has_size_variants": "BOOLEAN NOT NULL DEFAULT 0",
+            "size_pricing_json": "TEXT",
         },
         "staff_profile": {
             "dob": "DATE",
@@ -31,6 +34,7 @@ def _ensure_sqlite_schema_columns():
         },
         "library_member": {
             "member_code": "TEXT",
+            "govt_id_image_path": "TEXT",
         },
         "book": {
             "genre": "TEXT",
@@ -41,6 +45,33 @@ def _ensure_sqlite_schema_columns():
         },
         "user": {
             "user_type_id": "INTEGER",
+        },
+        "user_type": {
+            "can_view_delivery_locations": "BOOLEAN NOT NULL DEFAULT 0",
+        },
+        "cafe_order": {
+            "is_delivery": "BOOLEAN NOT NULL DEFAULT 0",
+            "delivery_customer_name": "TEXT",
+            "delivery_customer_mobile": "TEXT",
+            "delivery_address": "TEXT",
+            "delivery_lat": "FLOAT",
+            "delivery_lng": "FLOAT",
+            "delivery_map_url": "TEXT",
+            "packaging_charge": "FLOAT NOT NULL DEFAULT 0",
+            "delivery_distance_km": "FLOAT NOT NULL DEFAULT 0",
+            "delivery_charge": "FLOAT NOT NULL DEFAULT 0",
+        },
+        "customer": {
+            "default_map_url": "TEXT",
+        },
+        "table_booking": {
+            "people_count": "INTEGER NOT NULL DEFAULT 2",
+        },
+        "library_loan": {
+            "due_reminder_sent_on": "DATE",
+        },
+        "cafe_order_item": {
+            "size_label": "TEXT",
         },
     }
     for table_name, cols in column_specs.items():
@@ -53,6 +84,26 @@ def _ensure_sqlite_schema_columns():
                 db.session.execute(
                     text(f"ALTER TABLE {table_name} ADD COLUMN {col} {spec}")
                 )
+
+    # Performance indexes for high-frequency queries.
+    db.session.execute(
+        text("CREATE INDEX IF NOT EXISTS idx_cafe_order_table_status_created ON cafe_order (table_id, status, created_at)")
+    )
+    db.session.execute(
+        text("CREATE INDEX IF NOT EXISTS idx_cafe_order_status_created ON cafe_order (status, created_at)")
+    )
+    db.session.execute(
+        text("CREATE INDEX IF NOT EXISTS idx_cafe_order_item_order ON cafe_order_item (order_id)")
+    )
+    db.session.execute(
+        text("CREATE INDEX IF NOT EXISTS idx_cafe_order_item_menu ON cafe_order_item (menu_item_id)")
+    )
+    db.session.execute(
+        text("CREATE INDEX IF NOT EXISTS idx_menu_item_available_cat_sub_type ON menu_item (available, category_id, subcategory_id, item_type)")
+    )
+    db.session.execute(
+        text("CREATE INDEX IF NOT EXISTS idx_staff_attendance_user_date ON staff_attendance (user_id, attendance_date)")
+    )
     db.session.commit()
 
 
@@ -79,6 +130,7 @@ def create_app():
     (uploads_root / "staff_docs").mkdir(parents=True, exist_ok=True)
     (uploads_root / "staff_photos").mkdir(parents=True, exist_ok=True)
     (uploads_root / "library_cards").mkdir(parents=True, exist_ok=True)
+    (uploads_root / "library_docs").mkdir(parents=True, exist_ok=True)
     (uploads_root / "salary_receipts").mkdir(parents=True, exist_ok=True)
     app.config["UPLOADS_ROOT"] = str(uploads_root)
 

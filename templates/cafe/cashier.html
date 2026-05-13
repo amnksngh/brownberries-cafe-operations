@@ -3,6 +3,13 @@
 <section class="panel">
   <h2>Cashier Desk</h2>
   <p class="muted">Collect payment, mark orders paid, and clear table for next customers.</p>
+  <div class="notif-wrap">
+    <button type="button" id="notif-bell" class="notif-bell">🔔 <span id="notif-count" class="notif-count">0</span></button>
+    <div id="notif-panel" class="notif-panel hidden">
+      <div class="split-head"><strong>Notifications</strong><button type="button" id="notif-clear">Clear All</button></div>
+      <div id="notif-list" class="grid"></div>
+    </div>
+  </div>
   <div class="cashier-table-grid">
     {% for t in tables %}
     {% set running = running_map.get(t.id, {"count": 0, "total": 0}) %}
@@ -25,7 +32,7 @@
   <div style="overflow:auto">
     <table>
       <thead>
-        <tr><th>Order</th><th>Status</th><th>Items</th><th>Total</th><th>Mark Paid</th></tr>
+        <tr><th>Order</th><th>Status</th><th>Items</th><th>Total</th><th>Action</th></tr>
       </thead>
       <tbody>
         {% for order in unpaid_orders %}
@@ -34,11 +41,17 @@
           <td>{{ order.status }}</td>
           <td>
             {% for oi in order.order_items %}
-            <div>{{ oi.menu_item.name }} x {{ oi.quantity }}</div>
+            <div>{{ oi.menu_item.name }}{% if oi.size_label %} ({{ oi.size_label }}){% endif %} x {{ oi.quantity }}</div>
             {% endfor %}
           </td>
           <td>{{ "%.2f"|format(order.total_amount) }}</td>
           <td>
+            {% if order.status == "pending_approval" %}
+            <form method="post" action="{{ url_for('cafe.approve_order', order_id=order.id) }}" class="grid">
+              <input type="hidden" name="next" value="{{ url_for('cafe.cashier', table_id=selected_table.id) }}" />
+              <button type="submit">Approve</button>
+            </form>
+            {% else %}
             <form method="post" action="{{ url_for('cafe.mark_order_paid', order_id=order.id) }}" class="grid">
               <input type="hidden" name="next" value="{{ url_for('cafe.cashier', table_id=selected_table.id) }}" />
               <label>Payment Type
@@ -52,6 +65,7 @@
               <label>Reference <input name="payment_reference" /></label>
               <button type="submit">Mark Paid</button>
             </form>
+            {% endif %}
           </td>
         </tr>
         {% else %}
@@ -89,7 +103,52 @@
     if (cashierReloadTimer) return;
     cashierReloadTimer = setTimeout(() => window.location.reload(), 300);
   }
-  cashierSocket.on("order_created", cashierScheduleReload);
+  function playChime() {
+    try {
+      const AudioCtx = window.AudioContext || window.webkitAudioContext;
+      if (!AudioCtx) return;
+      const ctx = new AudioCtx();
+      const now = ctx.currentTime;
+      [880, 1174].forEach((freq, i) => {
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = "sine";
+        osc.frequency.value = freq;
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        const start = now + i * 0.1;
+        gain.gain.setValueAtTime(0.001, start);
+        gain.gain.exponentialRampToValueAtTime(0.12, start + 0.02);
+        gain.gain.exponentialRampToValueAtTime(0.001, start + 0.16);
+        osc.start(start);
+        osc.stop(start + 0.16);
+      });
+    } catch (e) {}
+  }
+  const notifBell = document.getElementById("notif-bell");
+  const notifCount = document.getElementById("notif-count");
+  const notifPanel = document.getElementById("notif-panel");
+  const notifList = document.getElementById("notif-list");
+  const notifClear = document.getElementById("notif-clear");
+  const notifs = [];
+  function renderNotifs() {
+    notifCount.textContent = String(notifs.length);
+    notifList.innerHTML = notifs.length
+      ? notifs.map((n) => `<div class="flash success">#${n.id} • ${n.table} • ${n.created_at}</div>`).join("")
+      : '<p class="muted">No new notifications.</p>';
+  }
+  notifBell?.addEventListener("click", () => notifPanel.classList.toggle("hidden"));
+  notifClear?.addEventListener("click", () => {
+    notifs.splice(0, notifs.length);
+    renderNotifs();
+  });
+  cashierSocket.on("order_created", (payload) => {
+    notifs.unshift(payload);
+    if (notifs.length > 30) notifs.pop();
+    renderNotifs();
+    playChime();
+    cashierScheduleReload(payload);
+  });
   cashierSocket.on("order_updated", cashierScheduleReload);
 </script>
 {% endblock %}

@@ -12,14 +12,6 @@
         {% endfor %}
       </select>
     </label>
-    <label>Subcategory
-      <select name="subcategory_id">
-        <option value="">All</option>
-        {% for s in subcategories %}
-        <option value="{{ s.id }}" {% if selected_subcategory_id == s.id %}selected{% endif %}>{{ s.name }}</option>
-        {% endfor %}
-      </select>
-    </label>
     <label>Type
       <select name="item_type">
         <option value="">All</option>
@@ -32,7 +24,6 @@
   </form>
   <form method="get" class="cashier-table-grid" style="margin-top:0.7rem;">
     <input type="hidden" name="category_id" value="{{ selected_category_id or '' }}" />
-    <input type="hidden" name="subcategory_id" value="{{ selected_subcategory_id or '' }}" />
     <input type="hidden" name="item_type" value="{{ selected_item_type or '' }}" />
     {% for t in tables %}
     <button
@@ -62,9 +53,30 @@
         {% else %}
         <div class="item-image placeholder">No Image</div>
         {% endif %}
-        <p class="muted item-meta">{{ item.category.name }}{% if item.subcategory %}, {{ item.subcategory.name }}{% endif %}, {{ item.item_type }}</p>
-        <p class="item-desc">{{ item.description or "-" }}</p>
-        <p class="item-calories">Calories: {{ item.calories or "-" }}</p>
+        <p class="muted item-meta">{{ item.category.name }}, {{ item.item_type }}</p>
+        <button
+          type="button"
+          class="desc-btn"
+          data-name="{{ item.name }}"
+          data-description="{{ item.description or 'No description available.' }}"
+        >View Description</button>
+        <p class="item-calories">
+          Calories: {{ item.calories or "-" }}
+          <label style="margin-left:0.45rem; display:inline-flex; gap:0.2rem; align-items:center;">
+            <input type="checkbox" class="parcel-checkbox" />
+            Parcel
+          </label>
+        </p>
+        {% set sizes = item_size_map.get(item.id, []) %}
+        {% if item.has_size_variants and sizes %}
+        <label>Serving Size
+          <select class="size-select">
+            {% for s in sizes %}
+            <option value="{{ s.size }}" data-price="{{ s.price }}">{{ s.size }} - ₹{{ "%.2f"|format(s.price) }}</option>
+            {% endfor %}
+          </select>
+        </label>
+        {% endif %}
         <div class="qty-control">
           <button type="button" class="qty-btn" data-role="minus">-</button>
           <input type="number" min="1" value="1" class="qty-input" />
@@ -91,6 +103,15 @@
   </section>
 </form>
 
+<div id="desc-modal" class="desc-modal hidden">
+  <div class="desc-dialog">
+    <h3 id="desc-title"></h3>
+    <p id="desc-body"></p>
+    <button type="button" id="desc-close">Close</button>
+  </div>
+</div>
+<div id="cart-toast" class="cart-toast hidden"></div>
+
 <section class="panel">
   <h3>Current Unpaid Orders for Selected Table</h3>
   {% if g.current_user.role in ["admin", "manager", "cashier"] and selected_table_id %}
@@ -108,19 +129,24 @@
   </form>
   {% endif %}
   <table>
-    <tr><th>Order</th><th>Status</th><th>Items</th><th>Total</th>{% if g.current_user.role in ["admin", "manager", "cashier"] %}<th>Payment</th>{% endif %}</tr>
+    <tr><th>Order</th><th>Status</th><th>Items</th><th>Total</th><th>Action</th></tr>
     {% for order in table_orders %}
     <tr>
       <td>#{{ order.id }}</td>
       <td>{{ order.status }}</td>
       <td>
         {% for oi in order.order_items %}
-        <div>{{ oi.menu_item.name }} x {{ oi.quantity }}</div>
+        <div>{{ oi.menu_item.name }}{% if oi.size_label %} ({{ oi.size_label }}){% endif %} x {{ oi.quantity }}</div>
         {% endfor %}
       </td>
       <td>{{ "%.2f"|format(order.total_amount) }}</td>
-      {% if g.current_user.role in ["admin", "manager", "cashier"] %}
       <td>
+        {% if order.status == "pending_approval" and g.current_user.role in ["admin", "manager", "cashier", "librarian", "staff"] %}
+        <form method="post" action="{{ url_for('cafe.approve_order', order_id=order.id) }}" class="grid">
+          <input type="hidden" name="next" value="{{ url_for('cafe.orders', table_id=selected_table_id) }}" />
+          <button type="submit">Approve</button>
+        </form>
+        {% elif g.current_user.role in ["admin", "manager", "cashier"] %}
         <form method="post" action="{{ url_for('cafe.mark_order_paid', order_id=order.id) }}" class="grid">
           <label>Type
             <select name="payment_type">
@@ -133,11 +159,13 @@
           <label>Ref <input name="payment_reference" value="{{ order.payment_reference or '' }}" /></label>
           <button type="submit">Mark Paid</button>
         </form>
+        {% else %}
+        -
+        {% endif %}
       </td>
-      {% endif %}
     </tr>
     {% else %}
-    <tr><td colspan="{% if g.current_user.role in ['admin', 'manager', 'cashier'] %}5{% else %}4{% endif %}">No unpaid orders for this table.</td></tr>
+    <tr><td colspan="5">No unpaid orders for this table.</td></tr>
     {% endfor %}
   </table>
 </section>
@@ -149,11 +177,25 @@
   const cartTotal = document.getElementById("cart-total");
   const orderForm = document.getElementById("staff-order-form");
   const selectedTableInput = document.getElementById("selected-table-id-input");
+  const descModal = document.getElementById("desc-modal");
+  const descTitle = document.getElementById("desc-title");
+  const descBody = document.getElementById("desc-body");
+  const descClose = document.getElementById("desc-close");
+  const cartToast = document.getElementById("cart-toast");
+  let toastTimer = null;
 
   function normalizeQty(value) {
     const num = Number(value);
     if (!Number.isFinite(num) || num < 1) return 1;
     return Math.floor(num);
+  }
+
+  function showToast(message) {
+    if (!cartToast) return;
+    cartToast.textContent = message;
+    cartToast.classList.remove("hidden");
+    if (toastTimer) window.clearTimeout(toastTimer);
+    toastTimer = window.setTimeout(() => cartToast.classList.add("hidden"), 1400);
   }
 
   function renderCart() {
@@ -166,13 +208,28 @@
     }
     let total = 0;
     cartLines.innerHTML = entries.map((line) => {
-      total += line.price * line.quantity;
-      return `<div class="cart-line"><span>${line.name}</span><span>${line.quantity}</span><span>${(line.price * line.quantity).toFixed(2)}</span><button type="button" data-remove="${line.menu_item_id}">Remove</button></div>`;
+      const lineBase = line.price * line.quantity;
+      const linePkg = line.is_parcel ? (line.quantity * 20) : 0;
+      total += lineBase + linePkg;
+      const sizeText = line.size_label ? ` (${line.size_label})` : "";
+      return `<div class="cart-line">
+        <span>${line.name}${sizeText}</span>
+        <span class="qty-control">
+          <button type="button" data-cart-minus="${line.line_key}">-</button>
+          <strong>${line.quantity}</strong>
+          <button type="button" data-cart-plus="${line.line_key}">+</button>
+        </span>
+        <span>${lineBase.toFixed(2)}${line.is_parcel ? ` + ${linePkg.toFixed(2)} Pkg` : ""}</span>
+        <button type="button" data-remove="${line.line_key}">Remove</button>
+      </div>`;
     }).join("");
     cartTotal.textContent = total.toFixed(2);
     cartPayloadInput.value = JSON.stringify(entries.map((line) => ({
       menu_item_id: line.menu_item_id,
-      quantity: line.quantity
+      quantity: line.quantity,
+      is_parcel: !!line.is_parcel,
+      size_label: line.size_label || "",
+      unit_price: line.price
     })));
   }
 
@@ -191,20 +248,66 @@
       const quantity = normalizeQty(qtyInput.value);
       const menu_item_id = Number(btn.dataset.itemId);
       const name = btn.dataset.itemName;
-      const price = Number(btn.dataset.itemPrice);
-      if (!cart[menu_item_id]) {
-        cart[menu_item_id] = { menu_item_id, name, price, quantity: 0 };
+      const defaultPrice = Number(btn.dataset.itemPrice);
+      const selectedSize = card.querySelector(".size-select");
+      const sizeLabel = selectedSize?.value || "";
+      const sizePrice = selectedSize ? Number(selectedSize.selectedOptions[0]?.dataset?.price || defaultPrice) : defaultPrice;
+      const isParcel = !!card.querySelector(".parcel-checkbox")?.checked;
+      const lineKey = `${menu_item_id}:${isParcel ? 1 : 0}:${sizeLabel || "default"}`;
+      if (!cart[lineKey]) {
+        cart[lineKey] = {
+          line_key: lineKey,
+          menu_item_id,
+          name,
+          price: sizePrice,
+          quantity: 0,
+          is_parcel: isParcel,
+          size_label: sizeLabel || null,
+        };
       }
-      cart[menu_item_id].quantity += quantity;
+      cart[lineKey].quantity += quantity;
       qtyInput.value = 1;
       renderCart();
+      showToast(`${name} x ${quantity} added to the cart${isParcel ? " (Parcel)" : ""}`);
     });
+  });
+
+  document.querySelectorAll(".desc-btn").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      descTitle.textContent = btn.dataset.name || "Item Description";
+      descBody.textContent = btn.dataset.description || "No description available.";
+      descModal.classList.remove("hidden");
+    });
+  });
+
+  descClose?.addEventListener("click", () => descModal.classList.add("hidden"));
+  descModal?.addEventListener("click", (event) => {
+    if (event.target === descModal) descModal.classList.add("hidden");
+  });
+
+  document.querySelectorAll(".item-image").forEach((img) => {
+    img.addEventListener("click", () => img.classList.toggle("zoomed"));
   });
 
   cartLines.addEventListener("click", (event) => {
     const removeId = event.target.getAttribute("data-remove");
-    if (!removeId) return;
-    delete cart[Number(removeId)];
+    const plusId = event.target.getAttribute("data-cart-plus");
+    const minusId = event.target.getAttribute("data-cart-minus");
+    if (plusId) {
+      const key = plusId;
+      if (cart[key]) cart[key].quantity += 1;
+    } else if (minusId) {
+      const key = minusId;
+      if (cart[key] && cart[key].quantity > 1) {
+        cart[key].quantity -= 1;
+      } else if (cart[key]) {
+        delete cart[key];
+      }
+    } else if (removeId) {
+      delete cart[removeId];
+    } else {
+      return;
+    }
     renderCart();
   });
 

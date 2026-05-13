@@ -40,6 +40,7 @@ class UserType(TimestampMixin, db.Model):
     can_manage_library_plans = db.Column(db.Boolean, default=False, nullable=False)
     can_view_staff_profiles = db.Column(db.Boolean, default=False, nullable=False)
     can_upload_salary = db.Column(db.Boolean, default=False, nullable=False)
+    can_view_delivery_locations = db.Column(db.Boolean, default=False, nullable=False)
 
 
 class CafeTable(TimestampMixin, db.Model):
@@ -75,11 +76,14 @@ class MenuItem(TimestampMixin, db.Model):
         db.Integer, db.ForeignKey("menu_subcategory.id"), nullable=True
     )
     item_type = db.Column(db.String(80), nullable=False)
+    category_ids_json = db.Column(db.String(500), nullable=True)
     name = db.Column(db.String(120), nullable=False)
     image_url = db.Column(db.String(255), nullable=True)
     description = db.Column(db.String(500), nullable=True)
     calories = db.Column(db.Integer, nullable=True)
     price = db.Column(db.Float, nullable=False, default=0)
+    has_size_variants = db.Column(db.Boolean, default=False, nullable=False)
+    size_pricing_json = db.Column(db.String(1000), nullable=True)
     prep_station = db.Column(db.String(40), nullable=False, default="kitchen")
     available = db.Column(db.Boolean, default=True, nullable=False)
     category = db.relationship("MenuCategory", backref="items")
@@ -93,6 +97,16 @@ class CafeOrder(TimestampMixin, db.Model):
     status = db.Column(db.String(40), default="open", nullable=False)
     payment_type = db.Column(db.String(40), nullable=True)
     payment_reference = db.Column(db.String(120), nullable=True)
+    is_delivery = db.Column(db.Boolean, default=False, nullable=False)
+    delivery_customer_name = db.Column(db.String(120), nullable=True)
+    delivery_customer_mobile = db.Column(db.String(20), nullable=True)
+    delivery_address = db.Column(db.String(255), nullable=True)
+    delivery_lat = db.Column(db.Float, nullable=True)
+    delivery_lng = db.Column(db.Float, nullable=True)
+    delivery_map_url = db.Column(db.String(500), nullable=True)
+    packaging_charge = db.Column(db.Float, default=0, nullable=False)
+    delivery_distance_km = db.Column(db.Float, default=0, nullable=False)
+    delivery_charge = db.Column(db.Float, default=0, nullable=False)
     total_amount = db.Column(db.Float, default=0, nullable=False)
     table = db.relationship("CafeTable", backref="orders")
     ordered_by = db.relationship("User", backref="orders")
@@ -104,6 +118,7 @@ class CafeOrderItem(TimestampMixin, db.Model):
     menu_item_id = db.Column(db.Integer, db.ForeignKey("menu_item.id"), nullable=False)
     quantity = db.Column(db.Integer, nullable=False, default=1)
     unit_price = db.Column(db.Float, nullable=False, default=0)
+    size_label = db.Column(db.String(80), nullable=True)
     order = db.relationship("CafeOrder", backref="order_items")
     menu_item = db.relationship("MenuItem")
 
@@ -165,6 +180,18 @@ class StaffLeaveRequest(TimestampMixin, db.Model):
     user = db.relationship("User", backref="leave_requests")
 
 
+class Customer(TimestampMixin, db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    full_name = db.Column(db.String(120), nullable=False)
+    mobile = db.Column(db.String(20), unique=True, nullable=False)
+    password_hash = db.Column(db.String(255), nullable=False)
+    default_address = db.Column(db.String(255), nullable=True)
+    default_lat = db.Column(db.Float, nullable=True)
+    default_lng = db.Column(db.Float, nullable=True)
+    default_map_url = db.Column(db.String(500), nullable=True)
+    active = db.Column(db.Boolean, default=True, nullable=False)
+
+
 class StaffDocument(TimestampMixin, db.Model):
     id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False)
@@ -212,6 +239,7 @@ class LibraryMember(TimestampMixin, db.Model):
     subscription_start_date = db.Column(db.Date, nullable=True)
     subscription_end_date = db.Column(db.Date, nullable=True)
     card_number = db.Column(db.String(50), nullable=True)
+    govt_id_image_path = db.Column(db.String(255), nullable=True)
     active = db.Column(db.Boolean, default=True, nullable=False)
     subscription_plan = db.relationship("SubscriptionPlan", backref="members")
 
@@ -240,6 +268,7 @@ class LibraryLoan(TimestampMixin, db.Model):
     damage_fee = db.Column(db.Float, nullable=False, default=0)
     lost_fee = db.Column(db.Float, nullable=False, default=0)
     total_charge = db.Column(db.Float, nullable=False, default=0)
+    due_reminder_sent_on = db.Column(db.Date, nullable=True)
     status = db.Column(db.String(40), nullable=False, default="issued")
     member = db.relationship("LibraryMember", backref="loans")
     book = db.relationship("Book", backref="loans")
@@ -253,3 +282,15 @@ class LibraryPayment(TimestampMixin, db.Model):
     reference = db.Column(db.String(120), nullable=True)
     note = db.Column(db.String(255), nullable=True)
     member = db.relationship("LibraryMember", backref="payments")
+
+
+class TableBooking(TimestampMixin, db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    customer_name = db.Column(db.String(120), nullable=False)
+    phone = db.Column(db.String(20), nullable=False)
+    people_count = db.Column(db.Integer, nullable=False, default=2)
+    booking_date = db.Column(db.Date, nullable=False)
+    start_hour = db.Column(db.Integer, nullable=False)  # 8..21
+    end_hour = db.Column(db.Integer, nullable=False)  # 9..22
+    note = db.Column(db.String(255), nullable=True)
+    status = db.Column(db.String(20), nullable=False, default="booked")

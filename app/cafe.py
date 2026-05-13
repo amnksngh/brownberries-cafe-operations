@@ -1,5 +1,6 @@
 import json
 import calendar
+import math
 import os
 from datetime import date, datetime
 from io import BytesIO
@@ -22,12 +23,12 @@ from .models import (
     InventoryItem,
     MenuCategory,
     MenuItem,
-    MenuSubcategory,
     MenuType,
     StaffAttendance,
     UserType,
     StaffLeaveRequest,
     StaffProfile,
+    TableBooking,
     User,
 )
 
@@ -85,6 +86,8 @@ def _ensure_role_templates_exist():
             ut.can_access_cafe = True
             ut.can_manage_orders = True
             ut.can_manage_kitchen = True
+            if role_name.lower() == "delivery_partner":
+                ut.can_view_delivery_locations = True
             db.session.add(ut)
             changed = True
     if changed:
@@ -147,15 +150,24 @@ def _serialize_order(order: CafeOrder):
     return {
         "id": order.id,
         "table_id": order.table_id,
-        "table": order.table.name if order.table else "-",
+        "table": "For Delivery" if order.is_delivery else (order.table.name if order.table else "-"),
         "status": order.status,
         "payment_type": order.payment_type or "-",
         "total_amount": round(order.total_amount, 2),
+        "is_delivery": bool(order.is_delivery),
+        "delivery_customer_name": order.delivery_customer_name,
+        "delivery_customer_mobile": order.delivery_customer_mobile,
+        "delivery_address": order.delivery_address,
+        "delivery_map_url": order.delivery_map_url,
+        "packaging_charge": round(order.packaging_charge or 0, 2),
+        "delivery_distance_km": round(order.delivery_distance_km or 0, 2),
+        "delivery_charge": round(order.delivery_charge or 0, 2),
         "created_at": order.created_at.strftime("%Y-%m-%d %H:%M"),
         "items": [
             {
                 "name": item.menu_item.name if item.menu_item else "-",
                 "qty": item.quantity,
+                "size_label": item.size_label,
                 "prep_station": item.menu_item.prep_station if item.menu_item else "kitchen",
             }
             for item in order.order_items
@@ -181,15 +193,45 @@ def _ensure_menu_types_seeded():
         db.session.commit()
 
 
-def _ensure_default_category_id() -> int:
-    default_name = "General"
-    existing = MenuCategory.query.filter(db.func.lower(MenuCategory.name) == default_name.lower()).first()
-    if existing:
-        return existing.id
-    category = MenuCategory(name=default_name)
-    db.session.add(category)
-    db.session.commit()
-    return category.id
+def _parse_category_ids_from_form():
+    raw_ids = request.form.getlist("category_ids")
+    parsed = []
+    for value in raw_ids:
+        try:
+            cid = int(value)
+        except (TypeError, ValueError):
+            continue
+        if cid not in parsed:
+            parsed.append(cid)
+    return parsed
+
+
+def _parse_size_pricing_from_form():
+    pairs = []
+    for i in range(1, 7):
+        name = (request.form.get(f"size_name_{i}") or "").strip()
+        price_raw = (request.form.get(f"size_price_{i}") or "").strip()
+        if not name:
+            continue
+        try:
+            price = float(price_raw)
+        except (TypeError, ValueError):
+            continue
+        if price < 0:
+            continue
+        pairs.append({"size": name, "price": round(price, 2)})
+    return pairs
+
+
+def _apply_category_filter(query, category_id: int | None):
+    if not category_id:
+        return query
+    return query.filter(
+        db.or_(
+            MenuItem.category_id == category_id,
+            MenuItem.category_ids_json.ilike(f"%{category_id}%"),
+        )
+    )
 
 
 def _get_qr_guest_user_id() -> int:
@@ -222,10 +264,13 @@ def _parse_line_items_from_request():
                     try:
                         menu_item_id = int(row.get("menu_item_id"))
                         quantity = int(row.get("quantity"))
+                        is_parcel = True if row.get("is_parcel") else False
+                        size_label = (row.get("size_label") or "").strip() or None
+                        unit_price = float(row.get("unit_price")) if row.get("unit_price") is not None else None
                     except (TypeError, ValueError):
                         continue
                     if quantity > 0:
-                        cart_entries.append((menu_item_id, quantity))
+                        cart_entries.append((menu_item_id, quantity, is_parcel, size_label, unit_price))
         except (json.JSONDecodeError, TypeError):
             pass
 
@@ -235,7 +280,7 @@ def _parse_line_items_from_request():
                 menu_item_id = int(value)
                 quantity = int(request.form.get(f"qty_{menu_item_id}", 1))
                 if quantity > 0:
-                    cart_entries.append((menu_item_id, quantity))
+                    cart_entries.append((menu_item_id, quantity, False, None, None))
             except (TypeError, ValueError):
                 continue
 
@@ -243,23 +288,62 @@ def _parse_line_items_from_request():
         return []
 
     merged = {}
-    for menu_item_id, quantity in cart_entries:
-        merged[menu_item_id] = merged.get(menu_item_id, 0) + quantity
+    for menu_item_id, quantity, is_parcel, size_label, unit_price in cart_entries:
+        key = (menu_item_id, bool(is_parcel), size_label or "", unit_price if unit_price is not None else -1.0)
+        merged[key] = merged.get(key, 0) + quantity
 
-    items = MenuItem.query.filter(
-        MenuItem.id.in_(list(merged.keys())), MenuItem.available.is_(True)
-    ).all()
+    item_ids = list({key[0] for key in merged.keys()})
+    items = MenuItem.query.filter(MenuItem.id.in_(item_ids), MenuItem.available.is_(True)).all()
     item_by_id = {item.id: item for item in items}
     line_items = []
-    for menu_item_id, quantity in merged.items():
+    for (menu_item_id, is_parcel, size_label, unit_price_key), quantity in merged.items():
         menu_item = item_by_id.get(menu_item_id)
         if menu_item:
-            line_items.append((menu_item, quantity))
+            line_items.append((menu_item, quantity, is_parcel, size_label or None, None if unit_price_key == -1.0 else unit_price_key))
     return line_items
+
+
+def _haversine_km(lat1, lng1, lat2, lng2):
+    radius_km = 6371.0
+    d_lat = math.radians(lat2 - lat1)
+    d_lng = math.radians(lng2 - lng1)
+    a = (
+        math.sin(d_lat / 2) ** 2
+        + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.sin(d_lng / 2) ** 2
+    )
+    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+    return radius_km * c
 
 
 def _create_order(table_id: int, ordered_by_user_id: int, status: str, payment_type, payment_reference):
     line_items = _parse_line_items_from_request()
+    if not line_items:
+        return None
+    return create_cafe_order(
+        table_id=table_id,
+        ordered_by_user_id=ordered_by_user_id,
+        line_items=line_items,
+        status=status,
+        payment_type=payment_type,
+        payment_reference=payment_reference,
+    )
+
+
+def create_cafe_order(
+    table_id: int,
+    ordered_by_user_id: int,
+    line_items,
+    status: str = "open",
+    payment_type=None,
+    payment_reference=None,
+    is_delivery: bool = False,
+    delivery_customer_name: str | None = None,
+    delivery_customer_mobile: str | None = None,
+    delivery_address: str | None = None,
+    delivery_lat: float | None = None,
+    delivery_lng: float | None = None,
+    delivery_map_url: str | None = None,
+):
     if not line_items:
         return None
 
@@ -269,23 +353,58 @@ def _create_order(table_id: int, ordered_by_user_id: int, status: str, payment_t
         status=status,
         payment_type=payment_type,
         payment_reference=payment_reference,
+        is_delivery=is_delivery,
+        delivery_customer_name=delivery_customer_name,
+        delivery_customer_mobile=delivery_customer_mobile,
+        delivery_address=delivery_address,
+        delivery_lat=delivery_lat,
+        delivery_lng=delivery_lng,
+        delivery_map_url=delivery_map_url,
     )
     db.session.add(order)
     db.session.flush()
 
     total = 0.0
-    for menu_item, qty in line_items:
-        total += menu_item.price * qty
+    packaging_charge = 0.0
+    for row in line_items:
+        if len(row) == 5:
+            menu_item, qty, is_parcel, size_label, unit_price = row
+        elif len(row) == 3:
+            menu_item, qty, is_parcel = row
+            size_label = None
+            unit_price = None
+        else:
+            menu_item, qty = row
+            is_parcel = False
+            size_label = None
+            unit_price = None
+        price_to_use = float(unit_price) if unit_price is not None else float(menu_item.price)
+        total += price_to_use * qty
+        if is_parcel:
+            packaging_charge += 20.0 * qty
         db.session.add(
             CafeOrderItem(
                 order_id=order.id,
                 menu_item_id=menu_item.id,
                 quantity=qty,
-                unit_price=menu_item.price,
+                unit_price=price_to_use,
+                size_label=size_label,
             )
         )
 
-    order.total_amount = round(total, 2)
+    delivery_distance_km = 0.0
+    delivery_charge = 0.0
+    if is_delivery and delivery_lat is not None and delivery_lng is not None:
+        cafe_lat = 25.207989477704068
+        cafe_lng = 80.87374457551877
+        direct_km = _haversine_km(cafe_lat, cafe_lng, float(delivery_lat), float(delivery_lng))
+        delivery_distance_km = round(direct_km * 1.3, 2)
+        delivery_charge = round(delivery_distance_km * 5.0, 2)
+
+    order.packaging_charge = round(packaging_charge, 2)
+    order.delivery_distance_km = delivery_distance_km
+    order.delivery_charge = delivery_charge
+    order.total_amount = round(total + order.packaging_charge + order.delivery_charge, 2)
     db.session.commit()
     payload = _serialize_order(order)
     socketio.emit("order_created", payload, namespace="/kitchen")
@@ -303,6 +422,54 @@ def home():
         low_stock=InventoryItem.query.filter(
             InventoryItem.current_amount <= InventoryItem.reorder_level
         ).count(),
+        delivery_open_orders=CafeOrder.query.filter_by(is_delivery=True).filter(CafeOrder.status.notin_(["paid", "cancelled"])).count(),
+        upcoming_bookings=TableBooking.query.filter(
+            TableBooking.booking_date >= date.today(),
+            TableBooking.status == "booked",
+        ).count(),
+    )
+
+
+@bp.route("/bookings", methods=["GET", "POST"])
+@roles_required("admin", "manager", "cashier")
+def bookings():
+    if request.method == "POST":
+        booking = TableBooking.query.get_or_404(int(request.form["booking_id"]))
+        new_status = (request.form.get("status") or "booked").strip().lower()
+        if new_status not in ["booked", "confirmed", "arrived", "completed", "cancelled", "no_show"]:
+            new_status = "booked"
+        booking.status = new_status
+        db.session.commit()
+        flash("Booking status updated.", "success")
+        return redirect(url_for("cafe.bookings", status=request.args.get("status", "")))
+
+    status = (request.args.get("status") or "").strip().lower()
+    bookings_query = TableBooking.query
+    if status:
+        bookings_query = bookings_query.filter(TableBooking.status == status)
+    bookings_list = (
+        bookings_query.order_by(TableBooking.booking_date.asc(), TableBooking.start_hour.asc(), TableBooking.created_at.asc())
+        .all()
+    )
+    return render_template("cafe/bookings.html", bookings=bookings_list, selected_status=status)
+
+
+@bp.route("/deliveries")
+@roles_required("admin", "manager", "delivery_partner")
+def delivery_locations():
+    cafe_lat = 25.207989477704068
+    cafe_lng = 80.87374457551877
+    orders = (
+        CafeOrder.query.options(joinedload(CafeOrder.order_items).joinedload(CafeOrderItem.menu_item))
+        .filter(CafeOrder.is_delivery.is_(True), CafeOrder.status.notin_(["paid", "cancelled"]))
+        .order_by(CafeOrder.created_at.asc())
+        .all()
+    )
+    return render_template(
+        "cafe/deliveries.html",
+        orders=orders,
+        cafe_lat=cafe_lat,
+        cafe_lng=cafe_lng,
     )
 
 
@@ -386,37 +553,91 @@ def table_qr_download(table_id):
 @roles_required("admin", "manager")
 def menu():
     _ensure_menu_types_seeded()
+    stale_count = MenuItem.query.filter(MenuItem.subcategory_id.isnot(None)).count()
+    if stale_count:
+        MenuItem.query.filter(MenuItem.subcategory_id.isnot(None)).update(
+            {MenuItem.subcategory_id: None}, synchronize_session=False
+        )
+        db.session.commit()
     if request.method == "POST":
         menu_type = MenuType.query.get(int(request.form["menu_type_id"]))
         if not menu_type:
             flash("Please select a valid item type.", "error")
             return redirect(url_for("cafe.menu"))
+        category_ids = _parse_category_ids_from_form()
+        if not category_ids:
+            flash("Please select at least one category.", "error")
+            return redirect(url_for("cafe.menu"))
         item = MenuItem(
-            category_id=int(request.form["category_id"]),
-            subcategory_id=int(request.form["subcategory_id"])
-            if request.form.get("subcategory_id")
-            else None,
+            category_id=category_ids[0],
+            subcategory_id=None,
             item_type=menu_type.name,
+            category_ids_json=json.dumps(category_ids),
             name=request.form["name"].strip(),
             image_url=request.form.get("image_url", "").strip() or None,
             description=request.form.get("description", "").strip() or None,
             calories=int(request.form["calories"]) if request.form.get("calories") else None,
             price=float(request.form["price"]),
+            has_size_variants=True if request.form.get("has_size_variants") else False,
+            size_pricing_json=None,
             prep_station=request.form.get("prep_station", "kitchen"),
             available=True if request.form.get("available") else False,
         )
+        if item.has_size_variants:
+            size_pairs = _parse_size_pricing_from_form()
+            item.size_pricing_json = json.dumps(size_pairs) if size_pairs else None
         db.session.add(item)
         db.session.commit()
         flash("Menu item added.", "success")
         return redirect(url_for("cafe.menu"))
+    items = MenuItem.query.order_by(MenuItem.name).all()
+    item_category_map = {}
+    for item in items:
+        parsed = []
+        if item.category_ids_json:
+            try:
+                raw = json.loads(item.category_ids_json)
+                if isinstance(raw, list):
+                    parsed = [int(x) for x in raw if str(x).isdigit()]
+            except (TypeError, ValueError, json.JSONDecodeError):
+                parsed = []
+        if not parsed and item.category_id:
+            parsed = [item.category_id]
+        item_category_map[item.id] = parsed
+    selected_category_filter = request.args.get("category_filter", type=int)
+    availability_items = _apply_category_filter(
+        MenuItem.query.order_by(MenuItem.name.asc()), selected_category_filter
+    ).all()
+    active_menu_section = (request.args.get("section") or "catalog").strip().lower()
+    if active_menu_section not in ["catalog", "add_item", "items", "availability"]:
+        active_menu_section = "catalog"
     return render_template(
         "cafe/menu.html",
-        items=MenuItem.query.order_by(MenuItem.name).all(),
+        items=items,
         categories=MenuCategory.query.order_by(MenuCategory.name).all(),
-        subcategories=MenuSubcategory.query.order_by(MenuSubcategory.name).all(),
         menu_types=MenuType.query.order_by(MenuType.name).all(),
         prep_station_options=PREP_STATION_OPTIONS,
+        item_category_map=item_category_map,
+        active_menu_section=active_menu_section,
+        availability_items=availability_items,
+        selected_category_filter=selected_category_filter,
     )
+
+
+@bp.route("/menu/availability", methods=["POST"])
+@roles_required("admin", "manager")
+def update_menu_availability():
+    category_filter = request.form.get("category_filter", "").strip()
+    category_filter_id = int(category_filter) if category_filter.isdigit() else None
+    scoped_items = _apply_category_filter(MenuItem.query, category_filter_id).all()
+    selected_ids = {
+        int(x) for x in request.form.getlist("available_item_ids") if str(x).isdigit()
+    }
+    for item in scoped_items:
+        item.available = item.id in selected_ids
+    db.session.commit()
+    flash("Menu item availability updated.", "success")
+    return redirect(url_for("cafe.menu", section="availability", category_filter=category_filter or ""))
 
 
 @bp.route("/menu/categories", methods=["POST"])
@@ -433,31 +654,6 @@ def add_category():
     db.session.add(MenuCategory(name=name))
     db.session.commit()
     flash("Category added.", "success")
-    return redirect(url_for("cafe.menu"))
-
-
-@bp.route("/menu/subcategories", methods=["POST"])
-@roles_required("admin", "manager")
-def add_subcategory():
-    name = request.form["name"].strip()
-    if not name:
-        flash("Subcategory name is required.", "error")
-        return redirect(url_for("cafe.menu"))
-    duplicate = MenuSubcategory.query.filter(
-        db.func.lower(MenuSubcategory.name) == name.lower()
-    ).first()
-    if duplicate:
-        flash("Subcategory already exists.", "error")
-        return redirect(url_for("cafe.menu"))
-    default_category_id = _ensure_default_category_id()
-    db.session.add(
-        MenuSubcategory(
-            name=name,
-            category_id=default_category_id,
-        )
-    )
-    db.session.commit()
-    flash("Subcategory added.", "success")
     return redirect(url_for("cafe.menu"))
 
 
@@ -491,39 +687,6 @@ def delete_category(category_id):
     db.session.delete(category)
     db.session.commit()
     flash("Category deleted.", "success")
-    return redirect(url_for("cafe.menu"))
-
-
-@bp.route("/menu/subcategories/<int:subcategory_id>/update", methods=["POST"])
-@roles_required("admin", "manager")
-def update_subcategory(subcategory_id):
-    subcategory = MenuSubcategory.query.get_or_404(subcategory_id)
-    name = request.form["name"].strip()
-    if not name:
-        flash("Subcategory name is required.", "error")
-        return redirect(url_for("cafe.menu"))
-    duplicate = MenuSubcategory.query.filter(
-        db.func.lower(MenuSubcategory.name) == name.lower(), MenuSubcategory.id != subcategory.id
-    ).first()
-    if duplicate:
-        flash("Subcategory with same name already exists.", "error")
-        return redirect(url_for("cafe.menu"))
-    subcategory.name = name
-    db.session.commit()
-    flash("Subcategory updated.", "success")
-    return redirect(url_for("cafe.menu"))
-
-
-@bp.route("/menu/subcategories/<int:subcategory_id>/delete", methods=["POST"])
-@roles_required("admin", "manager")
-def delete_subcategory(subcategory_id):
-    subcategory = MenuSubcategory.query.get_or_404(subcategory_id)
-    if subcategory.items:
-        flash("Subcategory cannot be deleted while linked menu items exist.", "error")
-        return redirect(url_for("cafe.menu"))
-    db.session.delete(subcategory)
-    db.session.commit()
-    flash("Subcategory deleted.", "success")
     return redirect(url_for("cafe.menu"))
 
 
@@ -596,14 +759,25 @@ def update_menu_item(item_id):
     if not menu_type:
         flash("Please select a valid type.", "error")
         return redirect(url_for("cafe.menu"))
-    item.category_id = int(request.form["category_id"])
-    item.subcategory_id = int(request.form["subcategory_id"]) if request.form.get("subcategory_id") else None
+    category_ids = _parse_category_ids_from_form()
+    if not category_ids:
+        flash("Please select at least one category.", "error")
+        return redirect(url_for("cafe.menu"))
+    item.category_id = category_ids[0]
+    item.category_ids_json = json.dumps(category_ids)
+    item.subcategory_id = None
     item.item_type = menu_type.name
     item.name = request.form["name"].strip()
     item.image_url = request.form.get("image_url", "").strip() or None
     item.description = request.form.get("description", "").strip() or None
     item.calories = int(request.form["calories"]) if request.form.get("calories") else None
     item.price = float(request.form["price"])
+    item.has_size_variants = True if request.form.get("has_size_variants") else False
+    if item.has_size_variants:
+        size_pairs = _parse_size_pricing_from_form()
+        item.size_pricing_json = json.dumps(size_pairs) if size_pairs else None
+    else:
+        item.size_pricing_json = None
     item.prep_station = request.form.get("prep_station", "kitchen")
     item.available = True if request.form.get("available") else False
     db.session.commit()
@@ -632,7 +806,7 @@ def orders():
         order = _create_order(
             table_id=selected_table_id,
             ordered_by_user_id=g.current_user.id,
-            status="open",
+            status="pending_approval",
             payment_type=None,
             payment_reference=None,
         )
@@ -644,17 +818,13 @@ def orders():
 
     table_id = request.args.get("table_id", type=int)
     category_id = request.args.get("category_id", type=int)
-    subcategory_id = request.args.get("subcategory_id", type=int)
     item_type = (request.args.get("item_type") or "").strip()
     tables = CafeTable.query.filter_by(active=True).order_by(CafeTable.name).all()
     if not table_id and tables:
         table_id = tables[0].id
 
     menu_query = MenuItem.query.filter_by(available=True)
-    if category_id:
-        menu_query = menu_query.filter(MenuItem.category_id == category_id)
-    if subcategory_id:
-        menu_query = menu_query.filter(MenuItem.subcategory_id == subcategory_id)
+    menu_query = _apply_category_filter(menu_query, category_id)
     if item_type:
         menu_query = menu_query.filter(MenuItem.item_type == item_type)
     filtered_items = menu_query.all()
@@ -672,9 +842,21 @@ def orders():
         filtered_items,
         key=lambda item: (-item_frequency.get(item.id, 0), item.name.lower()),
     )
+    item_size_map = {}
+    for item in menu_items:
+        sizes = []
+        if item.size_pricing_json:
+            try:
+                raw = json.loads(item.size_pricing_json)
+                if isinstance(raw, list):
+                    for row in raw:
+                        if isinstance(row, dict) and row.get("size") and row.get("price") is not None:
+                            sizes.append({"size": str(row["size"]), "price": float(row["price"])})
+            except (TypeError, ValueError, json.JSONDecodeError):
+                sizes = []
+        item_size_map[item.id] = sizes
 
     categories = MenuCategory.query.order_by(MenuCategory.name.asc()).all()
-    subcategories = MenuSubcategory.query.order_by(MenuSubcategory.name.asc()).all()
     item_types = [
         row[0]
         for row in db.session.query(MenuItem.item_type)
@@ -690,12 +872,11 @@ def orders():
         menu_items=menu_items,
         orders=CafeOrder.query.order_by(CafeOrder.created_at.desc()).limit(50).all(),
         categories=categories,
-        subcategories=subcategories,
         item_types=item_types,
         selected_category_id=category_id,
-        selected_subcategory_id=subcategory_id,
         selected_item_type=item_type,
         item_frequency=item_frequency,
+        item_size_map=item_size_map,
         selected_table_id=table_id,
         table_orders=CafeOrder.query.filter(
             CafeOrder.table_id == table_id, CafeOrder.status != "paid"
@@ -725,6 +906,22 @@ def mark_order_paid(order_id):
     if next_url:
         return redirect(next_url)
     return redirect(url_for("cafe.cashier", table_id=order.table_id))
+
+
+@bp.route("/orders/<int:order_id>/approve", methods=["POST"])
+@roles_required("admin", "manager", "cashier", "librarian", "staff")
+def approve_order(order_id):
+    order = CafeOrder.query.get_or_404(order_id)
+    if order.status != "pending_approval":
+        flash("Order is not pending approval.", "error")
+        return redirect(request.form.get("next") or url_for("cafe.cashier", table_id=order.table_id))
+    order.status = "open"
+    db.session.commit()
+    payload = _serialize_order(order)
+    socketio.emit("order_updated", payload, namespace="/kitchen")
+    socketio.emit("order_updated", payload, namespace="/table")
+    flash(f"Order #{order.id} approved.", "success")
+    return redirect(request.form.get("next") or url_for("cafe.cashier", table_id=order.table_id))
 
 
 @bp.route("/tables/<int:table_id>/clear-orders", methods=["POST"])
@@ -812,14 +1009,77 @@ def table_order():
     order = _create_order(
         table_id=table.id,
         ordered_by_user_id=g.current_user.id if getattr(g, "current_user", None) else _get_qr_guest_user_id(),
-        status="open",
+        status="pending_approval",
         payment_type=None,
         payment_reference=None,
     )
     if not order:
         flash("Please add at least one menu item in cart.", "error")
         return redirect(url_for("main.table_qr_page", slug=slug))
-    flash("Order placed successfully.", "success")
+    flash("Order request sent for approval.", "success")
+    return redirect(url_for("main.table_qr_page", slug=slug))
+
+
+@bp.route("/table-order/<int:order_id>/delete", methods=["POST"])
+def delete_pending_table_order(order_id):
+    slug = (request.form.get("slug") or "").strip()
+    table = CafeTable.query.filter_by(qr_slug=slug, active=True).first()
+    if not table:
+        flash("Invalid table QR.", "error")
+        return redirect(url_for("main.table_qr_page", slug=slug))
+    order = CafeOrder.query.get_or_404(order_id)
+    if order.table_id != table.id or order.status != "pending_approval":
+        flash("Only pending approval orders can be deleted.", "error")
+        return redirect(url_for("main.table_qr_page", slug=slug))
+    for oi in list(order.order_items):
+        db.session.delete(oi)
+    db.session.delete(order)
+    db.session.commit()
+    flash("Pending order deleted.", "success")
+    return redirect(url_for("main.table_qr_page", slug=slug))
+
+
+@bp.route("/table-order/<int:order_id>/edit", methods=["POST"])
+def edit_pending_table_order(order_id):
+    slug = (request.form.get("slug") or "").strip()
+    table = CafeTable.query.filter_by(qr_slug=slug, active=True).first()
+    if not table:
+        flash("Invalid table QR.", "error")
+        return redirect(url_for("main.table_qr_page", slug=slug))
+    order = CafeOrder.query.get_or_404(order_id)
+    if order.table_id != table.id or order.status != "pending_approval":
+        flash("Only pending approval orders can be edited.", "error")
+        return redirect(url_for("main.table_qr_page", slug=slug))
+    line_items = _parse_line_items_from_request()
+    if not line_items:
+        flash("Please add at least one menu item in cart.", "error")
+        return redirect(url_for("main.table_qr_page", slug=slug))
+    for oi in list(order.order_items):
+        db.session.delete(oi)
+    total = 0.0
+    packaging_charge = 0.0
+    for row in line_items:
+        menu_item, qty, is_parcel, size_label, unit_price = row if len(row) == 5 else (*row, None, None)  # type: ignore
+        price_to_use = float(unit_price) if unit_price is not None else float(menu_item.price)
+        total += price_to_use * qty
+        if is_parcel:
+            packaging_charge += 20.0 * qty
+        db.session.add(
+            CafeOrderItem(
+                order_id=order.id,
+                menu_item_id=menu_item.id,
+                quantity=qty,
+                unit_price=price_to_use,
+                size_label=size_label,
+            )
+        )
+    order.packaging_charge = round(packaging_charge, 2)
+    order.total_amount = round(total + order.packaging_charge + (order.delivery_charge or 0), 2)
+    db.session.commit()
+    payload = _serialize_order(order)
+    socketio.emit("order_updated", payload, namespace="/kitchen")
+    socketio.emit("order_updated", payload, namespace="/table")
+    flash("Pending order updated.", "success")
     return redirect(url_for("main.table_qr_page", slug=slug))
 
 
@@ -944,6 +1204,25 @@ def export_stats():
 @roles_required("admin", "manager")
 def staff():
     _ensure_role_templates_exist()
+    allowed_sections = {
+        "add_new_staff",
+        "active_staff",
+        "attendance_calendar",
+        "attendance_entry",
+        "leave_requests",
+    }
+    active_staff_section = (request.args.get("section") or "add_new_staff").strip().lower()
+    if active_staff_section not in allowed_sections:
+        active_staff_section = "add_new_staff"
+
+    def _staff_redirect(section=None, **kwargs):
+        target_section = (section or active_staff_section).strip().lower()
+        if target_section not in allowed_sections:
+            target_section = "add_new_staff"
+        params = {"section": target_section}
+        params.update(kwargs)
+        return redirect(url_for("cafe.staff", **params))
+
     if request.method == "POST":
         action = request.form.get("action", "create")
 
@@ -952,7 +1231,7 @@ def staff():
             existing = User.query.filter_by(email=email).first()
             if existing:
                 flash("A user with this email already exists.", "error")
-                return redirect(url_for("cafe.staff"))
+                return _staff_redirect("add_new_staff")
             role = request.form.get("role", "staff")
             if role not in _get_role_options():
                 role = "staff"
@@ -980,7 +1259,7 @@ def staff():
             profile.archived = False
             db.session.commit()
             flash("Staff member added.", "success")
-            return redirect(url_for("cafe.staff"))
+            return _staff_redirect("active_staff")
 
         if action == "update":
             user = User.query.get_or_404(int(request.form["user_id"]))
@@ -991,7 +1270,7 @@ def staff():
             duplicate = User.query.filter(User.email == user.email, User.id != user.id).first()
             if duplicate:
                 flash("Another user already has this email.", "error")
-                return redirect(url_for("cafe.staff"))
+                return _staff_redirect("active_staff")
             user.role = request.form.get("role", user.role)
             if user.role not in _get_role_options():
                 user.role = "staff"
@@ -1028,13 +1307,13 @@ def staff():
             profile.archived = not user.active
             db.session.commit()
             flash("Staff member updated.", "success")
-            return redirect(url_for("cafe.staff"))
+            return _staff_redirect("active_staff")
 
         if action == "delete":
             user = User.query.get_or_404(int(request.form["user_id"]))
             if _is_protected_admin(user):
                 flash("Cafe Admin cannot be deleted.", "error")
-                return redirect(url_for("cafe.staff"))
+                return _staff_redirect("active_staff")
             if user.staff_profile:
                 db.session.delete(user.staff_profile)
             StaffAttendance.query.filter_by(user_id=user.id).delete()
@@ -1042,19 +1321,19 @@ def staff():
             db.session.delete(user)
             db.session.commit()
             flash("Staff member deleted.", "success")
-            return redirect(url_for("cafe.staff"))
+            return _staff_redirect("active_staff")
 
         if action == "archive":
             user = User.query.get_or_404(int(request.form["user_id"]))
             if user.role == "admin" and user.email == "admin@brownberries.local":
                 flash("Cafe Admin cannot be archived.", "error")
-                return redirect(url_for("cafe.staff"))
+                return _staff_redirect("active_staff")
             profile = _ensure_staff_profile(user)
             profile.archived = True
             user.active = False
             db.session.commit()
             flash("Staff member archived.", "success")
-            return redirect(url_for("cafe.staff"))
+            return _staff_redirect("active_staff")
 
         if action == "leave_decision":
             leave = StaffLeaveRequest.query.get_or_404(int(request.form["leave_id"]))
@@ -1065,7 +1344,7 @@ def staff():
             leave.admin_remarks = request.form.get("admin_remarks", "").strip() or None
             db.session.commit()
             flash("Leave request updated.", "success")
-            return redirect(url_for("cafe.staff"))
+            return _staff_redirect("leave_requests")
 
         if action == "attendance_for_user":
             target_user_id = int(request.form["target_user_id"])
@@ -1089,7 +1368,7 @@ def staff():
                 )
             db.session.commit()
             flash("Attendance saved for selected staff member.", "success")
-            return redirect(url_for("cafe.staff", attendance_user_id=target_user_id))
+            return _staff_redirect("attendance_entry", attendance_user_id=target_user_id)
 
     staff_users = (
         User.query.filter(User.role.in_(STAFF_ROLES), User.email != "qr.guest@brownberries.local")
@@ -1163,6 +1442,7 @@ def staff():
         selected_attendance_map=selected_attendance_map,
         staff_role_options=_get_role_options(),
         user_types=UserType.query.order_by(UserType.name.asc()).all(),
+        active_staff_section=active_staff_section,
     )
 
 
@@ -1186,7 +1466,7 @@ def user_types():
                 "can_manage_orders", "can_manage_kitchen", "can_manage_inventory", "can_manage_cashier",
                 "can_manage_stats", "can_manage_library_members", "can_manage_library_books",
                 "can_manage_library_loans", "can_manage_library_payments", "can_manage_library_plans",
-                "can_view_staff_profiles", "can_upload_salary",
+                "can_view_staff_profiles", "can_upload_salary", "can_view_delivery_locations",
             ]:
                 setattr(ut, field, True if request.form.get(field) else False)
             # Operational requirement: all roles can take orders and view running orders.
@@ -1204,7 +1484,7 @@ def user_types():
                 "can_manage_orders", "can_manage_kitchen", "can_manage_inventory", "can_manage_cashier",
                 "can_manage_stats", "can_manage_library_members", "can_manage_library_books",
                 "can_manage_library_loans", "can_manage_library_payments", "can_manage_library_plans",
-                "can_view_staff_profiles", "can_upload_salary",
+                "can_view_staff_profiles", "can_upload_salary", "can_view_delivery_locations",
             ]:
                 setattr(ut, field, True if request.form.get(f"{field}_{ut.id}") else False)
             ut.can_manage_orders = True

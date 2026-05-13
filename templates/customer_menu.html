@@ -1,0 +1,235 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="panel">
+  <div class="split-head">
+    <h2>Order for Delivery</h2>
+    <a class="button-link" href="{{ url_for('main.customer_logout') }}">Logout</a>
+  </div>
+  <p class="muted">Hi {{ customer.full_name }}, select items and place your delivery order.</p>
+</section>
+
+<section class="panel">
+  <form method="get" class="grid grid-4">
+    <label>Type
+      <select name="item_type">
+        <option value="">All</option>
+        {% for t in item_types %}
+        <option value="{{ t }}" {% if selected_item_type == t %}selected{% endif %}>{{ t }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>Category
+      <select name="category_id">
+        <option value="">All</option>
+        {% for c in categories %}
+        <option value="{{ c.id }}" {% if selected_category_id == c.id %}selected{% endif %}>{{ c.name }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <button type="submit">Apply Filters</button>
+  </form>
+</section>
+
+<form method="post" id="delivery-order-form" class="grid">
+  <section class="panel">
+    <h2>Menu</h2>
+    <table class="qr-menu-table">
+      <tr><th>Item</th><th>Details</th><th>Qty</th><th>Add</th></tr>
+      {% for item in menu_items %}
+      <tr>
+        <td>{% if item.image_url %}<img src="{{ item.image_url }}" class="thumb-image qr-thumb" alt="{{ item.name }}">{% else %}<div class="thumb-image qr-thumb placeholder">No Image</div>{% endif %}</td>
+        <td>
+          <strong>{{ item.name }}</strong><br>
+          <span class="muted">{{ item.category.name }}, {{ item.item_type }}</span><br>
+          <button
+            type="button"
+            class="desc-btn"
+            data-name="{{ item.name }}"
+            data-description="{{ item.description or 'No description available.' }}"
+          >View Description</button><br>
+          <span class="muted">Calories: {{ item.calories or "-" }}</span>
+        </td>
+        <td>
+          <div class="qty-control">
+            <button type="button" class="qty-btn" data-role="minus">-</button>
+            <input type="number" min="1" value="1" class="qty-input" />
+            <button type="button" class="qty-btn" data-role="plus">+</button>
+          </div>
+        </td>
+        <td><button type="button" class="add-to-cart-btn" data-item-id="{{ item.id }}" data-item-name="{{ item.name }}" data-item-price="{{ item.price }}">Add</button></td>
+      </tr>
+      {% endfor %}
+    </table>
+  </section>
+
+  <section class="panel">
+    <h2>Cart</h2>
+    <div id="cart-lines" class="cart-lines"></div>
+    <p><strong>Total:</strong> <span id="cart-total">0.00</span></p>
+    <input type="hidden" id="cart-payload" name="cart_payload" />
+
+    <label><input type="checkbox" id="use-default-address" name="use_default_address" value="1" {% if customer.default_address %}checked{% endif %} /> Use default address</label>
+    <label>Delivery Address <input type="text" name="delivery_address" id="delivery-address" value="{{ customer.default_address or '' }}" /></label>
+    <label>Google Maps Location Link <input type="url" id="delivery-map-url" name="delivery_map_url" value="{{ customer.default_map_url or '' }}" placeholder="https://maps.app.goo.gl/..." /></label>
+    <input type="hidden" id="delivery-lat" name="delivery_lat" value="{{ customer.default_lat or '' }}" />
+    <input type="hidden" id="delivery-lng" name="delivery_lng" value="{{ customer.default_lng or '' }}" />
+    <button type="button" id="fetch-delivery-location">Use Current Location</button>
+    <p id="delivery-location-status" class="muted">Location not selected yet.</p>
+    <button type="submit">Place Delivery Order</button>
+  </section>
+</form>
+
+<div id="desc-modal" class="desc-modal hidden">
+  <div class="desc-dialog">
+    <h3 id="desc-title"></h3>
+    <p id="desc-body"></p>
+    <button type="button" id="desc-close">Close</button>
+  </div>
+</div>
+
+<div id="cart-toast" class="cart-toast hidden"></div>
+
+<script>
+  const cart = {};
+  const cartLines = document.getElementById("cart-lines");
+  const cartPayloadInput = document.getElementById("cart-payload");
+  const cartTotal = document.getElementById("cart-total");
+  const orderForm = document.getElementById("delivery-order-form");
+  const useDefault = document.getElementById("use-default-address");
+  const addressInput = document.getElementById("delivery-address");
+  const latInput = document.getElementById("delivery-lat");
+  const lngInput = document.getElementById("delivery-lng");
+  const mapUrlInput = document.getElementById("delivery-map-url");
+  const deliveryLocationStatus = document.getElementById("delivery-location-status");
+  const cartToast = document.getElementById("cart-toast");
+  const descModal = document.getElementById("desc-modal");
+  const descTitle = document.getElementById("desc-title");
+  const descBody = document.getElementById("desc-body");
+  const descClose = document.getElementById("desc-close");
+  let toastTimer = null;
+
+  function normalizeQty(value) {
+    const num = Number(value);
+    if (!Number.isFinite(num) || num < 1) return 1;
+    return Math.floor(num);
+  }
+
+  function showToast(message) {
+    if (!cartToast) return;
+    cartToast.textContent = message;
+    cartToast.classList.remove("hidden");
+    if (toastTimer) window.clearTimeout(toastTimer);
+    toastTimer = window.setTimeout(() => cartToast.classList.add("hidden"), 1400);
+  }
+
+  function renderCart() {
+    const entries = Object.values(cart);
+    if (!entries.length) {
+      cartLines.innerHTML = '<p class="muted">No items in cart.</p>';
+      cartTotal.textContent = "0.00";
+      cartPayloadInput.value = "";
+      return;
+    }
+    let total = 0;
+    cartLines.innerHTML = entries.map((line) => {
+      total += line.price * line.quantity;
+      return `<div class="cart-line">
+        <span>${line.name}</span>
+        <span class="qty-control">
+          <button type="button" data-cart-minus="${line.menu_item_id}">-</button>
+          <strong>${line.quantity}</strong>
+          <button type="button" data-cart-plus="${line.menu_item_id}">+</button>
+        </span>
+        <span>${(line.price * line.quantity).toFixed(2)}</span>
+        <button type="button" data-remove="${line.menu_item_id}">Remove</button>
+      </div>`;
+    }).join("");
+    cartTotal.textContent = total.toFixed(2);
+    cartPayloadInput.value = JSON.stringify(entries.map((line) => ({ menu_item_id: line.menu_item_id, quantity: line.quantity })));
+  }
+  document.querySelectorAll(".qty-control").forEach((wrap) => {
+    const input = wrap.querySelector(".qty-input");
+    wrap.querySelector('[data-role="minus"]').addEventListener("click", () => input.value = Math.max(1, normalizeQty(input.value) - 1));
+    wrap.querySelector('[data-role="plus"]').addEventListener("click", () => input.value = normalizeQty(input.value) + 1);
+  });
+  document.querySelectorAll(".add-to-cart-btn").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const row = btn.closest("tr");
+      const qtyInput = row.querySelector(".qty-input");
+      const quantity = normalizeQty(qtyInput.value);
+      const menu_item_id = Number(btn.dataset.itemId);
+      const name = btn.dataset.itemName;
+      const price = Number(btn.dataset.itemPrice);
+      if (!cart[menu_item_id]) cart[menu_item_id] = { menu_item_id, name, price, quantity: 0 };
+      cart[menu_item_id].quantity += quantity;
+      qtyInput.value = 1;
+      renderCart();
+      showToast(`${name} x ${quantity} added to the cart`);
+    });
+  });
+  document.querySelectorAll(".desc-btn").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      descTitle.textContent = btn.dataset.name || "Item Description";
+      descBody.textContent = btn.dataset.description || "No description available.";
+      descModal.classList.remove("hidden");
+    });
+  });
+  descClose?.addEventListener("click", () => descModal.classList.add("hidden"));
+  descModal?.addEventListener("click", (event) => {
+    if (event.target === descModal) descModal.classList.add("hidden");
+  });
+  document.querySelectorAll(".qr-thumb").forEach((img) => {
+    img.addEventListener("click", () => img.classList.toggle("zoomed"));
+  });
+  cartLines.addEventListener("click", (e) => {
+    const id = e.target.getAttribute("data-remove");
+    const plusId = e.target.getAttribute("data-cart-plus");
+    const minusId = e.target.getAttribute("data-cart-minus");
+    if (plusId) {
+      const key = Number(plusId);
+      if (cart[key]) cart[key].quantity += 1;
+    } else if (minusId) {
+      const key = Number(minusId);
+      if (cart[key] && cart[key].quantity > 1) {
+        cart[key].quantity -= 1;
+      } else if (cart[key]) {
+        delete cart[key];
+      }
+    } else if (id) {
+      delete cart[Number(id)];
+    } else {
+      return;
+    }
+    renderCart();
+  });
+  document.getElementById("fetch-delivery-location")?.addEventListener("click", () => {
+    if (!navigator.geolocation) return alert("Geolocation is not supported.");
+    navigator.geolocation.getCurrentPosition((pos) => {
+      latInput.value = pos.coords.latitude.toFixed(6);
+      lngInput.value = pos.coords.longitude.toFixed(6);
+      if (deliveryLocationStatus) deliveryLocationStatus.textContent = "Current location captured successfully.";
+    }, () => alert("Could not fetch location."));
+  });
+  useDefault?.addEventListener("change", () => {
+    const readOnly = useDefault.checked;
+    addressInput.readOnly = readOnly;
+    if (readOnly && deliveryLocationStatus) {
+      deliveryLocationStatus.textContent = "Using your saved default location.";
+      if (mapUrlInput) mapUrlInput.readOnly = true;
+    } else if (deliveryLocationStatus) {
+      deliveryLocationStatus.textContent = "You can use current location for this order.";
+      if (mapUrlInput) mapUrlInput.readOnly = false;
+    }
+  });
+  if (useDefault && useDefault.checked && mapUrlInput) {
+    mapUrlInput.readOnly = true;
+  }
+  orderForm.addEventListener("submit", (event) => {
+    if (!Object.keys(cart).length) {
+      event.preventDefault();
+      alert("Please add at least one item.");
+    }
+  });
+  renderCart();
+</script>
+{% endblock %}

@@ -3,10 +3,13 @@ import random
 import string
 from datetime import date, timedelta
 from io import BytesIO
+from urllib.parse import urlencode
+from urllib.request import Request, urlopen
 
-from flask import Blueprint, Response, flash, redirect, render_template, request, url_for
+from flask import Blueprint, Response, current_app, flash, redirect, render_template, request, url_for
 from PIL import Image, ImageDraw, ImageFont
 from openpyxl import Workbook
+from werkzeug.utils import secure_filename
 
 from .auth_helpers import login_required, roles_required
 from .extensions import db
@@ -59,9 +62,79 @@ def _build_member_card(member: LibraryMember):
     return out
 
 
+def _save_uploaded_library_doc(file_obj, prefix: str):
+    if not file_obj or not file_obj.filename:
+        return None
+    ext = os.path.splitext(secure_filename(file_obj.filename))[1].lower() or ".bin"
+    filename = f"{prefix}-{''.join(random.choices(string.ascii_lowercase + string.digits, k=10))}{ext}"
+    root = current_app.config["UPLOADS_ROOT"]
+    folder = os.path.join(root, "library_docs")
+    os.makedirs(folder, exist_ok=True)
+    full_path = os.path.join(folder, filename)
+    file_obj.save(full_path)
+    return os.path.relpath(full_path, root)
+
+
+def _send_sms(phone: str, body: str):
+    sid = os.environ.get("TWILIO_ACCOUNT_SID", "").strip()
+    token = os.environ.get("TWILIO_AUTH_TOKEN", "").strip()
+    from_number = os.environ.get("TWILIO_FROM_NUMBER", "").strip()
+    if not (sid and token and from_number):
+        return False, "SMS skipped: Twilio env vars not configured."
+    to_number = phone if phone.startswith("+") else f"+91{phone}"
+    payload = urlencode({"From": from_number, "To": to_number, "Body": body}).encode("utf-8")
+    endpoint = f"https://api.twilio.com/2010-04-01/Accounts/{sid}/Messages.json"
+    req = Request(endpoint, data=payload)
+    import base64
+
+    auth = base64.b64encode(f"{sid}:{token}".encode("utf-8")).decode("utf-8")
+    req.add_header("Authorization", f"Basic {auth}")
+    req.add_header("Content-Type", "application/x-www-form-urlencoded")
+    try:
+        with urlopen(req, timeout=15) as resp:
+            return (200 <= resp.status < 300), f"Twilio status: {resp.status}"
+    except Exception as exc:
+        return False, f"SMS failed: {exc}"
+
+
+def _process_due_reminders():
+    sid = os.environ.get("TWILIO_ACCOUNT_SID", "").strip()
+    token = os.environ.get("TWILIO_AUTH_TOKEN", "").strip()
+    from_number = os.environ.get("TWILIO_FROM_NUMBER", "").strip()
+    if not (sid and token and from_number):
+        return 0, 0
+    tomorrow = date.today() + timedelta(days=1)
+    loans = (
+        LibraryLoan.query.join(LibraryMember, LibraryLoan.member_id == LibraryMember.id)
+        .filter(
+            LibraryLoan.status == "issued",
+            LibraryLoan.due_date == tomorrow,
+            db.or_(LibraryLoan.due_reminder_sent_on.is_(None), LibraryLoan.due_reminder_sent_on != date.today()),
+            LibraryMember.active.is_(True),
+        )
+        .all()
+    )
+    sent = 0
+    failed = 0
+    for loan in loans:
+        msg = (
+            f"Hi {loan.member.full_name}, reminder from Brownberries Library: "
+            f'Please return/renew "{loan.book.title}" by {loan.due_date.isoformat()}.'
+        )
+        ok, _ = _send_sms(loan.member.phone, msg)
+        if ok:
+            loan.due_reminder_sent_on = date.today()
+            sent += 1
+        else:
+            failed += 1
+    db.session.commit()
+    return sent, failed
+
+
 @bp.route("/")
 @login_required
 def home():
+    _process_due_reminders()
     active_loans = LibraryLoan.query.filter_by(status="issued").count()
     due_tomorrow = LibraryLoan.query.filter(
         LibraryLoan.status == "issued", LibraryLoan.due_date == date.today() + timedelta(days=1)
@@ -100,6 +173,7 @@ def members():
             subscription_start_date=start_date,
             subscription_end_date=end_date,
             card_number=request.form.get("card_number", "").strip() or None,
+            govt_id_image_path=_save_uploaded_library_doc(request.files.get("govt_id_image"), "library-member-id"),
             active=True if request.form.get("active") else False,
         )
         db.session.add(member)
@@ -111,6 +185,28 @@ def members():
         members=members_query.order_by(LibraryMember.full_name).all(),
         plans=SubscriptionPlan.query.filter_by(active=True).order_by(SubscriptionPlan.name).all(),
         selected_status=status,
+    )
+
+
+@bp.route("/members/<int:member_id>/govt-id")
+@roles_required("admin", "manager", "librarian")
+def member_govt_id(member_id):
+    member = LibraryMember.query.get_or_404(member_id)
+    if not member.govt_id_image_path:
+        flash("No Govt ID file uploaded for this member.", "error")
+        return redirect(url_for("library.members"))
+    full_path = os.path.join(current_app.config["UPLOADS_ROOT"], member.govt_id_image_path)
+    if not os.path.exists(full_path):
+        flash("Govt ID file is missing on disk.", "error")
+        return redirect(url_for("library.members"))
+    with open(full_path, "rb") as f:
+        data = f.read()
+    return Response(
+        data,
+        headers={
+            "Content-Disposition": f'attachment; filename="{os.path.basename(full_path)}"',
+            "Content-Type": "application/octet-stream",
+        },
     )
 
 
@@ -250,6 +346,36 @@ def loans():
         loans=loans_query.order_by(LibraryLoan.created_at.desc()).all(),
         selected_status=status,
     )
+
+
+@bp.route("/loans/<int:loan_id>/due-date", methods=["POST"])
+@roles_required("admin", "manager", "librarian")
+def update_due_date(loan_id):
+    loan = LibraryLoan.query.get_or_404(loan_id)
+    if loan.status != "issued":
+        flash("Only issued loans can be updated.", "error")
+        return redirect(url_for("library.loans"))
+    due_date_val = request.form.get("due_date", "").strip()
+    if not due_date_val:
+        flash("Due date is required.", "error")
+        return redirect(url_for("library.loans"))
+    new_due_date = date.fromisoformat(due_date_val)
+    if new_due_date < loan.issue_date:
+        flash("Due date cannot be before issue date.", "error")
+        return redirect(url_for("library.loans"))
+    loan.due_date = new_due_date
+    loan.due_reminder_sent_on = None
+    db.session.commit()
+    flash("Due date updated.", "success")
+    return redirect(url_for("library.loans"))
+
+
+@bp.route("/alerts/send-due-reminders", methods=["POST"])
+@roles_required("admin", "manager", "librarian")
+def send_due_reminders():
+    sent, failed = _process_due_reminders()
+    flash(f"Due reminders processed. Sent: {sent}, Failed/Skipped: {failed}.", "success" if sent else "error")
+    return redirect(url_for("library.loans"))
 
 
 @bp.route("/loans/<int:loan_id>/reissue", methods=["POST"])

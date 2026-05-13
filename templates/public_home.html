@@ -1,0 +1,105 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="panel public-welcome">
+  <a class="staff-login-link" href="{{ url_for('main.login') }}" target="_blank" rel="noopener">Staff Login</a>
+  <div class="public-hero-wrap">
+    <div>
+      <img src="{{ url_for('static', filename='images/cafe-logo.png') }}" alt="Brownberries Café" class="public-logo" />
+      <h2>Brownberries Café</h2>
+      <p>Food | Beverages | Books | Workstations</p>
+    </div>
+    <div class="public-cta-stack">
+      <a class="cta-order" href="{{ url_for('main.table_qr_page', preview=1) }}">Browse Menu</a>
+    </div>
+  </div>
+</section>
+
+<section class="public-grid">
+  <section class="panel">
+    <h3>Book a Table</h3>
+    <form method="post" action="{{ url_for('main.book_table') }}" class="grid">
+      <div class="grid grid-3">
+        <label>Name <input name="customer_name" required /></label>
+        <label>Phone <input name="phone" required /></label>
+        <label>Date <input type="date" name="booking_date" required /></label>
+      </div>
+      <label>Number of People</label>
+      <div class="people-stepper">
+        <button type="button" id="people-minus">-</button>
+        <input id="people-count" name="people_count" type="number" min="1" max="20" value="2" readonly />
+        <button type="button" id="people-plus">+</button>
+      </div>
+      <p class="muted">Select one or more consecutive 1-hour slots (8 AM to 10 PM):</p>
+      <div class="slot-grid">
+        {% for hour, label in slots %}
+        <label class="slot-chip"><input type="checkbox" name="slots" value="{{ hour }}" /> {{ label }}</label>
+        {% endfor %}
+      </div>
+      <label>Notes <input name="note" placeholder="Optional" /></label>
+      <button type="submit">Book Table</button>
+    </form>
+  </section>
+
+  <section class="panel">
+    <h3>Follow Us</h3>
+    <div class="links">
+      <a href="https://www.instagram.com/brownberries.cafe/" target="_blank" rel="noopener">Instagram</a>
+      <a href="https://www.facebook.com/profile.php?id=61589437970071" target="_blank" rel="noopener">Facebook</a>
+      <a href="{{ review_url }}" target="_blank" rel="noopener">Leave a Google Review</a>
+    </div>
+    <div class="review-qr-wrap">
+      <img src="{{ url_for('main.review_qr') }}" alt="Review QR" class="map-qr" />
+      <p class="muted">Scan to open review page</p>
+    </div>
+    <iframe src="https://www.google.com/maps/embed?pb=!1m18!1m12!1m3!1d3609.858632837193!2d80.87374457551877!3d25.207989477704068!2m3!1f0!2f0!3f0!3m2!1i1024!2i768!4f13.1!3m3!1m2!1s0x3984a98543c06b4d%3A0x6eea7bc18f2c2597!2sBrownberries%20Cafe!5e0!3m2!1sen!2sin!4v1778261362435!5m2!1sen!2sin" width="100%" height="260" style="border:0;" allowfullscreen="" loading="lazy" referrerpolicy="no-referrer-when-downgrade"></iframe>
+  </section>
+</section>
+
+{% if upcoming_bookings %}
+<section class="panel">
+  <h3>Upcoming Bookings</h3>
+  <table>
+    <tr><th>Name</th><th>Phone</th><th>People</th><th>Date</th><th>Time</th></tr>
+    {% for b in upcoming_bookings %}
+    <tr>
+      <td>{{ b.customer_name }}</td>
+      <td>{{ b.phone }}</td>
+      <td>{{ b.people_count }}</td>
+      <td>{{ b.booking_date }}</td>
+      <td>{{ b.start_hour }}:00 - {{ b.end_hour }}:00</td>
+    </tr>
+    {% endfor %}
+  </table>
+</section>
+{% endif %}
+
+<script>
+  const bookingForm = document.querySelector('form[action="{{ url_for("main.book_table") }}"]');
+  const minusBtn = document.getElementById("people-minus");
+  const plusBtn = document.getElementById("people-plus");
+  const peopleInput = document.getElementById("people-count");
+  minusBtn?.addEventListener("click", () => {
+    const cur = Number(peopleInput.value || 2);
+    peopleInput.value = String(Math.max(1, cur - 1));
+  });
+  plusBtn?.addEventListener("click", () => {
+    const cur = Number(peopleInput.value || 2);
+    peopleInput.value = String(Math.min(20, cur + 1));
+  });
+  bookingForm?.addEventListener("submit", (event) => {
+    const checked = [...bookingForm.querySelectorAll('input[name="slots"]:checked')].map((el) => Number(el.value)).sort((a,b)=>a-b);
+    if (!checked.length) {
+      event.preventDefault();
+      alert("Please select at least one slot.");
+      return;
+    }
+    for (let i = 1; i < checked.length; i += 1) {
+      if (checked[i] !== checked[i - 1] + 1) {
+        event.preventDefault();
+        alert("Please select only consecutive slots.");
+        return;
+      }
+    }
+  });
+</script>
+{% endblock %}

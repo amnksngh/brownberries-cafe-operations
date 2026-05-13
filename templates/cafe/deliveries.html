@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="panel">
+  <h2>Delivery Locations</h2>
+  <p class="muted">Use these details to deliver orders from Brownberries Cafe to customer location.</p>
+</section>
+
+<section class="panel">
+  <table>
+    <tr>
+      <th>Order</th>
+      <th>Customer</th>
+      <th>Address</th>
+      <th>Status</th>
+      <th>Route</th>
+    </tr>
+    {% for order in orders %}
+    <tr>
+      <td>#{{ order.id }}</td>
+      <td>
+        <strong>{{ order.delivery_customer_name or "-" }}</strong><br />
+        <span class="muted">{{ order.delivery_customer_mobile or "-" }}</span>
+      </td>
+      <td>
+        {{ order.delivery_address or "-" }}
+      </td>
+      <td>{{ order.status }}</td>
+      <td>
+        {% if order.delivery_lat and order.delivery_lng %}
+        <a
+          class="button-link"
+          href="https://www.google.com/maps/dir/?api=1&origin={{ cafe_lat }},{{ cafe_lng }}&destination={{ order.delivery_lat }},{{ order.delivery_lng }}&travelmode=driving"
+          target="_blank"
+          rel="noopener"
+        >Open Route</a>
+        {% elif order.delivery_map_url %}
+        <a class="button-link" href="{{ order.delivery_map_url }}" target="_blank" rel="noopener">Open Customer Pin</a>
+        {% else %}
+        <span class="muted">No map location submitted</span>
+        {% endif %}
+      </td>
+    </tr>
+    {% else %}
+    <tr><td colspan="5">No active delivery orders.</td></tr>
+    {% endfor %}
+  </table>
+</section>
+{% endblock %}

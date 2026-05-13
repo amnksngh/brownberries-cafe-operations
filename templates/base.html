@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Brownberries Cafe</title>
+    <title>Brownberries Café</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}" />
   </head>
   <body>
@@ -11,13 +11,13 @@
       <div class="brand-wrap">
         <img
           src="{{ url_for('static', filename='images/cafe-logo.png') }}"
-          alt="Brownberries Cafe Logo"
+          alt="Brownberries Café Logo"
           class="brand-logo"
           onerror="this.style.display='none'"
         />
         <div>
-          <h1>Brownberries Cafe</h1>
-          <p>Cafe + Library Operations</p>
+          <h1>Brownberries Café</h1>
+          <p>Food | Beverages | Books | Workstations</p>
         </div>
       </div>
       {% if g.current_user %}
@@ -28,12 +28,14 @@
         <a href="{{ url_for('cafe.orders') }}">Table Ordering</a>
         {% if g.current_user.role in ["admin", "manager", "cashier"] or (g.current_user.user_type and g.current_user.user_type.can_manage_cashier) %}
         <a href="{{ url_for('cafe.cashier') }}">Cashier</a>
+        <a href="{{ url_for('cafe.bookings') }}">Bookings</a>
+        {% endif %}
+        {% if g.current_user.role in ["admin", "manager", "delivery_partner"] or (g.current_user.user_type and g.current_user.user_type.can_view_delivery_locations) %}
+        <a href="{{ url_for('cafe.delivery_locations') }}">Deliveries</a>
         {% endif %}
         <a href="{{ url_for('cafe.kitchen_display') }}">Kitchen Display</a>
         {% if g.current_user.role in ["admin", "manager"] %}
         <a href="{{ url_for('cafe.staff') }}">Staff</a>
-        {% else %}
-        <a href="{{ url_for('cafe.my_staff') }}">My Staff</a>
         {% endif %}
         <a href="{{ url_for('library.home') }}">Library</a>
         <a href="{{ url_for('main.logout') }}">Logout</a>

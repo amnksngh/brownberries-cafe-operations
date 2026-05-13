@@ -1,7 +1,10 @@
+import json
 import os
 from datetime import date, datetime
+from io import BytesIO
 from uuid import uuid4
 
+import qrcode
 from flask import Blueprint, Response, current_app, flash, g, redirect, render_template, request, session, url_for
 from sqlalchemy.orm import joinedload
 from werkzeug.security import check_password_hash, generate_password_hash
@@ -17,11 +20,12 @@ from .models import (
     LibraryPayment,
     MenuCategory,
     MenuItem,
-    MenuSubcategory,
+    Customer,
     StaffAttendance,
     StaffDocument,
     StaffProfile,
     SalaryReceipt,
+    TableBooking,
     UserType,
     User,
 )
@@ -43,6 +47,17 @@ def _query_arg_case_insensitive(name: str, default: str = "") -> str:
     return default
 
 
+def _apply_menu_category_filter(query, category_id: int | None):
+    if not category_id:
+        return query
+    return query.filter(
+        db.or_(
+            MenuItem.category_id == category_id,
+            MenuItem.category_ids_json.ilike(f"%{category_id}%"),
+        )
+    )
+
+
 @bp.route("/login", methods=["GET", "POST"])
 def login():
     if request.method == "POST":
@@ -57,6 +72,11 @@ def login():
     return render_template("login.html")
 
 
+@bp.route("/staff-login")
+def staff_login_redirect():
+    return redirect(url_for("main.login"))
+
+
 @bp.route("/logout")
 def logout():
     session.clear()
@@ -64,6 +84,72 @@ def logout():
 
 
 @bp.route("/")
+def public_home():
+    map_url = "https://maps.app.goo.gl/FXkm55Fo5wteGf9P9"
+    review_url = "https://g.page/r/CZclLI_Be-puEAI/review"
+    slots = [(h, f"{(h-1)%12+1}:00 {'AM' if h < 12 else 'PM'} - {h%12+1 if h%12+1 != 13 else 1}:00 {'AM' if h+1 < 12 else 'PM'}") for h in range(8, 22)]
+    today = date.today()
+    upcoming = (
+        TableBooking.query.filter(TableBooking.booking_date >= today, TableBooking.status == "booked")
+        .order_by(TableBooking.booking_date.asc(), TableBooking.start_hour.asc())
+        .limit(20)
+        .all()
+    )
+    return render_template("public_home.html", map_url=map_url, review_url=review_url, slots=slots, upcoming_bookings=upcoming)
+
+
+@bp.route("/book-table", methods=["POST"])
+def book_table():
+    customer_name = request.form.get("customer_name", "").strip()
+    phone = request.form.get("phone", "").strip()
+    booking_date_raw = request.form.get("booking_date", "").strip()
+    people_count = request.form.get("people_count", "").strip()
+    people_count = int(people_count) if people_count.isdigit() else 2
+    if people_count < 1:
+        people_count = 1
+    if people_count > 20:
+        people_count = 20
+    selected_slots = sorted({int(x) for x in request.form.getlist("slots") if str(x).isdigit()})
+    if not customer_name or not phone or not booking_date_raw or not selected_slots:
+        flash("Please fill all booking details and select at least one slot.", "error")
+        return redirect(url_for("main.public_home"))
+    booking_date = date.fromisoformat(booking_date_raw)
+    if booking_date < date.today():
+        flash("Booking date cannot be in the past.", "error")
+        return redirect(url_for("main.public_home"))
+    for idx in range(1, len(selected_slots)):
+        if selected_slots[idx] != selected_slots[idx - 1] + 1:
+            flash("Please select consecutive one-hour slots only.", "error")
+            return redirect(url_for("main.public_home"))
+    start_hour = selected_slots[0]
+    end_hour = selected_slots[-1] + 1
+    overlap = TableBooking.query.filter(
+        TableBooking.booking_date == booking_date,
+        TableBooking.status == "booked",
+        TableBooking.start_hour < end_hour,
+        TableBooking.end_hour > start_hour,
+    ).count()
+    if overlap >= 40:
+        flash("Selected time is heavily booked. Please choose another slot.", "error")
+        return redirect(url_for("main.public_home"))
+    db.session.add(
+        TableBooking(
+            customer_name=customer_name,
+            phone=phone,
+            people_count=people_count,
+            booking_date=booking_date,
+            start_hour=start_hour,
+            end_hour=end_hour,
+            note=request.form.get("note", "").strip() or None,
+            status="booked",
+        )
+    )
+    db.session.commit()
+    flash("Table booking request submitted successfully.", "success")
+    return redirect(url_for("main.public_home"))
+
+
+@bp.route("/dashboard")
 @login_required
 def dashboard():
     active_loans = LibraryLoan.query.filter_by(status="issued").count()
@@ -77,6 +163,228 @@ def dashboard():
         open_orders=open_orders,
         active_loans=active_loans,
         due_tomorrow=due_tomorrow,
+    )
+
+
+def _customer_from_session():
+    customer_id = session.get("customer_id")
+    if not customer_id:
+        return None
+    return Customer.query.filter_by(id=customer_id, active=True).first()
+
+
+def _customer_login_required():
+    customer = _customer_from_session()
+    if not customer:
+        return None, redirect(url_for("main.customer_login", next=request.path))
+    return customer, None
+
+
+def _ensure_delivery_table() -> CafeTable:
+    table = CafeTable.query.filter(db.func.lower(CafeTable.name) == "for delivery").first()
+    if table:
+        return table
+    table = CafeTable(
+        name="For Delivery",
+        seating_capacity=0,
+        metadata_note="Delivery orders",
+        qr_slug=f"for-delivery-{uuid4().hex[:6]}",
+        active=True,
+    )
+    db.session.add(table)
+    db.session.commit()
+    return table
+
+
+def _get_or_create_delivery_guest_user_id() -> int:
+    guest_email = "delivery.guest@brownberries.local"
+    guest = User.query.filter_by(email=guest_email).first()
+    if guest:
+        return guest.id
+    guest = User(
+        full_name="Delivery Guest",
+        email=guest_email,
+        password_hash=generate_password_hash("delivery-guest"),
+        role="delivery_partner",
+        active=True,
+    )
+    db.session.add(guest)
+    db.session.commit()
+    return guest.id
+
+
+@bp.route("/maps-qr.png")
+def maps_qr():
+    img = qrcode.make("https://maps.app.goo.gl/FXkm55Fo5wteGf9P9")
+    bio = BytesIO()
+    img.save(bio, format="PNG")
+    bio.seek(0)
+    return Response(bio.read(), mimetype="image/png")
+
+
+@bp.route("/review-qr.png")
+def review_qr():
+    img = qrcode.make("https://g.page/r/CZclLI_Be-puEAI/review")
+    bio = BytesIO()
+    img.save(bio, format="PNG")
+    bio.seek(0)
+    return Response(bio.read(), mimetype="image/png")
+
+
+@bp.route("/customer/login", methods=["GET", "POST"])
+def customer_login():
+    if request.method == "POST":
+        mobile = request.form.get("mobile", "").strip()
+        password = request.form.get("password", "")
+        customer = Customer.query.filter_by(mobile=mobile, active=True).first()
+        if not customer or not check_password_hash(customer.password_hash, password):
+            flash("Invalid customer credentials.", "error")
+            return render_template("customer_login.html")
+        session["customer_id"] = customer.id
+        next_url = request.args.get("next", "").strip()
+        return redirect(next_url or url_for("main.customer_menu"))
+    return render_template("customer_login.html")
+
+
+@bp.route("/customer/logout")
+def customer_logout():
+    session.pop("customer_id", None)
+    return redirect(url_for("main.public_home"))
+
+
+@bp.route("/customer/register", methods=["GET", "POST"])
+def customer_register():
+    if request.method == "POST":
+        full_name = request.form.get("full_name", "").strip()
+        mobile = request.form.get("mobile", "").strip()
+        password = request.form.get("password", "")
+        default_address = request.form.get("default_address", "").strip()
+        try:
+            default_lat = float(request.form.get("default_lat")) if request.form.get("default_lat") else None
+            default_lng = float(request.form.get("default_lng")) if request.form.get("default_lng") else None
+        except ValueError:
+            default_lat = None
+            default_lng = None
+        if not full_name or not mobile or len(password) < 6:
+            flash("Please fill all required fields. Password must be at least 6 characters.", "error")
+            return render_template("customer_register.html")
+        if Customer.query.filter_by(mobile=mobile).first():
+            flash("Mobile number already registered.", "error")
+            return render_template("customer_register.html")
+        customer = Customer(
+            full_name=full_name,
+            mobile=mobile,
+            password_hash=generate_password_hash(password),
+            default_address=default_address or None,
+            default_lat=default_lat,
+            default_lng=default_lng,
+            default_map_url=request.form.get("default_map_url", "").strip() or None,
+            active=True,
+        )
+        db.session.add(customer)
+        db.session.commit()
+        flash("Registration complete. Please login.", "success")
+        return redirect(url_for("main.customer_login"))
+    return render_template("customer_register.html")
+
+
+@bp.route("/customer/menu", methods=["GET", "POST"])
+def customer_menu():
+    customer, redirect_resp = _customer_login_required()
+    if redirect_resp:
+        return redirect_resp
+
+    if request.method == "POST":
+        from .cafe import create_cafe_order
+
+        cart_payload = (request.form.get("cart_payload") or "").strip()
+        use_default = request.form.get("use_default_address") == "1"
+        delivery_address = request.form.get("delivery_address", "").strip()
+        if use_default and customer.default_address:
+            delivery_address = customer.default_address
+            delivery_lat = customer.default_lat
+            delivery_lng = customer.default_lng
+            delivery_map_url = customer.default_map_url
+        else:
+            try:
+                delivery_lat = float(request.form.get("delivery_lat")) if request.form.get("delivery_lat") else None
+                delivery_lng = float(request.form.get("delivery_lng")) if request.form.get("delivery_lng") else None
+            except ValueError:
+                delivery_lat = None
+                delivery_lng = None
+            delivery_map_url = request.form.get("delivery_map_url", "").strip() or None
+
+        line_items = []
+        try:
+            raw = json.loads(cart_payload) if cart_payload else []
+            qty_map = {}
+            for row in raw if isinstance(raw, list) else []:
+                if not isinstance(row, dict):
+                    continue
+                menu_item_id = int(row.get("menu_item_id") or 0)
+                quantity = int(row.get("quantity") or 0)
+                if menu_item_id > 0 and quantity > 0:
+                    qty_map[menu_item_id] = qty_map.get(menu_item_id, 0) + quantity
+            item_ids = list(qty_map.keys())
+            menu_items = MenuItem.query.filter(MenuItem.id.in_(item_ids), MenuItem.available.is_(True)).all() if item_ids else []
+            item_map = {m.id: m for m in menu_items}
+            for menu_item_id, quantity in qty_map.items():
+                if menu_item_id in item_map:
+                    line_items.append((item_map[menu_item_id], quantity, True))
+        except (ValueError, TypeError, json.JSONDecodeError):
+            line_items = []
+
+        if not line_items:
+            flash("Please add at least one menu item in cart.", "error")
+            return redirect(url_for("main.customer_menu"))
+        if not delivery_address:
+            flash("Please provide delivery address.", "error")
+            return redirect(url_for("main.customer_menu"))
+
+        delivery_table = _ensure_delivery_table()
+        create_cafe_order(
+            table_id=delivery_table.id,
+            ordered_by_user_id=_get_or_create_delivery_guest_user_id(),
+            line_items=line_items,
+            status="open",
+            is_delivery=True,
+            delivery_customer_name=customer.full_name,
+            delivery_customer_mobile=customer.mobile,
+            delivery_address=delivery_address,
+            delivery_lat=delivery_lat,
+            delivery_lng=delivery_lng,
+            delivery_map_url=delivery_map_url,
+        )
+        flash("Delivery order placed successfully.", "success")
+        return redirect(url_for("main.customer_menu"))
+
+    category_id = request.args.get("category_id", type=int)
+    item_type = (request.args.get("item_type") or "").strip()
+    menu_query = _apply_menu_category_filter(MenuItem.query.filter_by(available=True), category_id)
+    if item_type:
+        menu_query = menu_query.filter(MenuItem.item_type == item_type)
+    menu_items = (
+        menu_query.options(joinedload(MenuItem.category), joinedload(MenuItem.subcategory))
+        .order_by(MenuItem.name.asc())
+        .all()
+    )
+    categories = MenuCategory.query.order_by(MenuCategory.name.asc()).all()
+    item_types = [
+        row[0]
+        for row in db.session.query(MenuItem.item_type)
+        .filter(MenuItem.available.is_(True))
+        .distinct()
+        .order_by(MenuItem.item_type.asc())
+        .all()
+    ]
+    return render_template(
+        "customer_menu.html",
+        customer=customer,
+        menu_items=menu_items,
+        categories=categories,
+        item_types=item_types,
+        selected_category_id=category_id,
+        selected_item_type=item_type,
     )
 
 
@@ -374,33 +682,13 @@ def profile_document(doc_type):
 @bp.route("/table")
 def table_qr_page():
     slug = (_query_arg_case_insensitive("slug") or "").strip()
-    if not slug:
-        return render_template("table_qr.html", table=None, menu_items=[])
-    table = CafeTable.query.filter_by(qr_slug=slug, active=True).first()
-    category_id = request.args.get("category_id", type=int)
-    subcategory_id = request.args.get("subcategory_id", type=int)
-    item_type = (request.args.get("item_type") or "").strip()
-    page = max(1, request.args.get("page", type=int) or 1)
-    page_size = 10
-
+    is_preview = (request.args.get("preview") or "").strip() in ["1", "true", "yes"]
+    table = CafeTable.query.filter_by(qr_slug=slug, active=True).first() if slug else None
+    if not table:
+        table = CafeTable.query.filter_by(active=True).order_by(CafeTable.id.asc()).first()
+    if not table:
+        return render_template("table_qr.html", table=None, menu_items=[], categories=[], item_frequency={})
     categories = MenuCategory.query.order_by(MenuCategory.name.asc()).all()
-    subcategories = MenuSubcategory.query.order_by(MenuSubcategory.name.asc()).all()
-    item_types = [
-        row[0]
-        for row in db.session.query(MenuItem.item_type)
-        .filter(MenuItem.available.is_(True))
-        .distinct()
-        .order_by(MenuItem.item_type.asc())
-        .all()
-    ]
-
-    menu_query = MenuItem.query.filter_by(available=True)
-    if category_id:
-        menu_query = menu_query.filter(MenuItem.category_id == category_id)
-    if subcategory_id:
-        menu_query = menu_query.filter(MenuItem.subcategory_id == subcategory_id)
-    if item_type:
-        menu_query = menu_query.filter(MenuItem.item_type == item_type)
     frequency_subq = (
         db.session.query(
             CafeOrderItem.menu_item_id.label("menu_item_id"),
@@ -410,19 +698,27 @@ def table_qr_page():
         .subquery()
     )
     ranked_query = (
-        menu_query.outerjoin(frequency_subq, MenuItem.id == frequency_subq.c.menu_item_id)
+        MenuItem.query.filter_by(available=True).outerjoin(frequency_subq, MenuItem.id == frequency_subq.c.menu_item_id)
         .options(joinedload(MenuItem.category), joinedload(MenuItem.subcategory))
         .add_columns(db.func.coalesce(frequency_subq.c.order_qty, 0).label("order_qty"))
         .order_by(db.desc(db.func.coalesce(frequency_subq.c.order_qty, 0)), MenuItem.name.asc())
     )
-    total_items = ranked_query.count()
-    total_pages = max(1, (total_items + page_size - 1) // page_size)
-    if page > total_pages:
-        page = total_pages
-    start = (page - 1) * page_size
-    ranked_rows = ranked_query.offset(start).limit(page_size).all()
+    ranked_rows = ranked_query.all()
     menu_items = [row[0] for row in ranked_rows]
     item_frequency = {row[0].id: int(row[1] or 0) for row in ranked_rows}
+    item_size_map = {}
+    for item in menu_items:
+        sizes = []
+        if item.size_pricing_json:
+            try:
+                raw = json.loads(item.size_pricing_json)
+                if isinstance(raw, list):
+                    for row in raw:
+                        if isinstance(row, dict) and row.get("size") and row.get("price") is not None:
+                            sizes.append({"size": str(row["size"]), "price": float(row["price"])})
+            except (TypeError, ValueError, json.JSONDecodeError):
+                sizes = []
+        item_size_map[item.id] = sizes
 
     table_orders = []
     if table:
@@ -435,17 +731,12 @@ def table_qr_page():
     return render_template(
         "table_qr.html",
         table=table,
+        is_preview=is_preview,
         menu_items=menu_items,
         table_orders=table_orders,
         categories=categories,
-        subcategories=subcategories,
-        item_types=item_types,
-        selected_category_id=category_id,
-        selected_subcategory_id=subcategory_id,
-        selected_item_type=item_type,
-        page=page,
-        total_pages=total_pages,
         item_frequency=item_frequency,
+        item_size_map=item_size_map,
     )
 
 

@@ -3,6 +3,13 @@
 <section class="panel">
   <h2>{{ "Barista Counter Display" if station == "barista" else "Kitchen Display" }} - Live Orders</h2>
   <p class="muted">Auto-refreshing via WebSocket</p>
+  <div class="notif-wrap">
+    <button type="button" id="notif-bell" class="notif-bell">🔔 <span id="notif-count" class="notif-count">0</span></button>
+    <div id="notif-panel" class="notif-panel hidden">
+      <div class="split-head"><strong>Notifications</strong><button type="button" id="notif-clear">Clear All</button></div>
+      <div id="notif-list" class="grid"></div>
+    </div>
+  </div>
   <p>
     <a class="button-link" href="{{ url_for('cafe.kitchen_display', station='kitchen') }}">Kitchen</a>
     <a class="button-link" href="{{ url_for('cafe.kitchen_display', station='barista') }}">Barista Counter</a>
@@ -47,6 +54,46 @@
   const board = document.getElementById("kitchen-board");
   const socket = io("/kitchen");
   const station = "{{ station }}";
+  const notifBell = document.getElementById("notif-bell");
+  const notifCount = document.getElementById("notif-count");
+  const notifPanel = document.getElementById("notif-panel");
+  const notifList = document.getElementById("notif-list");
+  const notifClear = document.getElementById("notif-clear");
+  const notifs = [];
+
+  function playChime() {
+    try {
+      const AudioCtx = window.AudioContext || window.webkitAudioContext;
+      if (!AudioCtx) return;
+      const ctx = new AudioCtx();
+      const now = ctx.currentTime;
+      [880, 1174].forEach((freq, i) => {
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = "sine";
+        osc.frequency.value = freq;
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        const start = now + i * 0.1;
+        gain.gain.setValueAtTime(0.001, start);
+        gain.gain.exponentialRampToValueAtTime(0.12, start + 0.02);
+        gain.gain.exponentialRampToValueAtTime(0.001, start + 0.16);
+        osc.start(start);
+        osc.stop(start + 0.16);
+      });
+    } catch (e) {}
+  }
+  function renderNotifs() {
+    notifCount.textContent = String(notifs.length);
+    notifList.innerHTML = notifs.length
+      ? notifs.map((n) => `<div class="flash success">#${n.id} • ${n.table} • ${n.created_at}</div>`).join("")
+      : '<p class="muted">No new notifications.</p>';
+  }
+  notifBell?.addEventListener("click", () => notifPanel.classList.toggle("hidden"));
+  notifClear?.addEventListener("click", () => {
+    notifs.splice(0, notifs.length);
+    renderNotifs();
+  });
 
   function upsertOrder(order) {
     const stationItems = order.items.filter((i) => i.prep_station === station);
@@ -96,7 +143,13 @@
     }
   }
 
-  socket.on("order_created", upsertOrder);
+  socket.on("order_created", (payload) => {
+    notifs.unshift(payload);
+    if (notifs.length > 30) notifs.pop();
+    renderNotifs();
+    playChime();
+    upsertOrder(payload);
+  });
   socket.on("order_updated", upsertOrder);
 </script>
 {% endblock %}

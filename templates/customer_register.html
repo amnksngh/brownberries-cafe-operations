@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="panel narrow centered-panel">
+  <h2>Customer Registration</h2>
+  <form method="post" class="grid">
+    <label>Full Name <input type="text" name="full_name" required /></label>
+    <label>Mobile Number <input type="text" name="mobile" required /></label>
+    <label>Password <input type="password" name="password" minlength="6" required /></label>
+    <label>Default Address <input type="text" name="default_address" /></label>
+    <label>Google Maps Location Link <input type="url" name="default_map_url" placeholder="https://maps.app.goo.gl/..." /></label>
+    <input type="hidden" name="default_lat" id="default-lat" />
+    <input type="hidden" name="default_lng" id="default-lng" />
+    <button type="button" id="use-current-location">Use Current Location</button>
+    <p id="location-status" class="muted">Location not selected yet.</p>
+    <button type="submit">Register</button>
+  </form>
+</section>
+<script>
+  const locationStatus = document.getElementById("location-status");
+  document.getElementById("use-current-location")?.addEventListener("click", () => {
+    if (!navigator.geolocation) return alert("Geolocation is not supported.");
+    navigator.geolocation.getCurrentPosition((pos) => {
+      document.getElementById("default-lat").value = pos.coords.latitude.toFixed(6);
+      document.getElementById("default-lng").value = pos.coords.longitude.toFixed(6);
+      if (locationStatus) locationStatus.textContent = "Current location captured successfully.";
+    }, () => alert("Could not fetch location."));
+  });
+</script>
+{% endblock %}

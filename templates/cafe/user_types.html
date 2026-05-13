@@ -26,7 +26,8 @@
       ("can_manage_library_payments","Library Payments"),
       ("can_manage_library_plans","Library Plans"),
       ("can_view_staff_profiles","View Staff Profiles"),
-      ("can_upload_salary","Upload Salary Receipts")
+      ("can_upload_salary","Upload Salary Receipts"),
+      ("can_view_delivery_locations","View Delivery Locations")
     ] %}
     <label><input type="checkbox" name="{{ field }}" {% if field in ['can_manage_orders','can_manage_kitchen'] %}checked disabled{% endif %} /> {{ label }}</label>
     {% if field in ['can_manage_orders','can_manage_kitchen'] %}
@@ -67,7 +68,8 @@
                 ("can_manage_library_payments","Library Payments"),
                 ("can_manage_library_plans","Library Plans"),
                 ("can_view_staff_profiles","View Staff Profiles"),
-                ("can_upload_salary","Upload Salary Receipts")
+                ("can_upload_salary","Upload Salary Receipts"),
+                ("can_view_delivery_locations","View Delivery Locations")
               ] %}
               <label><input type="checkbox" name="{{ field }}_{{ ut.id }}" {% if ut|attr(field) %}checked{% endif %} {% if field in ['can_manage_orders','can_manage_kitchen'] %}disabled{% endif %} /> {{ label }}</label>
               {% if field in ['can_manage_orders','can_manage_kitchen'] %}

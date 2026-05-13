@@ -1,9 +1,21 @@
 {% extends "base.html" %}
 {% block content %}
 <section class="panel">
-  <h2>Catalog Management</h2>
-  <div class="split">
-    <div class="panel">
+  <h2>Menu Management</h2>
+  <p class="muted">Manage categories, items, sizes, and availability.</p>
+</section>
+
+<section class="library-layout">
+  <aside class="library-sidebar panel">
+    <a href="{{ url_for('cafe.menu', section='catalog') }}" class="{% if active_menu_section == 'catalog' %}active{% endif %}">Catalog</a>
+    <a href="{{ url_for('cafe.menu', section='add_item') }}" class="{% if active_menu_section == 'add_item' %}active{% endif %}">Add Menu Item</a>
+    <a href="{{ url_for('cafe.menu', section='items') }}" class="{% if active_menu_section == 'items' %}active{% endif %}">Menu Items</a>
+    <a href="{{ url_for('cafe.menu', section='availability') }}" class="{% if active_menu_section == 'availability' %}active{% endif %}">Items Availability</a>
+  </aside>
+
+  <div class="library-content">
+    {% if active_menu_section == 'catalog' %}
+    <section class="panel">
       <h3>Categories</h3>
       <form method="post" action="{{ url_for('cafe.add_category') }}" class="grid">
         <label>Add Category <input name="name" required /></label>
@@ -27,166 +39,188 @@
         </tr>
         {% endfor %}
       </table>
-    </div>
+    </section>
 
-    <div class="panel">
-      <h3>Subcategories</h3>
-      <form method="post" action="{{ url_for('cafe.add_subcategory') }}" class="grid">
-        <label>Name <input name="name" required /></label>
-        <button type="submit">Add Subcategory</button>
+    <section class="panel">
+      <h3>Types</h3>
+      <form method="post" action="{{ url_for('cafe.add_type') }}" class="grid grid-3">
+        <label>Add Type <input name="name" required placeholder="Veg / Beverage / Dessert" /></label>
+        <button type="submit">Add Type</button>
       </form>
       <table>
-        <tr><th>Name</th><th>Actions</th></tr>
-        {% for s in subcategories %}
+        <tr><th>Type</th><th>Actions</th></tr>
+        {% for t in menu_types %}
         <tr>
           <td>
-            <form method="post" action="{{ url_for('cafe.update_subcategory', subcategory_id=s.id) }}" class="inline">
-              <input name="name" value="{{ s.name }}" required />
-          </td>
-          <td>
+            <form method="post" action="{{ url_for('cafe.update_type', type_id=t.id) }}" class="inline">
+              <input name="name" value="{{ t.name }}" required />
               <button type="submit">Save</button>
             </form>
-            <form method="post" action="{{ url_for('cafe.delete_subcategory', subcategory_id=s.id) }}" class="inline">
+          </td>
+          <td>
+            <form method="post" action="{{ url_for('cafe.delete_type', type_id=t.id) }}" class="inline">
               <button type="submit">Delete</button>
             </form>
           </td>
         </tr>
         {% endfor %}
       </table>
-    </div>
-  </div>
+    </section>
+    {% endif %}
 
-  <div class="panel">
-    <h3>Types</h3>
-    <form method="post" action="{{ url_for('cafe.add_type') }}" class="grid grid-3">
-      <label>Add Type <input name="name" required placeholder="Veg / Beverage / Dessert" /></label>
-      <button type="submit">Add Type</button>
-    </form>
-    <table>
-      <tr><th>Type</th><th>Actions</th></tr>
-      {% for t in menu_types %}
-      <tr>
-        <td>
-          <form method="post" action="{{ url_for('cafe.update_type', type_id=t.id) }}" class="inline">
-            <input name="name" value="{{ t.name }}" required />
-            <button type="submit">Save</button>
-          </form>
-        </td>
-        <td>
-          <form method="post" action="{{ url_for('cafe.delete_type', type_id=t.id) }}" class="inline">
-            <button type="submit">Delete</button>
-          </form>
-        </td>
-      </tr>
-      {% endfor %}
-    </table>
-  </div>
-</section>
-
-<section class="panel">
-  <h2>Add Menu Item</h2>
-  <form method="post" class="grid grid-4">
-    <label>Category
-      <select name="category_id" required>
-        {% for c in categories %}<option value="{{ c.id }}">{{ c.name }}</option>{% endfor %}
-      </select>
-    </label>
-    <label>Subcategory
-      <select name="subcategory_id">
-        <option value="">--</option>
-        {% for s in subcategories %}<option value="{{ s.id }}">{{ s.name }}</option>{% endfor %}
-      </select>
-    </label>
-    <label>Type
-      <select name="menu_type_id" required>
-        {% for t in menu_types %}<option value="{{ t.id }}">{{ t.name }}</option>{% endfor %}
-      </select>
-    </label>
-    <label>Name <input name="name" required /></label>
-    <label>Prep Station
-      <select name="prep_station" required>
-        {% for st in prep_station_options %}
-        <option value="{{ st }}">{{ st|title }}</option>
-        {% endfor %}
-      </select>
-    </label>
-    <label>Image URL <input name="image_url" /></label>
-    <label>Description <input name="description" /></label>
-    <label>Calories <input name="calories" type="number" min="0" /></label>
-    <label>Price <input name="price" type="number" min="0" step="0.01" required /></label>
-    <label><input type="checkbox" name="available" checked /> Available</label>
-    <button type="submit">Add Item</button>
-  </form>
-</section>
-
-<section class="panel">
-  <h2>Menu Items</h2>
-  <table>
-    <tr><th>Item</th><th>Station</th><th>Edit Item</th><th>Delete</th></tr>
-    {% for item in items %}
-    <tr>
-      <td>
-        <div class="item-preview">
-          {% if item.image_url %}
-          <img src="{{ item.image_url }}" alt="{{ item.name }}" class="thumb-image" />
-          {% else %}
-          <div class="thumb-image placeholder">No Image</div>
-          {% endif %}
-          <div>
-            <strong>{{ item.name }}</strong>
+    {% if active_menu_section == 'add_item' %}
+    <section class="panel">
+      <h3>Add Menu Item</h3>
+      <form method="post" class="grid grid-4">
+        <fieldset class="full">
+          <legend>Categories (Select one or more)</legend>
+          <div class="grid grid-4">
+            {% for c in categories %}
+            <label><input type="checkbox" name="category_ids" value="{{ c.id }}" /> {{ c.name }}</label>
+            {% endfor %}
+          </div>
+        </fieldset>
+        <label>Type
+          <select name="menu_type_id" required>
+            {% for t in menu_types %}<option value="{{ t.id }}">{{ t.name }}</option>{% endfor %}
+          </select>
+        </label>
+        <label>Name <input name="name" required /></label>
+        <label>Prep Station
+          <select name="prep_station" required>
+            {% for st in prep_station_options %}<option value="{{ st }}">{{ st|title }}</option>{% endfor %}
+          </select>
+        </label>
+        <label>Image URL <input name="image_url" /></label>
+        <label>Description <input name="description" /></label>
+        <label>Calories <input name="calories" type="number" min="0" /></label>
+        <label>Price <input name="price" type="number" min="0" step="0.01" required /></label>
+        <label><input type="checkbox" name="has_size_variants" id="has_size_variants_new" /> Item has multiple serving sizes</label>
+        <div id="size_pricing_new" class="full hidden">
+          <div class="grid grid-4">
+            <label>Size 1 <input name="size_name_1" placeholder="Regular" /></label>
+            <label>Price 1 <input name="size_price_1" type="number" step="0.01" min="0" /></label>
+            <label>Size 2 <input name="size_name_2" placeholder="Large" /></label>
+            <label>Price 2 <input name="size_price_2" type="number" step="0.01" min="0" /></label>
+            <label>Size 3 <input name="size_name_3" placeholder="Family" /></label>
+            <label>Price 3 <input name="size_price_3" type="number" step="0.01" min="0" /></label>
           </div>
         </div>
-      </td>
-      <td>
-        {{ item.prep_station|title }}
-      </td>
-      <td>
-        <form method="post" action="{{ url_for('cafe.update_menu_item', item_id=item.id) }}" class="grid grid-4">
-          <label>Category
-            <select name="category_id" required>
-              {% for c in categories %}
-              <option value="{{ c.id }}" {% if item.category_id == c.id %}selected{% endif %}>{{ c.name }}</option>
-              {% endfor %}
-            </select>
-          </label>
-          <label>Subcategory
-            <select name="subcategory_id">
-              <option value="">--</option>
-              {% for s in subcategories %}
-              <option value="{{ s.id }}" {% if item.subcategory_id == s.id %}selected{% endif %}>{{ s.name }}</option>
-              {% endfor %}
-            </select>
-          </label>
-          <label>Type
-            <select name="menu_type_id" required>
-              {% for t in menu_types %}
-              <option value="{{ t.id }}" {% if item.item_type == t.name %}selected{% endif %}>{{ t.name }}</option>
-              {% endfor %}
-            </select>
-          </label>
-          <label>Name <input name="name" value="{{ item.name }}" required /></label>
-          <label>Prep Station
-            <select name="prep_station" required>
-              {% for st in prep_station_options %}
-              <option value="{{ st }}" {% if item.prep_station == st %}selected{% endif %}>{{ st|title }}</option>
-              {% endfor %}
-            </select>
-          </label>
-          <label>Image URL <input name="image_url" value="{{ item.image_url or '' }}" /></label>
-          <label>Description <input name="description" value="{{ item.description or '' }}" /></label>
-          <label>Calories <input name="calories" type="number" min="0" value="{{ item.calories or '' }}" /></label>
-          <label>Price <input name="price" type="number" min="0" step="0.01" value="{{ item.price }}" required /></label>
-          <label><input type="checkbox" name="available" {% if item.available %}checked{% endif %} /> Available</label>
-          <button type="submit">Save</button>
-        </form>
-      </td>
-      <td>
-        <form method="post" action="{{ url_for('cafe.delete_menu_item', item_id=item.id) }}" class="inline">
-          <button type="submit">Delete</button>
-        </form>
-      </td>
-    </tr>
-    {% endfor %}
-  </table>
+        <label><input type="checkbox" name="available" checked /> Available</label>
+        <button type="submit">Add Item</button>
+      </form>
+    </section>
+    {% endif %}
+
+    {% if active_menu_section == 'items' %}
+    <section class="panel">
+      <h3>Menu Items</h3>
+      <table>
+        <tr><th>Item</th><th>Station</th><th>Edit Item</th><th>Delete</th></tr>
+        {% for item in items %}
+        <tr>
+          <td>
+            <div class="item-preview">
+              {% if item.image_url %}<img src="{{ item.image_url }}" alt="{{ item.name }}" class="thumb-image" />{% else %}<div class="thumb-image placeholder">No Image</div>{% endif %}
+              <div>
+                <strong>{{ item.name }}</strong>
+                <div class="muted">
+                  Categories:
+                  {% set selected_cats = item_category_map.get(item.id, []) %}
+                  {% for c in categories if c.id in selected_cats %}{{ c.name }}{% if not loop.last %}, {% endif %}{% endfor %}
+                </div>
+              </div>
+            </div>
+          </td>
+          <td>{{ item.prep_station|title }}</td>
+          <td>
+            <form method="post" action="{{ url_for('cafe.update_menu_item', item_id=item.id) }}" class="grid grid-4">
+              <fieldset class="full">
+                <legend>Categories (Select one or more)</legend>
+                <div class="grid grid-4">
+                  {% set selected_cats = item_category_map.get(item.id, []) %}
+                  {% for c in categories %}
+                  <label><input type="checkbox" name="category_ids" value="{{ c.id }}" {% if c.id in selected_cats %}checked{% endif %} /> {{ c.name }}</label>
+                  {% endfor %}
+                </div>
+              </fieldset>
+              <label>Type
+                <select name="menu_type_id" required>
+                  {% for t in menu_types %}<option value="{{ t.id }}" {% if item.item_type == t.name %}selected{% endif %}>{{ t.name }}</option>{% endfor %}
+                </select>
+              </label>
+              <label>Name <input name="name" value="{{ item.name }}" required /></label>
+              <label>Prep Station
+                <select name="prep_station" required>
+                  {% for st in prep_station_options %}<option value="{{ st }}" {% if item.prep_station == st %}selected{% endif %}>{{ st|title }}</option>{% endfor %}
+                </select>
+              </label>
+              <label>Image URL <input name="image_url" value="{{ item.image_url or '' }}" /></label>
+              <label>Description <input name="description" value="{{ item.description or '' }}" /></label>
+              <label>Calories <input name="calories" type="number" min="0" value="{{ item.calories or '' }}" /></label>
+              <label>Price <input name="price" type="number" min="0" step="0.01" value="{{ item.price }}" required /></label>
+              <label><input type="checkbox" name="has_size_variants" {% if item.has_size_variants %}checked{% endif %} /> Item has multiple serving sizes</label>
+              <div class="full">
+                <div class="grid grid-4">
+                  <label>Size 1 <input name="size_name_1" /></label><label>Price 1 <input name="size_price_1" type="number" step="0.01" min="0" /></label>
+                  <label>Size 2 <input name="size_name_2" /></label><label>Price 2 <input name="size_price_2" type="number" step="0.01" min="0" /></label>
+                  <label>Size 3 <input name="size_name_3" /></label><label>Price 3 <input name="size_price_3" type="number" step="0.01" min="0" /></label>
+                </div>
+              </div>
+              <label><input type="checkbox" name="available" {% if item.available %}checked{% endif %} /> Available</label>
+              <button type="submit">Save</button>
+            </form>
+          </td>
+          <td>
+            <form method="post" action="{{ url_for('cafe.delete_menu_item', item_id=item.id) }}" class="inline">
+              <button type="submit">Delete</button>
+            </form>
+          </td>
+        </tr>
+        {% endfor %}
+      </table>
+    </section>
+    {% endif %}
+
+    {% if active_menu_section == 'availability' %}
+    <section class="panel">
+      <h3>Menu Items Availability</h3>
+      <form method="get" class="grid grid-4">
+        <input type="hidden" name="section" value="availability" />
+        <label>Category
+          <select name="category_filter">
+            <option value="">All</option>
+            {% for c in categories %}
+            <option value="{{ c.id }}" {% if selected_category_filter == c.id %}selected{% endif %}>{{ c.name }}</option>
+            {% endfor %}
+          </select>
+        </label>
+        <button type="submit">Load Items</button>
+      </form>
+      <form method="post" action="{{ url_for('cafe.update_menu_availability') }}">
+        <input type="hidden" name="category_filter" value="{{ selected_category_filter or '' }}" />
+        <table>
+          <tr><th>Food Item</th><th>Available</th></tr>
+          {% for item in availability_items %}
+          <tr>
+            <td>{{ item.name }}</td>
+            <td><input type="checkbox" name="available_item_ids" value="{{ item.id }}" {% if item.available %}checked{% endif %} /></td>
+          </tr>
+          {% endfor %}
+        </table>
+        <button type="submit">Save Availability</button>
+      </form>
+    </section>
+    {% endif %}
+  </div>
 </section>
+
+<script>
+  const hasSizesNew = document.getElementById("has_size_variants_new");
+  const sizePricingNew = document.getElementById("size_pricing_new");
+  hasSizesNew?.addEventListener("change", () => {
+    if (hasSizesNew.checked) sizePricingNew.classList.remove("hidden");
+    else sizePricingNew.classList.add("hidden");
+  });
+</script>
 {% endblock %}
