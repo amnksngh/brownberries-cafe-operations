@@ -54,6 +54,8 @@
         <div class="item-image placeholder">No Image</div>
         {% endif %}
         <p class="muted item-meta">{{ item.category.name }}, {{ item.item_type }}</p>
+        {% set sizes = item_size_map.get(item.id, []) %}
+        <p class="item-price"><strong>Price:</strong> ₹<span class="item-price-value">{{ "%.2f"|format((sizes[0].price if (item.has_size_variants and sizes) else item.price) or 0) }}</span></p>
         <button
           type="button"
           class="desc-btn"
@@ -67,7 +69,6 @@
             Parcel
           </label>
         </p>
-        {% set sizes = item_size_map.get(item.id, []) %}
         {% if item.has_size_variants and sizes %}
         <label>Serving Size
           <select class="size-select">
@@ -281,6 +282,17 @@
       renderCart();
       showToast(`${name} x ${quantity} added to the cart${isParcel ? " (Parcel)" : ""}`);
     });
+  });
+  document.querySelectorAll(".size-select").forEach((selectEl) => {
+    const updateCardPrice = () => {
+      const card = selectEl.closest(".item-card");
+      const priceSpan = card?.querySelector(".item-price-value");
+      if (!priceSpan) return;
+      const newPrice = Number(selectEl.selectedOptions[0]?.dataset?.price || 0);
+      priceSpan.textContent = newPrice.toFixed(2);
+    };
+    selectEl.addEventListener("change", updateCardPrice);
+    updateCardPrice();
   });
 
   document.querySelectorAll(".desc-btn").forEach((btn) => {
