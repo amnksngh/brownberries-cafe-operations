@@ -11,6 +11,7 @@ from werkzeug.security import check_password_hash, generate_password_hash
 from werkzeug.utils import secure_filename
 
 from .auth_helpers import login_required, roles_required
+from .extensions import socketio
 from .extensions import db
 from .models import (
     CafeOrder,
@@ -58,6 +59,31 @@ def _apply_menu_category_filter(query, category_id: int | None):
     )
 
 
+def _get_item_category_names(item: MenuItem, category_name_by_id: dict[int, str]) -> list[str]:
+    names: list[str] = []
+    names_seen: set[str] = set()
+    if item.category_ids_json:
+        try:
+            raw = json.loads(item.category_ids_json)
+            if isinstance(raw, list):
+                for value in raw:
+                    try:
+                        cid = int(value)
+                    except (TypeError, ValueError):
+                        continue
+                    cname = category_name_by_id.get(cid)
+                    if cname and cname.lower() not in names_seen:
+                        names.append(cname)
+                        names_seen.add(cname.lower())
+        except (TypeError, ValueError, json.JSONDecodeError):
+            pass
+    if item.category and item.category.name:
+        if item.category.name.lower() not in names_seen:
+            names.append(item.category.name)
+            names_seen.add(item.category.name.lower())
+    return names
+
+
 @bp.route("/login", methods=["GET", "POST"])
 def login():
     if request.method == "POST":
@@ -67,6 +93,7 @@ def login():
         if not user or not check_password_hash(user.password_hash, password):
             flash("Invalid credentials.", "error")
             return render_template("login.html")
+        session.permanent = True
         session["user_id"] = user.id
         return redirect(url_for("main.dashboard"))
     return render_template("login.html")
@@ -132,19 +159,46 @@ def book_table():
     if overlap >= 40:
         flash("Selected time is heavily booked. Please choose another slot.", "error")
         return redirect(url_for("main.public_home"))
-    db.session.add(
-        TableBooking(
-            customer_name=customer_name,
-            phone=phone,
-            people_count=people_count,
-            booking_date=booking_date,
-            start_hour=start_hour,
-            end_hour=end_hour,
-            note=request.form.get("note", "").strip() or None,
-            status="booked",
-        )
+    booking = TableBooking(
+        customer_name=customer_name,
+        phone=phone,
+        people_count=people_count,
+        booking_date=booking_date,
+        start_hour=start_hour,
+        end_hour=end_hour,
+        note=request.form.get("note", "").strip() or None,
+        status="booked",
     )
+    db.session.add(booking)
     db.session.commit()
+    socketio.emit(
+        "booking_created",
+        {
+            "id": booking.id,
+            "customer_name": customer_name,
+            "phone": phone,
+            "people_count": people_count,
+            "booking_date": booking_date.isoformat(),
+            "start_hour": start_hour,
+            "end_hour": end_hour,
+            "status": "booked",
+        },
+        namespace="/table",
+    )
+    socketio.emit(
+        "booking_created",
+        {
+            "id": booking.id,
+            "customer_name": customer_name,
+            "phone": phone,
+            "people_count": people_count,
+            "booking_date": booking_date.isoformat(),
+            "start_hour": start_hour,
+            "end_hour": end_hour,
+            "status": "booked",
+        },
+        namespace="/kitchen",
+    )
     flash("Table booking request submitted successfully.", "success")
     return redirect(url_for("main.public_home"))
 
@@ -369,6 +423,7 @@ def customer_menu():
         .all()
     )
     categories = MenuCategory.query.order_by(MenuCategory.name.asc()).all()
+    category_name_by_id = {c.id: c.name for c in categories}
     item_types = [
         row[0]
         for row in db.session.query(MenuItem.item_type)
@@ -689,6 +744,7 @@ def table_qr_page():
     if not table:
         return render_template("table_qr.html", table=None, menu_items=[], categories=[], item_frequency={})
     categories = MenuCategory.query.order_by(MenuCategory.name.asc()).all()
+    category_name_by_id = {c.id: c.name for c in categories}
     frequency_subq = (
         db.session.query(
             CafeOrderItem.menu_item_id.label("menu_item_id"),
@@ -707,6 +763,7 @@ def table_qr_page():
     menu_items = [row[0] for row in ranked_rows]
     item_frequency = {row[0].id: int(row[1] or 0) for row in ranked_rows}
     item_size_map = {}
+    item_category_names_map = {}
     for item in menu_items:
         sizes = []
         if item.size_pricing_json:
@@ -719,12 +776,13 @@ def table_qr_page():
             except (TypeError, ValueError, json.JSONDecodeError):
                 sizes = []
         item_size_map[item.id] = sizes
+        item_category_names_map[item.id] = _get_item_category_names(item, category_name_by_id)
 
     table_orders = []
     if table:
         table_orders = (
             CafeOrder.query.options(joinedload(CafeOrder.order_items).joinedload(CafeOrderItem.menu_item))
-            .filter(CafeOrder.table_id == table.id, CafeOrder.status != "paid")
+            .filter(CafeOrder.table_id == table.id, CafeOrder.status.notin_(["paid", "cancelled"]))
             .order_by(CafeOrder.created_at.desc())
             .all()
         )
@@ -737,6 +795,7 @@ def table_qr_page():
         categories=categories,
         item_frequency=item_frequency,
         item_size_map=item_size_map,
+        item_category_names_map=item_category_names_map,
     )
 
 

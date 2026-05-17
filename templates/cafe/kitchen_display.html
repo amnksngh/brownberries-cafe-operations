@@ -3,6 +3,8 @@
 <section class="panel">
   <h2>{{ "Barista Counter Display" if station == "barista" else "Kitchen Display" }} - Live Orders</h2>
   <p class="muted">Auto-refreshing via WebSocket</p>
+  <p class="muted">Connection: <strong id="socket-state">Connecting...</strong></p>
+  <button type="button" id="enable-sound-btn">Enable Sound Alerts</button>
   <div class="notif-wrap">
     <button type="button" id="notif-bell" class="notif-bell">🔔 <span id="notif-count" class="notif-count">0</span></button>
     <div id="notif-panel" class="notif-panel hidden">
@@ -18,12 +20,12 @@
 <section id="kitchen-board" class="kitchen-grid">
   {% for order in orders %}
   <article class="k-card" data-order-id="{{ order.id }}">
-    <h3>Order #{{ order.id }} - {{ order.table.name }}</h3>
+    <h3>Order #{{ order.display_code or order.id }} - {{ order.table.name }}</h3>
     <p>Status: <strong class="status">{{ order.status }}</strong></p>
     <p>Total: {{ "%.2f"|format(order.total_amount) }}</p>
     <ul>
       {% for oi in order.order_items %}
-      {% if oi.menu_item and oi.menu_item.prep_station == station %}
+      {% if oi.menu_item and oi.menu_item.prep_station == station and (oi.approval_status or 'pending') == 'approved' %}
       <li>{{ oi.menu_item.name }} x {{ oi.quantity }}</li>
       {% endif %}
       {% endfor %}
@@ -51,9 +53,18 @@
 </section>
 <script src="{{ url_for('static', filename='js/socket.io.min.js') }}"></script>
 <script>
+  const notifSoundUrl = "{{ url_for('static', filename='sounds/notification.wav') }}";
   const board = document.getElementById("kitchen-board");
-  const socket = io("/kitchen");
+  const socket = io("/kitchen", {
+    transports: ["polling"],
+    upgrade: false,
+    reconnection: true,
+    reconnectionAttempts: 50,
+    reconnectionDelay: 800,
+  });
   const station = "{{ station }}";
+  const socketState = document.getElementById("socket-state");
+  const enableSoundBtn = document.getElementById("enable-sound-btn");
   const notifBell = document.getElementById("notif-bell");
   const notifCount = document.getElementById("notif-count");
   const notifPanel = document.getElementById("notif-panel");
@@ -61,42 +72,75 @@
   const notifClear = document.getElementById("notif-clear");
   const notifs = [];
 
-  function playChime() {
+  let audioCtx = null;
+  let soundEnabled = false;
+  const notifAudio = new Audio(notifSoundUrl);
+  notifAudio.preload = "auto";
+  async function enableSound() {
     try {
       const AudioCtx = window.AudioContext || window.webkitAudioContext;
-      if (!AudioCtx) return;
-      const ctx = new AudioCtx();
-      const now = ctx.currentTime;
-      [880, 1174].forEach((freq, i) => {
-        const osc = ctx.createOscillator();
-        const gain = ctx.createGain();
-        osc.type = "sine";
-        osc.frequency.value = freq;
-        osc.connect(gain);
-        gain.connect(ctx.destination);
-        const start = now + i * 0.1;
-        gain.gain.setValueAtTime(0.001, start);
-        gain.gain.exponentialRampToValueAtTime(0.12, start + 0.02);
-        gain.gain.exponentialRampToValueAtTime(0.001, start + 0.16);
-        osc.start(start);
-        osc.stop(start + 0.16);
-      });
+      if (AudioCtx) {
+        if (!audioCtx) audioCtx = new AudioCtx();
+        if (audioCtx.state === "suspended") await audioCtx.resume();
+      }
+      try {
+        notifAudio.currentTime = 0;
+        await notifAudio.play();
+        notifAudio.pause();
+        notifAudio.currentTime = 0;
+      } catch (e) {}
+      soundEnabled = true;
+      if (soundEnabled && enableSoundBtn) enableSoundBtn.textContent = "Sound Alerts Enabled";
     } catch (e) {}
+  }
+  function playChime() {
+    if (!soundEnabled) return;
+    try {
+      notifAudio.pause();
+      notifAudio.currentTime = 0;
+      notifAudio.play().catch(() => {});
+    } catch (e) {}
+  }
+  function summarizeItems(items) {
+    if (!Array.isArray(items) || items.length < 1) return "-";
+    return items.map((it) => `${it.name}${it.size_label ? ` (${it.size_label})` : ""} x ${it.qty}`).join(", ");
+  }
+  function toNotifLine(n) {
+    if (n && n.kind === "booking") {
+      return `Booking | ${n.table} | ${n.created_at}`;
+    }
+    const orderId = n.order_id || n.id || "-";
+    const tableId = n.table_id || n.table || "-";
+    const itemsList = n.items_list || summarizeItems(n.items || []);
+    return `Order ${orderId} | Table ${tableId} | ${itemsList}`;
   }
   function renderNotifs() {
     notifCount.textContent = String(notifs.length);
     notifList.innerHTML = notifs.length
-      ? notifs.map((n) => `<div class="flash success">#${n.id} • ${n.table} • ${n.created_at}</div>`).join("")
+      ? notifs.map((n) => `<div class="flash success">${toNotifLine(n)}</div>`).join("")
       : '<p class="muted">No new notifications.</p>';
   }
   notifBell?.addEventListener("click", () => notifPanel.classList.toggle("hidden"));
+  enableSoundBtn?.addEventListener("click", enableSound);
+  document.addEventListener("click", enableSound, { once: true });
   notifClear?.addEventListener("click", () => {
     notifs.splice(0, notifs.length);
     renderNotifs();
   });
 
+  socket.on("connect", () => {
+    if (socketState) socketState.textContent = "Connected";
+  });
+  socket.on("disconnect", () => {
+    if (socketState) socketState.textContent = "Disconnected";
+  });
+  socket.on("connect_error", (err) => {
+    const msg = (err && (err.message || err.description)) ? `Connection Error: ${err.message || err.description}` : "Connection Error";
+    if (socketState) socketState.textContent = msg;
+  });
+
   function upsertOrder(order) {
-    const stationItems = order.items.filter((i) => i.prep_station === station);
+    const stationItems = order.items.filter((i) => i.prep_station === station && (i.approval_status || "pending") === "approved");
     if (stationItems.length < 1) {
       const existing = board.querySelector(`[data-order-id="${order.id}"]`);
       if (existing) existing.remove();
@@ -105,7 +149,7 @@
     let card = board.querySelector(`[data-order-id="${order.id}"]`);
     const listItems = stationItems.map((i) => `<li>${i.name} x ${i.qty}</li>`).join("");
     const html = `
-      <h3>Order #${order.id} - ${order.table}</h3>
+      <h3>Order #${order.order_code || order.id} - ${order.table}</h3>
       <p>Status: <strong class="status">${order.status}</strong></p>
       <p>Total: ${order.total_amount.toFixed(2)}</p>
       <ul>${listItems}</ul>
@@ -144,11 +188,40 @@
   }
 
   socket.on("order_created", (payload) => {
-    notifs.unshift(payload);
+    notifs.unshift({
+      id: payload.id,
+      order_id: payload.id,
+      table_id: payload.table,
+      items: payload.items || [],
+      created_at: payload.created_at || "Now",
+    });
     if (notifs.length > 30) notifs.pop();
     renderNotifs();
     playChime();
     upsertOrder(payload);
+  });
+  socket.on("ops_notification", (payload) => {
+    notifs.unshift({
+      id: payload.order_id || payload.kind || "Notice",
+      order_id: payload.order_id || "-",
+      table_id: payload.table_id || "-",
+      items_list: payload.message || "Notification",
+      created_at: "Just now",
+    });
+    if (notifs.length > 30) notifs.pop();
+    renderNotifs();
+    playChime();
+  });
+  socket.on("booking_created", (payload) => {
+    notifs.unshift({
+      id: `Booking-${payload.id}`,
+      kind: "booking",
+      table: `${payload.customer_name} (${payload.people_count})`,
+      created_at: `${payload.booking_date} ${payload.start_hour}:00-${payload.end_hour}:00`,
+    });
+    if (notifs.length > 30) notifs.pop();
+    renderNotifs();
+    playChime();
   });
   socket.on("order_updated", upsertOrder);
 </script>

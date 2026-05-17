@@ -5,7 +5,14 @@
   <form method="post" class="grid grid-4">
     <input type="hidden" name="action" value="create" />
     <label>Title <input name="title" required /></label>
-    <label>Author <input name="author" required /></label>
+    <label>Author
+      <input name="author" list="author-options" required placeholder="Search or type author" />
+      <datalist id="author-options">
+        {% for a in authors %}
+        <option value="{{ a.name }}"></option>
+        {% endfor %}
+      </datalist>
+    </label>
     <label>Genre
       <select name="genre">
         <option value="">--</option>
@@ -23,10 +30,47 @@
 <section class="panel">
   <form method="get" class="grid grid-4">
     <label>Search Books <input name="q" value="{{ q or '' }}" placeholder="Title, author, genre, shelf..." /></label>
+    <label>Select Book to Edit
+      <select name="book_id">
+        {% for b in books %}
+        <option value="{{ b.id }}" {% if selected_book and selected_book.id == b.id %}selected{% endif %}>{{ b.title }} ({{ b.author }})</option>
+        {% endfor %}
+      </select>
+    </label>
     <button type="submit">Search</button>
   </form>
+  {% if selected_book %}
+  <div class="panel" style="margin-top:0.8rem;">
+    <h3>Edit Selected Book</h3>
+    <form method="post" class="grid grid-4">
+      <input type="hidden" name="action" value="update" />
+      <input type="hidden" name="book_id" value="{{ selected_book.id }}" />
+      <label>Title <input name="title" value="{{ selected_book.title }}" required /></label>
+      <label>Author
+        <input name="author" list="author-options" value="{{ selected_book.author }}" required />
+      </label>
+      <label>Genre
+        <select name="genre">
+          <option value="">--</option>
+          {% for genre in book_genres %}
+          <option value="{{ genre }}" {% if selected_book.genre == genre %}selected{% endif %}>{{ genre }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>Category <input name="category" value="{{ selected_book.category or '' }}" /></label>
+      <label>Shelf <input name="shelf_no" value="{{ selected_book.shelf_no }}" required /></label>
+      <label>Total <input type="number" name="total_copies" min="1" value="{{ selected_book.total_copies }}" required /></label>
+      <button type="submit">Save Changes</button>
+    </form>
+    <form method="post" class="inline" onsubmit="return confirm('Delete this book entry?');">
+      <input type="hidden" name="action" value="delete" />
+      <input type="hidden" name="book_id" value="{{ selected_book.id }}" />
+      <button type="submit">Delete Book</button>
+    </form>
+  </div>
+  {% endif %}
   <table>
-    <tr><th>Title</th><th>Author</th><th>Genre</th><th>Shelf</th><th>Total</th><th>Available</th><th>Edit</th></tr>
+    <tr><th>Title</th><th>Author</th><th>Genre</th><th>Shelf</th><th>Total</th><th>Available</th></tr>
     {% for b in books %}
     <tr>
       <td>{{ b.title }}</td>
@@ -35,27 +79,9 @@
       <td>{{ b.shelf_no }}</td>
       <td>{{ b.total_copies }}</td>
       <td>{{ b.available_copies }}</td>
-      <td>
-        <form method="post" class="grid">
-          <input type="hidden" name="action" value="update" />
-          <input type="hidden" name="book_id" value="{{ b.id }}" />
-          <label>Title <input name="title" value="{{ b.title }}" required /></label>
-          <label>Author <input name="author" value="{{ b.author }}" required /></label>
-          <label>Genre
-            <select name="genre">
-              <option value="">--</option>
-              {% for genre in book_genres %}
-              <option value="{{ genre }}" {% if b.genre == genre %}selected{% endif %}>{{ genre }}</option>
-              {% endfor %}
-            </select>
-          </label>
-          <label>Category <input name="category" value="{{ b.category or '' }}" /></label>
-          <label>Shelf <input name="shelf_no" value="{{ b.shelf_no }}" required /></label>
-          <label>Total <input type="number" name="total_copies" min="1" value="{{ b.total_copies }}" required /></label>
-          <button type="submit">Save</button>
-        </form>
-      </td>
     </tr>
+    {% else %}
+    <tr><td colspan="6">No books found.</td></tr>
     {% endfor %}
   </table>
 </section>

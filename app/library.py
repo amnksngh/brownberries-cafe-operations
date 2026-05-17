@@ -13,7 +13,7 @@ from werkzeug.utils import secure_filename
 
 from .auth_helpers import login_required, roles_required
 from .extensions import db
-from .models import Book, LibraryLoan, LibraryMember, LibraryPayment, SubscriptionPlan
+from .models import Book, LibraryAuthor, LibraryLoan, LibraryMember, LibraryPayment, SubscriptionPlan
 
 bp = Blueprint("library", __name__, url_prefix="/library")
 BOOK_GENRES = [
@@ -188,6 +188,26 @@ def members():
     )
 
 
+@bp.route("/members/documents", methods=["GET", "POST"])
+@roles_required("admin", "manager", "librarian")
+def member_documents():
+    if request.method == "POST":
+        member_id = int(request.form.get("member_id") or 0)
+        member = LibraryMember.query.get_or_404(member_id)
+        path = _save_uploaded_library_doc(request.files.get("govt_id_image"), "library-member-id")
+        if not path:
+            flash("Please select a Govt ID file.", "error")
+            return redirect(url_for("library.member_documents"))
+        member.govt_id_image_path = path
+        db.session.commit()
+        flash("Member document uploaded.", "success")
+        return redirect(url_for("library.member_documents"))
+    return render_template(
+        "library/member_documents.html",
+        members=LibraryMember.query.order_by(LibraryMember.full_name.asc()).all(),
+    )
+
+
 @bp.route("/members/<int:member_id>/govt-id")
 @roles_required("admin", "manager", "librarian")
 def member_govt_id(member_id):
@@ -228,19 +248,29 @@ def member_card(member_id):
 @bp.route("/books", methods=["GET", "POST"])
 @roles_required("admin", "manager", "librarian")
 def books():
+    selected_book_id = request.args.get("book_id", type=int)
     if request.method == "POST":
         action = request.form.get("action", "create")
         if action == "create":
             total = int(request.form["total_copies"])
+            author_name = request.form.get("author", "").strip()
+            if not author_name:
+                flash("Author is required.", "error")
+                return redirect(url_for("library.books"))
             book = Book(
                 title=request.form["title"].strip(),
-                author=request.form["author"].strip(),
+                author=author_name,
                 genre=request.form.get("genre", "").strip() or None,
                 category=request.form.get("category", "").strip() or None,
                 shelf_no=request.form["shelf_no"].strip(),
                 total_copies=total,
                 available_copies=total,
             )
+            existing_author = LibraryAuthor.query.filter(
+                db.func.lower(LibraryAuthor.name) == author_name.lower()
+            ).first()
+            if not existing_author:
+                db.session.add(LibraryAuthor(name=author_name, active=True))
             db.session.add(book)
             db.session.commit()
             flash("Book added.", "success")
@@ -250,15 +280,34 @@ def books():
             prev_total = book.total_copies
             new_total = int(request.form["total_copies"])
             delta = new_total - prev_total
+            author_name = request.form.get("author", "").strip()
+            if not author_name:
+                flash("Author is required.", "error")
+                return redirect(url_for("library.books", q=request.args.get("q", ""), book_id=book.id))
             book.title = request.form["title"].strip()
-            book.author = request.form["author"].strip()
+            book.author = author_name
             book.genre = request.form.get("genre", "").strip() or None
             book.category = request.form.get("category", "").strip() or None
             book.shelf_no = request.form["shelf_no"].strip()
             book.total_copies = new_total
             book.available_copies = max(0, book.available_copies + delta)
+            existing_author = LibraryAuthor.query.filter(
+                db.func.lower(LibraryAuthor.name) == author_name.lower()
+            ).first()
+            if not existing_author:
+                db.session.add(LibraryAuthor(name=author_name, active=True))
             db.session.commit()
             flash("Book updated.", "success")
+            return redirect(url_for("library.books", q=request.args.get("q", ""), book_id=book.id))
+        if action == "delete":
+            book = Book.query.get_or_404(int(request.form["book_id"]))
+            active_loans = LibraryLoan.query.filter_by(book_id=book.id, status="issued").count()
+            if active_loans > 0:
+                flash("Cannot delete book with active issued loans.", "error")
+                return redirect(url_for("library.books", q=request.args.get("q", ""), book_id=book.id))
+            db.session.delete(book)
+            db.session.commit()
+            flash("Book deleted.", "success")
             return redirect(url_for("library.books", q=request.args.get("q", "")))
     q = (request.args.get("q") or "").strip()
     query = Book.query
@@ -272,11 +321,45 @@ def books():
                 Book.shelf_no.ilike(like),
             )
         )
+    books_list = query.order_by(Book.title).all()
+    selected_book = None
+    if selected_book_id:
+        selected_book = next((b for b in books_list if b.id == selected_book_id), None)
+        if not selected_book:
+            selected_book = Book.query.get(selected_book_id)
+    if not selected_book and books_list:
+        selected_book = books_list[0]
     return render_template(
         "library/books.html",
-        books=query.order_by(Book.title).all(),
+        books=books_list,
+        selected_book=selected_book,
+        authors=LibraryAuthor.query.filter_by(active=True).order_by(LibraryAuthor.name.asc()).all(),
         book_genres=BOOK_GENRES,
         q=q,
+    )
+
+
+@bp.route("/authors", methods=["GET", "POST"])
+@roles_required("admin", "manager", "librarian")
+def authors():
+    if request.method == "POST":
+        name = (request.form.get("name") or "").strip()
+        if not name:
+            flash("Author name is required.", "error")
+            return redirect(url_for("library.authors"))
+        existing = LibraryAuthor.query.filter(db.func.lower(LibraryAuthor.name) == name.lower()).first()
+        if existing:
+            existing.active = True
+            db.session.commit()
+            flash("Author already exists. Marked active.", "success")
+            return redirect(url_for("library.authors"))
+        db.session.add(LibraryAuthor(name=name, active=True))
+        db.session.commit()
+        flash("Author added.", "success")
+        return redirect(url_for("library.authors"))
+    return render_template(
+        "library/authors.html",
+        authors=LibraryAuthor.query.order_by(LibraryAuthor.name.asc()).all(),
     )
 
 
@@ -402,7 +485,7 @@ def return_book(loan_id):
     loan.lost_fee = float(request.form.get("lost_fee") or 0)
     loan.total_charge = _loan_charge(loan)
     loan.status = "returned"
-    loan.book.available_copies += 1 if loan.lost_fee == 0 else 0
+    loan.book.available_copies = min(loan.book.total_copies, loan.book.available_copies + 1)
     db.session.commit()
     flash("Book returned and charges calculated.", "success")
     return redirect(url_for("library.loans"))

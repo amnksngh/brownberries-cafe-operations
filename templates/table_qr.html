@@ -30,14 +30,15 @@
     <h3>Best Sellers</h3>
     <div class="item-grid" id="best-sellers-grid">
       {% for item in menu_items[:8] %}
-      <article class="item-card qr-item-card" data-cat="{{ (item.category.name if item.category else '')|lower }}" data-name="{{ item.name|lower }}" data-sub="" data-type="{{ (item.item_type or '')|lower }}">
+      {% set item_cats = item_category_names_map.get(item.id, []) %}
+      <article class="item-card qr-item-card" data-cats="{{ item_cats|map('lower')|join('|') }}" data-name="{{ item.name|lower }}" data-sub="" data-type="{{ (item.item_type or '')|lower }}">
         <h4 class="item-name">{{ item.name }}</h4>
         {% if item.image_url %}
         <img src="{{ item.image_url }}" alt="{{ item.name }}" class="item-image qr-click-image" />
         {% else %}
         <div class="item-image placeholder">No Image</div>
         {% endif %}
-        <p class="muted item-meta">{{ item.category.name }}, {{ item.item_type }}</p>
+        <p class="muted item-meta">{{ item_cats|join(', ') }}, {{ item.item_type }}</p>
         <p class="item-calories">
           Calories: {{ item.calories or "-" }}
           {% if not is_preview %}
@@ -75,14 +76,15 @@
     <h3>Menu</h3>
     <div class="item-grid" id="all-items-grid">
       {% for item in menu_items %}
-      <article class="item-card qr-item-card" data-cat="{{ (item.category.name if item.category else '')|lower }}" data-name="{{ item.name|lower }}" data-sub="" data-type="{{ (item.item_type or '')|lower }}">
+      {% set item_cats = item_category_names_map.get(item.id, []) %}
+      <article class="item-card qr-item-card" data-cats="{{ item_cats|map('lower')|join('|') }}" data-name="{{ item.name|lower }}" data-sub="" data-type="{{ (item.item_type or '')|lower }}">
         <h4 class="item-name">{{ item.name }}</h4>
         {% if item.image_url %}
         <img src="{{ item.image_url }}" alt="{{ item.name }}" class="item-image qr-click-image" />
         {% else %}
         <div class="item-image placeholder">No Image</div>
         {% endif %}
-        <p class="muted item-meta">{{ item.category.name }}, {{ item.item_type }}</p>
+        <p class="muted item-meta">{{ item_cats|join(', ') }}, {{ item.item_type }}</p>
         <p class="item-calories">
           Calories: {{ item.calories or "-" }}
           {% if not is_preview %}
@@ -136,9 +138,9 @@
     <tr><th>Order</th><th>Status</th><th>Items</th><th>Total</th><th>Actions</th></tr>
     {% for order in table_orders %}
     <tr data-order-id="{{ order.id }}">
-      <td>#{{ order.id }}</td>
+      <td>#{{ "%02d"|format(order.daily_sequence or order.id) }}</td>
       <td class="order-status">{{ order.status }}</td>
-      <td>{% for oi in order.order_items %}<div>{{ oi.menu_item.name }}{% if oi.size_label %} ({{ oi.size_label }}){% endif %} x {{ oi.quantity }}</div>{% endfor %}</td>
+      <td>{% for oi in order.order_items %}{% if (oi.approval_status or "pending") != "rejected" %}<div>{{ oi.menu_item.name }}{% if oi.size_label %} ({{ oi.size_label }}){% endif %} x {{ oi.quantity }}</div>{% endif %}{% endfor %}</td>
       <td>{{ "%.2f"|format(order.total_amount) }}</td>
       <td>
         {% if order.status == "pending_approval" %}
@@ -291,9 +293,9 @@
   function applyFilters() {
     const q = (searchInput.value || "").trim().toLowerCase();
     document.querySelectorAll(".qr-item-card").forEach((card) => {
-      const cat = card.dataset.cat || "";
-      const blob = `${card.dataset.name || ""} ${card.dataset.sub || ""} ${card.dataset.type || ""} ${cat}`;
-      const catOk = activeCat === "all" || cat === activeCat;
+      const cats = (card.dataset.cats || "").split("|").filter(Boolean);
+      const blob = `${card.dataset.name || ""} ${card.dataset.sub || ""} ${card.dataset.type || ""} ${cats.join(" ")}`;
+      const catOk = activeCat === "all" || cats.includes(activeCat);
       const qOk = !q || blob.includes(q);
       card.style.display = (catOk && qOk) ? "" : "none";
     });
@@ -335,15 +337,17 @@
     }
   });
 
-  if (!isPreview) document.querySelectorAll(".edit-order-btn").forEach((btn) => {
-    btn.addEventListener("click", () => {
+  if (!isPreview) {
+    document.addEventListener("click", (event) => {
+      const btn = event.target.closest(".edit-order-btn");
+      if (!btn) return;
       const orderId = Number(btn.dataset.orderId);
       const row = document.querySelector(`tr[data-order-id="${orderId}"]`);
       if (!row) return;
       editingOrderId = orderId;
       alert(`Editing order #${orderId}. Add updated items to cart and click Place Order.`);
     });
-  });
+  }
 
   function upsertOrderRow(order) {
     if (isPreview || !ordersBoard) return;
@@ -355,11 +359,19 @@
       if (row) row.remove();
       return;
     }
-    const itemHtml = order.items.map((i) => `<div>${i.name} x ${i.qty}</div>`).join("");
+    const itemHtml = order.items
+      .filter((i) => (i.approval_status || "pending") !== "rejected")
+      .map((i) => `<div>${i.name}${i.size_label ? ` (${i.size_label})` : ""} x ${i.qty}</div>`)
+      .join("");
     const actionsHtml = order.status === "pending_approval"
-      ? `<button type="button" class="edit-order-btn" data-order-id="${order.id}">Edit</button>`
+      ? `<button type="button" class="edit-order-btn" data-order-id="${order.id}">Edit</button>
+         <form method="post" action="/cafe/table-order/${order.id}/delete" class="inline">
+            <input type="hidden" name="slug" value="{{ table.qr_slug }}" />
+            <button type="submit">Delete</button>
+          </form>`
       : "-";
-    const rowHtml = `<td>#${order.id}</td><td class="order-status">${order.status}</td><td>${itemHtml}</td><td>${Number(order.total_amount).toFixed(2)}</td><td>${actionsHtml}</td>`;
+    const orderNo = order.customer_order_no || String(order.id).padStart(2, "0");
+    const rowHtml = `<td>#${orderNo}</td><td class="order-status">${order.status}</td><td>${itemHtml}</td><td>${Number(order.total_amount).toFixed(2)}</td><td>${actionsHtml}</td>`;
     if (!row) {
       row = document.createElement("tr");
       row.dataset.orderId = order.id;
@@ -368,7 +380,7 @@
     row.innerHTML = rowHtml;
   }
   if (!isPreview) {
-    const socket = io("/table");
+    const socket = io("/table", { transports: ["polling"], upgrade: false, reconnection: true });
     socket.on("order_created", upsertOrderRow);
     socket.on("order_updated", (payload) => {
       const existing = document.querySelector(`tr[data-order-id="${payload.id}"] .order-status`);
@@ -377,6 +389,14 @@
       if (oldStatus === "pending_approval" && payload.status === "open") {
         alert("Your order has been approved and placed.");
       }
+    });
+    socket.on("ops_notification", (payload) => {
+      if (!payload || payload.kind !== "order_decision") return;
+      if (Number(payload.table_id) !== Number(tableId)) return;
+      const approved = (payload.approved_items || []).length ? `Approved: ${(payload.approved_items || []).join(", ")}` : "";
+      const rejected = (payload.rejected_items || []).length ? `Rejected: ${(payload.rejected_items || []).join(", ")}` : "";
+      const msg = [approved, rejected].filter(Boolean).join("\n");
+      if (msg) alert(msg);
     });
     renderCart();
   }

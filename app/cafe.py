@@ -51,6 +51,14 @@ STAFF_ROLES = DEFAULT_ROLE_OPTIONS
 PREP_STATION_OPTIONS = ("kitchen", "barista")
 
 
+def _emit_ops_notification(message: str, kind: str = "order", payload: dict | None = None):
+    data = {"kind": kind, "message": message}
+    if payload:
+        data.update(payload)
+    socketio.emit("ops_notification", data, namespace="/kitchen")
+    socketio.emit("ops_notification", data, namespace="/table")
+
+
 def _is_staff_user(user: User) -> bool:
     return user.role in _get_role_options() and user.email != "qr.guest@brownberries.local"
 
@@ -147,8 +155,12 @@ def _build_staff_id_card(user: User, profile: StaffProfile):
 
 
 def _serialize_order(order: CafeOrder):
+    pending_count = sum(1 for item in order.order_items if (item.approval_status or "pending") == "pending")
+    customer_order_no = f"{(order.daily_sequence or 0):02d}" if order.daily_sequence else f"{order.id:02d}"
     return {
         "id": order.id,
+        "order_code": order.display_code or str(order.id),
+        "customer_order_no": customer_order_no,
         "table_id": order.table_id,
         "table": "For Delivery" if order.is_delivery else (order.table.name if order.table else "-"),
         "status": order.status,
@@ -163,12 +175,15 @@ def _serialize_order(order: CafeOrder):
         "delivery_distance_km": round(order.delivery_distance_km or 0, 2),
         "delivery_charge": round(order.delivery_charge or 0, 2),
         "created_at": order.created_at.strftime("%Y-%m-%d %H:%M"),
+        "pending_approval_count": pending_count,
         "items": [
             {
+                "id": item.id,
                 "name": item.menu_item.name if item.menu_item else "-",
                 "qty": item.quantity,
                 "size_label": item.size_label,
                 "prep_station": item.menu_item.prep_station if item.menu_item else "kitchen",
+                "approval_status": item.approval_status or "pending",
             }
             for item in order.order_items
         ],
@@ -329,6 +344,19 @@ def _create_order(table_id: int, ordered_by_user_id: int, status: str, payment_t
     )
 
 
+def _recalculate_order_totals(order: CafeOrder):
+    line_total = 0.0
+    packaging_charge = 0.0
+    for oi in order.order_items:
+        line_total += float(oi.unit_price or 0) * int(oi.quantity or 0)
+        if order.is_delivery:
+            packaging_charge += 20.0 * int(oi.quantity or 0)
+    if not order.is_delivery:
+        packaging_charge = float(order.packaging_charge or 0)
+    order.packaging_charge = round(packaging_charge, 2)
+    order.total_amount = round(line_total + order.packaging_charge + float(order.delivery_charge or 0), 2)
+
+
 def create_cafe_order(
     table_id: int,
     ordered_by_user_id: int,
@@ -346,6 +374,10 @@ def create_cafe_order(
 ):
     if not line_items:
         return None
+    today = date.today()
+    today_count = CafeOrder.query.filter(db.func.date(CafeOrder.created_at) == today.isoformat()).count()
+    daily_seq = today_count + 1
+    display_code = f"{today.strftime('%m-%y')}-{daily_seq:02d}"
 
     order = CafeOrder(
         table_id=table_id,
@@ -360,6 +392,8 @@ def create_cafe_order(
         delivery_lat=delivery_lat,
         delivery_lng=delivery_lng,
         delivery_map_url=delivery_map_url,
+        daily_sequence=daily_seq,
+        display_code=display_code,
     )
     db.session.add(order)
     db.session.flush()
@@ -389,6 +423,7 @@ def create_cafe_order(
                 quantity=qty,
                 unit_price=price_to_use,
                 size_label=size_label,
+                approval_status="pending" if status == "pending_approval" else "approved",
             )
         )
 
@@ -879,7 +914,7 @@ def orders():
         item_size_map=item_size_map,
         selected_table_id=table_id,
         table_orders=CafeOrder.query.filter(
-            CafeOrder.table_id == table_id, CafeOrder.status != "paid"
+            CafeOrder.table_id == table_id, CafeOrder.status.notin_(["paid", "cancelled"])
         )
         .order_by(CafeOrder.created_at.desc())
         .all()
@@ -891,7 +926,10 @@ def orders():
 @bp.route("/orders/<int:order_id>/mark-paid", methods=["POST"])
 @roles_required("admin", "manager", "cashier")
 def mark_order_paid(order_id):
-    order = CafeOrder.query.get_or_404(order_id)
+    order = CafeOrder.query.get(order_id)
+    if not order:
+        flash("Order not found. It may have already been updated on another screen.", "error")
+        return redirect(request.form.get("next") or url_for("cafe.cashier"))
     payment_type = request.form.get("payment_type", "").strip() or order.payment_type or "Cash"
     payment_reference = request.form.get("payment_reference", "").strip() or order.payment_reference
     order.status = "paid"
@@ -911,16 +949,59 @@ def mark_order_paid(order_id):
 @bp.route("/orders/<int:order_id>/approve", methods=["POST"])
 @roles_required("admin", "manager", "cashier", "librarian", "staff")
 def approve_order(order_id):
-    order = CafeOrder.query.get_or_404(order_id)
-    if order.status != "pending_approval":
-        flash("Order is not pending approval.", "error")
+    order = CafeOrder.query.get(order_id)
+    if not order:
+        flash("Order not found. It may have already been updated on another screen.", "error")
+        return redirect(request.form.get("next") or url_for("cafe.cashier"))
+    decision = (request.form.get("decision") or "approve").strip().lower()
+    if decision not in ["approve", "reject"]:
+        decision = "approve"
+    pending_items = [oi for oi in order.order_items if (oi.approval_status or "pending") == "pending"]
+    if not pending_items:
+        flash("No pending items left for action.", "error")
         return redirect(request.form.get("next") or url_for("cafe.cashier", table_id=order.table_id))
-    order.status = "open"
+    selected_ids = {int(v) for v in request.form.getlist("pending_item_ids") if str(v).isdigit()}
+    if not selected_ids:
+        flash("Select at least one pending item.", "error")
+        return redirect(request.form.get("next") or url_for("cafe.cashier", table_id=order.table_id))
+    approved_names = []
+    rejected_names = []
+    for oi in pending_items:
+        if oi.id not in selected_ids:
+            continue
+        if decision == "approve":
+            oi.approval_status = "approved"
+            approved_names.append(f"{oi.menu_item.name if oi.menu_item else 'Item'} x {oi.quantity}")
+        else:
+            oi.approval_status = "rejected"
+            rejected_names.append(f"{oi.menu_item.name if oi.menu_item else 'Item'} x {oi.quantity}")
+
+    pending_left = [oi for oi in order.order_items if (oi.approval_status or "pending") == "pending"]
+    approved_items = [oi for oi in order.order_items if (oi.approval_status or "pending") == "approved"]
+    non_rejected_items = [oi for oi in order.order_items if (oi.approval_status or "pending") != "rejected"]
+    line_total = round(sum(float(oi.unit_price or 0) * int(oi.quantity or 0) for oi in non_rejected_items), 2)
+    order.total_amount = round(line_total + float(order.packaging_charge or 0) + float(order.delivery_charge or 0), 2)
+    if approved_items:
+        order.status = "open"
+    elif pending_left:
+        order.status = "pending_approval"
+    else:
+        order.status = "cancelled"
     db.session.commit()
     payload = _serialize_order(order)
     socketio.emit("order_updated", payload, namespace="/kitchen")
     socketio.emit("order_updated", payload, namespace="/table")
-    flash(f"Order #{order.id} approved.", "success")
+    _emit_ops_notification(
+        f"Order #{order.id} decision updated",
+        kind="order_decision",
+        payload={
+            "order_id": order.id,
+            "table_id": order.table_id,
+            "approved_items": approved_names,
+            "rejected_items": rejected_names,
+        },
+    )
+    flash(f"Order #{order.id}: selected items {decision}d.", "success")
     return redirect(request.form.get("next") or url_for("cafe.cashier", table_id=order.table_id))
 
 
@@ -977,6 +1058,13 @@ def cashier():
         running_table_ids = [t.id for t in tables if running_map.get(t.id, {}).get("count", 0) > 0]
         table_id = running_table_ids[0] if running_table_ids else tables[0].id
     selected_table = CafeTable.query.get(table_id) if table_id else None
+    today = date.today().isoformat()
+    total_sale_today = (
+        db.session.query(db.func.coalesce(db.func.sum(CafeOrder.total_amount), 0))
+        .filter(CafeOrder.status == "paid", db.func.date(CafeOrder.updated_at) == today)
+        .scalar()
+        or 0
+    )
     unpaid_orders = []
     table_total = 0
     if selected_table:
@@ -996,6 +1084,7 @@ def cashier():
         selected_table=selected_table,
         unpaid_orders=unpaid_orders,
         table_total=table_total,
+        total_sale_today=round(float(total_sale_today), 2),
     )
 
 
@@ -1071,6 +1160,7 @@ def edit_pending_table_order(order_id):
                 quantity=qty,
                 unit_price=price_to_use,
                 size_label=size_label,
+                approval_status="pending",
             )
         )
     order.packaging_charge = round(packaging_charge, 2)

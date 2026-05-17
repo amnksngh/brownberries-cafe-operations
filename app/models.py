@@ -107,6 +107,8 @@ class CafeOrder(TimestampMixin, db.Model):
     packaging_charge = db.Column(db.Float, default=0, nullable=False)
     delivery_distance_km = db.Column(db.Float, default=0, nullable=False)
     delivery_charge = db.Column(db.Float, default=0, nullable=False)
+    daily_sequence = db.Column(db.Integer, nullable=True)
+    display_code = db.Column(db.String(30), nullable=True)
     total_amount = db.Column(db.Float, default=0, nullable=False)
     table = db.relationship("CafeTable", backref="orders")
     ordered_by = db.relationship("User", backref="orders")
@@ -119,6 +121,7 @@ class CafeOrderItem(TimestampMixin, db.Model):
     quantity = db.Column(db.Integer, nullable=False, default=1)
     unit_price = db.Column(db.Float, nullable=False, default=0)
     size_label = db.Column(db.String(80), nullable=True)
+    approval_status = db.Column(db.String(20), nullable=False, default="pending")
     order = db.relationship("CafeOrder", backref="order_items")
     menu_item = db.relationship("MenuItem")
 
@@ -242,6 +245,12 @@ class LibraryMember(TimestampMixin, db.Model):
     govt_id_image_path = db.Column(db.String(255), nullable=True)
     active = db.Column(db.Boolean, default=True, nullable=False)
     subscription_plan = db.relationship("SubscriptionPlan", backref="members")
+
+
+class LibraryAuthor(TimestampMixin, db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(120), nullable=False, unique=True)
+    active = db.Column(db.Boolean, default=True, nullable=False)
 
 
 class Book(TimestampMixin, db.Model):

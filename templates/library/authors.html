@@ -1,0 +1,23 @@
+{% extends "library/_layout.html" %}
+{% block library_content %}
+<section class="panel">
+  <h2>Authors</h2>
+  <form method="post" class="grid grid-3">
+    <label>Author Name <input name="name" required /></label>
+    <button type="submit">Add Author</button>
+  </form>
+</section>
+<section class="panel">
+  <table>
+    <tr><th>Author</th><th>Status</th></tr>
+    {% for a in authors %}
+    <tr>
+      <td>{{ a.name }}</td>
+      <td>{{ "Active" if a.active else "Inactive" }}</td>
+    </tr>
+    {% else %}
+    <tr><td colspan="2">No authors added yet.</td></tr>
+    {% endfor %}
+  </table>
+</section>
+{% endblock %}

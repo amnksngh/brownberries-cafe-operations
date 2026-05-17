@@ -1,8 +1,28 @@
 {% extends "base.html" %}
 {% block content %}
 <section class="panel">
-  <h2>Cashier Desk</h2>
+  <div class="split-head">
+    <h2>Cashier Desk</h2>
+    <h3>Total Sale: ₹{{ "%.2f"|format(total_sale_today or 0) }}</h3>
+  </div>
+  <div class="split-head" style="margin-bottom:0.5rem;">
+    <div>
+      <button type="button" id="cashier-lock-now">Lock Screen</button>
+      <button type="button" id="cashier-change-pin">Set/Change PIN</button>
+    </div>
+    <label>Auto Lock
+      <select id="cashier-auto-lock-mins">
+        <option value="5">5 min</option>
+        <option value="10" selected>10 min</option>
+        <option value="15">15 min</option>
+        <option value="30">30 min</option>
+        <option value="60">60 min</option>
+      </select>
+    </label>
+  </div>
   <p class="muted">Collect payment, mark orders paid, and clear table for next customers.</p>
+  <p class="muted">Connection: <strong id="socket-state">Connecting...</strong></p>
+  <button type="button" id="enable-sound-btn">Enable Sound Alerts</button>
   <div class="notif-wrap">
     <button type="button" id="notif-bell" class="notif-bell">🔔 <span id="notif-count" class="notif-count">0</span></button>
     <div id="notif-panel" class="notif-panel hidden">
@@ -25,6 +45,19 @@
   </div>
 </section>
 
+<div id="cashier-lock-overlay" style="display:none;position:fixed;inset:0;background:rgba(12,10,8,0.88);z-index:9999;align-items:center;justify-content:center;">
+  <div style="background:#fff;padding:1rem;max-width:360px;width:92%;border-radius:8px;">
+    <h3 style="margin-top:0;">Cashier Screen Locked</h3>
+    <p class="muted">Enter your cashier PIN to unlock.</p>
+    <label>PIN <input id="cashier-unlock-pin" type="password" inputmode="numeric" autocomplete="off" /></label>
+    <div class="split-head" style="margin-top:0.8rem;">
+      <button type="button" id="cashier-unlock-btn">Unlock</button>
+      <button type="button" id="cashier-logout-btn">Logout</button>
+    </div>
+    <p id="cashier-lock-error" style="color:#b42318;min-height:1.2rem;margin:0.4rem 0 0;"></p>
+  </div>
+</div>
+
 {% if selected_table %}
 <section class="panel">
   <h3>{{ selected_table.name }} - Unpaid Orders</h3>
@@ -37,19 +70,31 @@
       <tbody>
         {% for order in unpaid_orders %}
         <tr>
-          <td>#{{ order.id }}</td>
+          <td>#{{ order.display_code or order.id }}</td>
           <td>{{ order.status }}</td>
           <td>
             {% for oi in order.order_items %}
+            {% if (oi.approval_status or "pending") != "rejected" %}
             <div>{{ oi.menu_item.name }}{% if oi.size_label %} ({{ oi.size_label }}){% endif %} x {{ oi.quantity }}</div>
+            {% endif %}
             {% endfor %}
           </td>
           <td>{{ "%.2f"|format(order.total_amount) }}</td>
           <td>
-            {% if order.status == "pending_approval" %}
+            {% set pending_items = order.order_items | selectattr("approval_status", "equalto", "pending") | list %}
+            {% if pending_items %}
             <form method="post" action="{{ url_for('cafe.approve_order', order_id=order.id) }}" class="grid">
               <input type="hidden" name="next" value="{{ url_for('cafe.cashier', table_id=selected_table.id) }}" />
-              <button type="submit">Approve</button>
+              <div class="grid">
+                <strong>Pending Queue</strong>
+                {% for oi in pending_items %}
+                <label><input type="checkbox" name="pending_item_ids" value="{{ oi.id }}" checked class="pending-item-checkbox" /> {{ oi.menu_item.name }}{% if oi.size_label %} ({{ oi.size_label }}){% endif %} x {{ oi.quantity }}</label>
+                {% endfor %}
+              </div>
+              <div class="grid grid-2">
+                <button type="submit" name="decision" value="approve" class="decision-btn">Approve</button>
+                <button type="submit" name="decision" value="reject" class="decision-btn">Reject</button>
+              </div>
             </form>
             {% else %}
             <form method="post" action="{{ url_for('cafe.mark_order_paid', order_id=order.id) }}" class="grid">
@@ -95,34 +140,151 @@
 {% endif %}
 <script src="{{ url_for('static', filename='js/socket.io.min.js') }}"></script>
 <script>
-  const cashierSocket = io("/table");
+  const cashierUserId = {{ g.current_user.id if g.current_user else 0 }};
+  const notifSoundUrl = "{{ url_for('static', filename='sounds/notification.wav') }}";
+  const cashierSocket = io("/table", {
+    transports: ["polling"],
+    upgrade: false,
+    reconnection: true,
+    reconnectionAttempts: 50,
+    reconnectionDelay: 800,
+  });
   const selectedTableId = {{ selected_table.id if selected_table else 0 }};
+  const socketState = document.getElementById("socket-state");
+  const enableSoundBtn = document.getElementById("enable-sound-btn");
   let cashierReloadTimer = null;
+  const lockOverlay = document.getElementById("cashier-lock-overlay");
+  const unlockPinInput = document.getElementById("cashier-unlock-pin");
+  const unlockBtn = document.getElementById("cashier-unlock-btn");
+  const lockError = document.getElementById("cashier-lock-error");
+  const lockNowBtn = document.getElementById("cashier-lock-now");
+  const changePinBtn = document.getElementById("cashier-change-pin");
+  const autoLockSelect = document.getElementById("cashier-auto-lock-mins");
+  const logoutBtn = document.getElementById("cashier-logout-btn");
+  const pinStorageKey = `cashier_pin_${cashierUserId}`;
+  const lockMinsKey = `cashier_lock_mins_${cashierUserId}`;
+  let lastActivityAt = Date.now();
+  let isLocked = false;
+  let autoLockMinutes = Number(localStorage.getItem(lockMinsKey) || "10");
+  if (!Number.isFinite(autoLockMinutes) || autoLockMinutes < 1) autoLockMinutes = 10;
+  if (autoLockSelect) autoLockSelect.value = String(autoLockMinutes);
+
+  function getCashierPin() {
+    return localStorage.getItem(pinStorageKey) || "";
+  }
+  function setCashierPin(pin) {
+    localStorage.setItem(pinStorageKey, pin);
+  }
+  function openLock() {
+    isLocked = true;
+    lockOverlay.style.display = "flex";
+    lockError.textContent = "";
+    unlockPinInput.value = "";
+    setTimeout(() => unlockPinInput.focus(), 40);
+  }
+  function closeLock() {
+    isLocked = false;
+    lockOverlay.style.display = "none";
+    lockError.textContent = "";
+    lastActivityAt = Date.now();
+  }
+  function ensurePinConfigured() {
+    if (getCashierPin()) return true;
+    const pin = prompt("Set your cashier PIN (4-8 digits):", "");
+    if (!pin) return false;
+    if (!/^\d{4,8}$/.test(pin.trim())) {
+      alert("PIN must be 4 to 8 digits.");
+      return false;
+    }
+    setCashierPin(pin.trim());
+    return true;
+  }
+  function handleUnlock() {
+    const expected = getCashierPin();
+    if (!expected) {
+      lockError.textContent = "No PIN set. Use Set/Change PIN.";
+      return;
+    }
+    if (unlockPinInput.value.trim() !== expected) {
+      lockError.textContent = "Invalid PIN.";
+      return;
+    }
+    closeLock();
+  }
+  function setOrChangePin() {
+    const current = getCashierPin();
+    if (current) {
+      const oldPin = prompt("Enter current PIN:", "");
+      if ((oldPin || "").trim() !== current) {
+        alert("Current PIN is incorrect.");
+        return;
+      }
+    }
+    const newPin = prompt("Enter new PIN (4-8 digits):", "");
+    if (!newPin) return;
+    if (!/^\d{4,8}$/.test(newPin.trim())) {
+      alert("PIN must be 4 to 8 digits.");
+      return;
+    }
+    setCashierPin(newPin.trim());
+    alert("PIN updated.");
+  }
+  function recordActivity() {
+    if (!isLocked) lastActivityAt = Date.now();
+  }
+  function evaluateAutoLock() {
+    if (isLocked) return;
+    const maxIdleMs = autoLockMinutes * 60 * 1000;
+    if (Date.now() - lastActivityAt >= maxIdleMs) {
+      if (ensurePinConfigured()) openLock();
+      else lastActivityAt = Date.now();
+    }
+  }
+  lockNowBtn?.addEventListener("click", () => { if (ensurePinConfigured()) openLock(); });
+  changePinBtn?.addEventListener("click", setOrChangePin);
+  unlockBtn?.addEventListener("click", handleUnlock);
+  unlockPinInput?.addEventListener("keydown", (e) => { if (e.key === "Enter") handleUnlock(); });
+  logoutBtn?.addEventListener("click", () => { window.location.href = "{{ url_for('main.logout') }}"; });
+  autoLockSelect?.addEventListener("change", () => {
+    autoLockMinutes = Number(autoLockSelect.value || "10");
+    localStorage.setItem(lockMinsKey, String(autoLockMinutes));
+    recordActivity();
+  });
+  ["click", "keydown", "mousemove", "touchstart"].forEach((ev) => window.addEventListener(ev, recordActivity, { passive: true }));
+  window.setInterval(evaluateAutoLock, 5000);
+
   function cashierScheduleReload(payload) {
-    if (selectedTableId && payload && Number(payload.table_id) !== Number(selectedTableId)) return;
+    if (!payload || !payload.table_id) return;
     if (cashierReloadTimer) return;
     cashierReloadTimer = setTimeout(() => window.location.reload(), 300);
   }
-  function playChime() {
+  let audioCtx = null;
+  let soundEnabled = false;
+  const notifAudio = new Audio(notifSoundUrl);
+  notifAudio.preload = "auto";
+  async function enableSound() {
     try {
       const AudioCtx = window.AudioContext || window.webkitAudioContext;
-      if (!AudioCtx) return;
-      const ctx = new AudioCtx();
-      const now = ctx.currentTime;
-      [880, 1174].forEach((freq, i) => {
-        const osc = ctx.createOscillator();
-        const gain = ctx.createGain();
-        osc.type = "sine";
-        osc.frequency.value = freq;
-        osc.connect(gain);
-        gain.connect(ctx.destination);
-        const start = now + i * 0.1;
-        gain.gain.setValueAtTime(0.001, start);
-        gain.gain.exponentialRampToValueAtTime(0.12, start + 0.02);
-        gain.gain.exponentialRampToValueAtTime(0.001, start + 0.16);
-        osc.start(start);
-        osc.stop(start + 0.16);
-      });
+      if (AudioCtx) {
+        if (!audioCtx) audioCtx = new AudioCtx();
+        if (audioCtx.state === "suspended") await audioCtx.resume();
+      }
+      try {
+        notifAudio.currentTime = 0;
+        await notifAudio.play();
+        notifAudio.pause();
+        notifAudio.currentTime = 0;
+      } catch (e) {}
+      soundEnabled = true;
+      if (soundEnabled && enableSoundBtn) enableSoundBtn.textContent = "Sound Alerts Enabled";
+    } catch (e) {}
+  }
+  function playChime() {
+    if (!soundEnabled) return;
+    try {
+      notifAudio.pause();
+      notifAudio.currentTime = 0;
+      notifAudio.play().catch(() => {});
     } catch (e) {}
   }
   const notifBell = document.getElementById("notif-bell");
@@ -131,24 +293,109 @@
   const notifList = document.getElementById("notif-list");
   const notifClear = document.getElementById("notif-clear");
   const notifs = [];
+  const notifStorageKey = "cashier_notifications_v1";
+  function summarizeItems(items) {
+    if (!Array.isArray(items) || items.length < 1) return "-";
+    return items.map((it) => `${it.name}${it.size_label ? ` (${it.size_label})` : ""} x ${it.qty}`).join(", ");
+  }
+  function toNotifLine(n) {
+    if (n && n.kind === "booking") {
+      return `Booking | ${n.table} | ${n.created_at}`;
+    }
+    const orderId = n.order_id || n.id || "-";
+    const tableId = n.table_id || n.table || "-";
+    const itemsList = n.items_list || summarizeItems(n.items || []);
+    return `Order ${orderId} | Table ${tableId} | ${itemsList}`;
+  }
   function renderNotifs() {
     notifCount.textContent = String(notifs.length);
     notifList.innerHTML = notifs.length
-      ? notifs.map((n) => `<div class="flash success">#${n.id} • ${n.table} • ${n.created_at}</div>`).join("")
+      ? notifs.map((n) => `<div class="flash success">${toNotifLine(n)}</div>`).join("")
       : '<p class="muted">No new notifications.</p>';
   }
+  function saveNotifs() {
+    try { localStorage.setItem(notifStorageKey, JSON.stringify(notifs)); } catch (e) {}
+  }
+  function loadNotifs() {
+    try {
+      const raw = localStorage.getItem(notifStorageKey);
+      if (!raw) return;
+      const arr = JSON.parse(raw);
+      if (Array.isArray(arr)) {
+        notifs.splice(0, notifs.length, ...arr.slice(0, 100));
+      }
+    } catch (e) {}
+  }
   notifBell?.addEventListener("click", () => notifPanel.classList.toggle("hidden"));
+  enableSoundBtn?.addEventListener("click", enableSound);
+  document.addEventListener("click", enableSound, { once: true });
   notifClear?.addEventListener("click", () => {
     notifs.splice(0, notifs.length);
     renderNotifs();
+    saveNotifs();
   });
+  cashierSocket.on("connect", () => {
+    if (socketState) socketState.textContent = "Connected";
+  });
+  cashierSocket.on("disconnect", () => {
+    if (socketState) socketState.textContent = "Disconnected";
+  });
+  cashierSocket.on("connect_error", (err) => {
+    const msg = (err && (err.message || err.description)) ? `Connection Error: ${err.message || err.description}` : "Connection Error";
+    if (socketState) socketState.textContent = msg;
+  });
+
   cashierSocket.on("order_created", (payload) => {
-    notifs.unshift(payload);
+    notifs.unshift({
+      id: payload.id,
+      order_id: payload.order_code || payload.id,
+      table_id: payload.table,
+      items: payload.items || [],
+      created_at: payload.created_at || "Now",
+    });
     if (notifs.length > 30) notifs.pop();
     renderNotifs();
+    saveNotifs();
     playChime();
     cashierScheduleReload(payload);
   });
+  cashierSocket.on("ops_notification", (payload) => {
+    notifs.unshift({
+      id: payload.order_id || payload.kind || "Notice",
+      order_id: payload.order_id || "-",
+      table_id: payload.table_id || "-",
+      items_list: payload.message || "Notification",
+      created_at: "Just now",
+    });
+    if (notifs.length > 30) notifs.pop();
+    renderNotifs();
+    saveNotifs();
+  });
+  cashierSocket.on("booking_created", (payload) => {
+    notifs.unshift({
+      id: `Booking-${payload.id}`,
+      kind: "booking",
+      table: `${payload.customer_name} (${payload.people_count})`,
+      created_at: `${payload.booking_date} ${payload.start_hour}:00-${payload.end_hour}:00`,
+    });
+    if (notifs.length > 30) notifs.pop();
+    renderNotifs();
+    saveNotifs();
+    playChime();
+  });
   cashierSocket.on("order_updated", cashierScheduleReload);
+  loadNotifs();
+  renderNotifs();
+
+  document.querySelectorAll("form[action*='/orders/'][action$='/approve']").forEach((form) => {
+    const checkboxes = [...form.querySelectorAll(".pending-item-checkbox")];
+    const buttons = [...form.querySelectorAll(".decision-btn")];
+    const sync = () => {
+      const anyChecked = checkboxes.some((cb) => cb.checked);
+      buttons.forEach((btn) => btn.disabled = !anyChecked);
+    };
+    checkboxes.forEach((cb) => cb.addEventListener("change", sync));
+    sync();
+  });
 </script>
 {% endblock %}

@@ -1,0 +1,38 @@
+{% extends "library/_layout.html" %}
+{% block library_content %}
+<section class="panel">
+  <h2>Member Documents Upload</h2>
+  <form method="post" enctype="multipart/form-data" class="grid grid-3">
+    <label>Member
+      <select name="member_id" required>
+        {% for m in members %}
+        <option value="{{ m.id }}">{{ m.full_name }} ({{ m.member_code or ('M-' ~ m.id) }})</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>Govt ID File <input type="file" name="govt_id_image" accept="image/*,.pdf" required /></label>
+    <button type="submit">Upload Document</button>
+  </form>
+</section>
+
+<section class="panel">
+  <table>
+    <tr><th>Member</th><th>Member ID</th><th>Document</th></tr>
+    {% for m in members %}
+    <tr>
+      <td>{{ m.full_name }}</td>
+      <td>{{ m.member_code or ('M-' ~ m.id) }}</td>
+      <td>
+        {% if m.govt_id_image_path %}
+        <a class="button-link" href="{{ url_for('library.member_govt_id', member_id=m.id) }}">Download Govt ID</a>
+        {% else %}
+        -
+        {% endif %}
+      </td>
+    </tr>
+    {% else %}
+    <tr><td colspan="3">No members found.</td></tr>
+    {% endfor %}
+  </table>
+</section>
+{% endblock %}

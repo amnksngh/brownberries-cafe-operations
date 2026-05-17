@@ -1,5 +1,6 @@
 import os
 from pathlib import Path
+from datetime import timedelta
 
 from flask import Flask
 from sqlalchemy import text
@@ -60,6 +61,8 @@ def _ensure_sqlite_schema_columns():
             "packaging_charge": "FLOAT NOT NULL DEFAULT 0",
             "delivery_distance_km": "FLOAT NOT NULL DEFAULT 0",
             "delivery_charge": "FLOAT NOT NULL DEFAULT 0",
+            "daily_sequence": "INTEGER",
+            "display_code": "TEXT",
         },
         "customer": {
             "default_map_url": "TEXT",
@@ -72,6 +75,7 @@ def _ensure_sqlite_schema_columns():
         },
         "cafe_order_item": {
             "size_label": "TEXT",
+            "approval_status": "TEXT NOT NULL DEFAULT 'pending'",
         },
     }
     for table_name, cols in column_specs.items():
@@ -119,6 +123,8 @@ def create_app():
         SECRET_KEY="change-this-in-production",
         SQLALCHEMY_DATABASE_URI="sqlite:///brownberries.db",
         SQLALCHEMY_TRACK_MODIFICATIONS=False,
+        PERMANENT_SESSION_LIFETIME=timedelta(days=30),
+        SESSION_REFRESH_EACH_REQUEST=True,
         PUBLIC_BASE_URL=(
             deploy_cfg.get("PUBLIC_BASE_URL", "").strip()
             or "https://brownberriescafe.com"
@@ -177,3 +183,13 @@ def create_app():
         print("Database initialized. Default admin: admin@brownberries.local / admin123")
 
     return app
+
+
+@socketio.on("connect", namespace="/table")
+def _table_namespace_connect():
+    return True
+
+
+@socketio.on("connect", namespace="/kitchen")
+def _kitchen_namespace_connect():
+    return True

@@ -136,15 +136,26 @@
       <td>{{ order.status }}</td>
       <td>
         {% for oi in order.order_items %}
+        {% if (oi.approval_status or "pending") != "rejected" %}
         <div>{{ oi.menu_item.name }}{% if oi.size_label %} ({{ oi.size_label }}){% endif %} x {{ oi.quantity }}</div>
+        {% endif %}
         {% endfor %}
       </td>
       <td>{{ "%.2f"|format(order.total_amount) }}</td>
       <td>
-        {% if order.status == "pending_approval" and g.current_user.role in ["admin", "manager", "cashier", "librarian", "staff"] %}
+        {% set pending_items = order.order_items | selectattr("approval_status", "equalto", "pending") | list %}
+        {% if pending_items and g.current_user.role in ["admin", "manager", "cashier", "librarian", "staff"] %}
         <form method="post" action="{{ url_for('cafe.approve_order', order_id=order.id) }}" class="grid">
           <input type="hidden" name="next" value="{{ url_for('cafe.orders', table_id=selected_table_id) }}" />
-          <button type="submit">Approve</button>
+          <div class="grid">
+            {% for oi in pending_items %}
+            <label><input type="checkbox" name="pending_item_ids" value="{{ oi.id }}" checked class="pending-item-checkbox" /> {{ oi.menu_item.name }}{% if oi.size_label %} ({{ oi.size_label }}){% endif %} x {{ oi.quantity }}</label>
+            {% endfor %}
+          </div>
+          <div class="grid grid-2">
+            <button type="submit" name="decision" value="approve" class="decision-btn">Approve</button>
+            <button type="submit" name="decision" value="reject" class="decision-btn">Reject</button>
+          </div>
         </form>
         {% elif g.current_user.role in ["admin", "manager", "cashier"] %}
         <form method="post" action="{{ url_for('cafe.mark_order_paid', order_id=order.id) }}" class="grid">
@@ -327,7 +338,7 @@
 </script>
 <script src="{{ url_for('static', filename='js/socket.io.min.js') }}"></script>
 <script>
-  const orderSocket = io("/table");
+  const orderSocket = io("/table", { transports: ["polling"], upgrade: false, reconnection: true });
   const activeTableId = Number(document.getElementById("selected-table-id-input")?.value || 0);
   let reloadTimer = null;
   function scheduleReload(payload) {
@@ -337,5 +348,16 @@
   }
   orderSocket.on("order_created", scheduleReload);
   orderSocket.on("order_updated", scheduleReload);
+
+  document.querySelectorAll("form[action*='/orders/'][action$='/approve']").forEach((form) => {
+    const checkboxes = [...form.querySelectorAll(".pending-item-checkbox")];
+    const buttons = [...form.querySelectorAll(".decision-btn")];
+    const sync = () => {
+      const anyChecked = checkboxes.some((cb) => cb.checked);
+      buttons.forEach((btn) => btn.disabled = !anyChecked);
+    };
+    checkboxes.forEach((cb) => cb.addEventListener("change", sync));
+    sync();
+  });
 </script>
 {% endblock %}
