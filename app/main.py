@@ -84,6 +84,38 @@ def _get_item_category_names(item: MenuItem, category_name_by_id: dict[int, str]
     return names
 
 
+def _menu_item_category_ids(item: MenuItem) -> list[int]:
+    parsed: list[int] = []
+    if item.category_ids_json:
+        try:
+            raw = json.loads(item.category_ids_json)
+            if isinstance(raw, list):
+                for value in raw:
+                    try:
+                        parsed.append(int(value))
+                    except (TypeError, ValueError):
+                        continue
+        except (TypeError, ValueError, json.JSONDecodeError):
+            pass
+    if not parsed and item.category_id:
+        parsed = [item.category_id]
+    return list(dict.fromkeys(parsed))
+
+
+def _visible_categories_for_available_menu() -> list[MenuCategory]:
+    categories = MenuCategory.query.order_by(MenuCategory.name.asc()).all()
+    available_items = MenuItem.query.filter_by(available=True).all()
+    used_category_ids: set[int] = set()
+    for item in available_items:
+        for cid in _menu_item_category_ids(item):
+            used_category_ids.add(cid)
+    return [
+        c
+        for c in categories
+        if c.name.lower() != "other" or c.id in used_category_ids
+    ]
+
+
 @bp.route("/login", methods=["GET", "POST"])
 def login():
     if request.method == "POST":
@@ -422,8 +454,9 @@ def customer_menu():
         .order_by(MenuItem.name.asc())
         .all()
     )
-    categories = MenuCategory.query.order_by(MenuCategory.name.asc()).all()
+    categories = _visible_categories_for_available_menu()
     category_name_by_id = {c.id: c.name for c in categories}
+    item_category_names_map = {item.id: _get_item_category_names(item, category_name_by_id) for item in menu_items}
     item_types = [
         row[0]
         for row in db.session.query(MenuItem.item_type)
@@ -437,6 +470,7 @@ def customer_menu():
         customer=customer,
         menu_items=menu_items,
         categories=categories,
+        item_category_names_map=item_category_names_map,
         item_types=item_types,
         selected_category_id=category_id,
         selected_item_type=item_type,
@@ -743,7 +777,7 @@ def table_qr_page():
         table = CafeTable.query.filter_by(active=True).order_by(CafeTable.id.asc()).first()
     if not table:
         return render_template("table_qr.html", table=None, menu_items=[], categories=[], item_frequency={})
-    categories = MenuCategory.query.order_by(MenuCategory.name.asc()).all()
+    categories = _visible_categories_for_available_menu()
     category_name_by_id = {c.id: c.name for c in categories}
     frequency_subq = (
         db.session.query(

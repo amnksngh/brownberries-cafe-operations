@@ -12,7 +12,7 @@ from .deploy_config import load_deployment_config
 from .extensions import db, socketio
 from .library import bp as library_bp
 from .main import bp as main_bp
-from .models import SubscriptionPlan, User
+from .models import InventoryCategory, SubscriptionPlan, User
 
 
 def _ensure_sqlite_schema_columns():
@@ -23,6 +23,7 @@ def _ensure_sqlite_schema_columns():
             "category_ids_json": "TEXT",
             "has_size_variants": "BOOLEAN NOT NULL DEFAULT 0",
             "size_pricing_json": "TEXT",
+            "short_description": "TEXT",
         },
         "staff_profile": {
             "dob": "DATE",
@@ -77,6 +78,18 @@ def _ensure_sqlite_schema_columns():
             "size_label": "TEXT",
             "approval_status": "TEXT NOT NULL DEFAULT 'pending'",
         },
+        "inventory_item": {
+            "item_code": "TEXT",
+            "category_name": "TEXT",
+            "subcategory_name": "TEXT",
+            "average_daily_usage": "FLOAT NOT NULL DEFAULT 0",
+            "purchase_price": "FLOAT NOT NULL DEFAULT 0",
+            "selling_relation": "TEXT",
+            "shelf_life_days": "INTEGER",
+            "expiry_tracking": "BOOLEAN NOT NULL DEFAULT 0",
+            "storage_location": "TEXT",
+            "vendor_id": "INTEGER",
+        },
     }
     for table_name, cols in column_specs.items():
         existing = {
@@ -107,6 +120,12 @@ def _ensure_sqlite_schema_columns():
     )
     db.session.execute(
         text("CREATE INDEX IF NOT EXISTS idx_staff_attendance_user_date ON staff_attendance (user_id, attendance_date)")
+    )
+    db.session.execute(
+        text("CREATE INDEX IF NOT EXISTS idx_inventory_item_category_name ON inventory_item (category_name, name)")
+    )
+    db.session.execute(
+        text("CREATE INDEX IF NOT EXISTS idx_inventory_daily_closing_item_date ON inventory_daily_closing (item_id, closing_date)")
     )
     db.session.commit()
 
@@ -145,6 +164,21 @@ def create_app():
     with app.app_context():
         db.create_all()
         _ensure_sqlite_schema_columns()
+        default_inventory_categories = [
+            ("Fresh Produce", "leaf", "#6cab7a"),
+            ("Dairy & Refrigerated", "snowflake", "#6ea8fe"),
+            ("Coffee & Beverage", "cup-soda", "#8b5e3c"),
+            ("Dry Grocery", "package", "#b08968"),
+            ("Bakery & Confectionery", "cake-slice", "#d49a89"),
+            ("Beverage Supplies", "bottle-wine", "#7aa2c8"),
+            ("Cleaning & Hygiene", "sparkles", "#9aa6b2"),
+            ("Machinery & Equipment", "cog", "#7c7f8a"),
+            ("Interior & Consumables", "armchair", "#b2a39b"),
+        ]
+        for name, icon, color in default_inventory_categories:
+            if not InventoryCategory.query.filter(db.func.lower(InventoryCategory.name) == name.lower()).first():
+                db.session.add(InventoryCategory(name=name, icon=icon, color=color, active=True))
+        db.session.commit()
     app.before_request(load_current_user)
     app.register_blueprint(main_bp)
     app.register_blueprint(cafe_bp)

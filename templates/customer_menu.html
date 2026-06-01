@@ -28,38 +28,41 @@
     </label>
     <button type="submit">Apply Filters</button>
   </form>
+  <input id="browse-search" class="qr-search" placeholder="Search food or drinks..." />
+  <div class="qr-category-bar" id="browse-category-bar">
+    <button type="button" class="qr-cat-pill active" data-cat="all">All</button>
+    {% for c in categories %}
+    <button type="button" class="qr-cat-pill" data-cat="{{ c.name|lower }}">{{ c.name }}</button>
+    {% endfor %}
+  </div>
 </section>
 
 <form method="post" id="delivery-order-form" class="grid">
+  <section id="browse-floating-cart" class="floating-cart">View Cart • ₹<span id="browse-floating-total">0</span></section>
   <section class="panel">
     <h2>Menu</h2>
-    <table class="qr-menu-table">
-      <tr><th>Item</th><th>Details</th><th>Qty</th><th>Add</th></tr>
+    <div class="item-grid">
       {% for item in menu_items %}
-      <tr>
-        <td>{% if item.image_url %}<img src="{{ item.image_url }}" class="thumb-image qr-thumb" alt="{{ item.name }}">{% else %}<div class="thumb-image qr-thumb placeholder">No Image</div>{% endif %}</td>
-        <td>
-          <strong>{{ item.name }}</strong><br>
-          <span class="muted">{{ item.category.name }}, {{ item.item_type }}</span><br>
-          <button
-            type="button"
-            class="desc-btn"
-            data-name="{{ item.name }}"
-            data-description="{{ item.description or 'No description available.' }}"
-          >View Description</button><br>
-          <span class="muted">Calories: {{ item.calories or "-" }}</span>
-        </td>
-        <td>
+      {% set item_cats = item_category_names_map.get(item.id, []) %}
+      <article class="item-card browse-item-card" data-cats="{{ item_cats|map('lower')|join('|') }}" data-name="{{ item.name|lower }}" data-type="{{ (item.item_type or '')|lower }}">
+        <h4 class="item-name">{{ item.name }}</h4>
+        {% if item.image_url %}<img src="{{ item.image_url }}" class="item-image qr-click-image" alt="{{ item.name }}">{% else %}<div class="item-image placeholder">No Image</div>{% endif %}
+        <p class="item-short">{{ item.short_description or item.description or "Freshly prepared at Brownberries Café." }}</p>
+        <p class="item-price"><strong>Price:</strong> ₹{{ "%.2f"|format(item.price or 0) }}</p>
+        <p class="muted">Calories: {{ item.calories or "-" }}</p>
+        <div class="size-row muted">Serving Size: Standard</div>
+        <div class="item-actions">
+          <button type="button" class="desc-btn" data-name="{{ item.name }}" data-description="{{ item.description or 'No description available.' }}">View Description</button>
           <div class="qty-control">
             <button type="button" class="qty-btn" data-role="minus">-</button>
             <input type="number" min="1" value="1" class="qty-input" />
             <button type="button" class="qty-btn" data-role="plus">+</button>
           </div>
-        </td>
-        <td><button type="button" class="add-to-cart-btn" data-item-id="{{ item.id }}" data-item-name="{{ item.name }}" data-item-price="{{ item.price }}">Add</button></td>
-      </tr>
+          <button type="button" class="add-to-cart-btn" data-item-id="{{ item.id }}" data-item-name="{{ item.name }}" data-item-price="{{ item.price }}">Add</button>
+        </div>
+      </article>
       {% endfor %}
-    </table>
+    </div>
   </section>
 
   <section class="panel">
@@ -86,11 +89,18 @@
     <button type="button" id="desc-close">Close</button>
   </div>
 </div>
+<div id="image-modal" class="desc-modal hidden">
+  <div class="desc-dialog image-dialog">
+    <button type="button" id="image-close" class="image-close">×</button>
+    <img id="image-modal-src" alt="Menu item image preview" class="image-modal-src" />
+  </div>
+</div>
 
 <div id="cart-toast" class="cart-toast hidden"></div>
 
 <script>
   const cart = {};
+  const CART_STORAGE_KEY = "brownberries_customer_cart_v1";
   const cartLines = document.getElementById("cart-lines");
   const cartPayloadInput = document.getElementById("cart-payload");
   const cartTotal = document.getElementById("cart-total");
@@ -102,10 +112,17 @@
   const mapUrlInput = document.getElementById("delivery-map-url");
   const deliveryLocationStatus = document.getElementById("delivery-location-status");
   const cartToast = document.getElementById("cart-toast");
+  const browseSearchInput = document.getElementById("browse-search");
+  const browseCategoryBar = document.getElementById("browse-category-bar");
+  const browseFloatingCart = document.getElementById("browse-floating-cart");
+  const browseFloatingTotal = document.getElementById("browse-floating-total");
   const descModal = document.getElementById("desc-modal");
   const descTitle = document.getElementById("desc-title");
   const descBody = document.getElementById("desc-body");
   const descClose = document.getElementById("desc-close");
+  const imageModal = document.getElementById("image-modal");
+  const imageClose = document.getElementById("image-close");
+  const imageModalSrc = document.getElementById("image-modal-src");
   let toastTimer = null;
 
   function normalizeQty(value) {
@@ -145,7 +162,44 @@
       </div>`;
     }).join("");
     cartTotal.textContent = total.toFixed(2);
+    if (browseFloatingTotal) browseFloatingTotal.textContent = total.toFixed(0);
     cartPayloadInput.value = JSON.stringify(entries.map((line) => ({ menu_item_id: line.menu_item_id, quantity: line.quantity })));
+    saveCartState();
+  }
+  function saveCartState() {
+    try {
+      window.sessionStorage.setItem(CART_STORAGE_KEY, JSON.stringify(Object.values(cart)));
+    } catch (_) {}
+  }
+  function restoreCartState() {
+    try {
+      const raw = window.sessionStorage.getItem(CART_STORAGE_KEY);
+      if (!raw) return;
+      const lines = JSON.parse(raw);
+      if (!Array.isArray(lines)) return;
+      lines.forEach((line) => {
+        if (!line || !line.menu_item_id || !line.quantity) return;
+        cart[Number(line.menu_item_id)] = {
+          menu_item_id: Number(line.menu_item_id),
+          name: String(line.name || ""),
+          price: Number(line.price || 0),
+          quantity: Math.max(1, Number(line.quantity || 1)),
+        };
+      });
+    } catch (_) {}
+  }
+  function isSubsequence(needle, haystack) {
+    let j = 0;
+    for (let i = 0; i < haystack.length && j < needle.length; i += 1) {
+      if (haystack[i] === needle[j]) j += 1;
+    }
+    return j === needle.length;
+  }
+  function fuzzyMatch(query, blob) {
+    if (!query) return true;
+    if (blob.includes(query)) return true;
+    const parts = blob.split(/\s+/).filter(Boolean);
+    return parts.some((part) => isSubsequence(query, part) || part.startsWith(query.slice(0, 2)));
   }
   document.querySelectorAll(".qty-control").forEach((wrap) => {
     const input = wrap.querySelector(".qty-input");
@@ -154,7 +208,7 @@
   });
   document.querySelectorAll(".add-to-cart-btn").forEach((btn) => {
     btn.addEventListener("click", () => {
-      const row = btn.closest("tr");
+      const row = btn.closest(".item-card");
       const qtyInput = row.querySelector(".qty-input");
       const quantity = normalizeQty(qtyInput.value);
       const menu_item_id = Number(btn.dataset.itemId);
@@ -178,9 +232,63 @@
   descModal?.addEventListener("click", (event) => {
     if (event.target === descModal) descModal.classList.add("hidden");
   });
-  document.querySelectorAll(".qr-thumb").forEach((img) => {
-    img.addEventListener("click", () => img.classList.toggle("zoomed"));
+  document.querySelectorAll(".qr-click-image").forEach((img) => {
+    img.addEventListener("click", () => {
+      if (!imageModal || !imageModalSrc) return;
+      imageModalSrc.src = img.src;
+      imageModal.classList.remove("hidden");
+    });
   });
+  imageClose?.addEventListener("click", () => imageModal?.classList.add("hidden"));
+  imageModal?.addEventListener("click", (event) => {
+    if (event.target === imageModal) imageModal.classList.add("hidden");
+  });
+  let activeBrowseCat = "all";
+  function applyBrowseFilters() {
+    const q = (browseSearchInput?.value || "").trim().toLowerCase();
+    document.querySelectorAll(".browse-item-card").forEach((card) => {
+      const cats = (card.dataset.cats || "").split("|").filter(Boolean);
+      const blob = `${card.dataset.name || ""} ${card.dataset.type || ""} ${cats.join(" ")}`;
+      const catOk = activeBrowseCat === "all" || cats.includes(activeBrowseCat);
+      const qOk = fuzzyMatch(q, blob);
+      card.style.display = (catOk && qOk) ? "" : "none";
+    });
+  }
+  browseSearchInput?.addEventListener("input", applyBrowseFilters);
+  browseCategoryBar?.addEventListener("click", (event) => {
+    const btn = event.target.closest(".qr-cat-pill");
+    if (!btn) return;
+    activeBrowseCat = btn.dataset.cat || "all";
+    browseCategoryBar.querySelectorAll(".qr-cat-pill").forEach((x) => x.classList.remove("active"));
+    btn.classList.add("active");
+    applyBrowseFilters();
+  });
+  function makeDraggable(el) {
+    if (!el) return;
+    let dragging = false;
+    let offsetX = 0;
+    let offsetY = 0;
+    el.addEventListener("pointerdown", (e) => {
+      dragging = true;
+      el.setPointerCapture(e.pointerId);
+      const rect = el.getBoundingClientRect();
+      offsetX = e.clientX - rect.left;
+      offsetY = e.clientY - rect.top;
+      el.style.left = `${rect.left}px`;
+      el.style.top = `${rect.top}px`;
+      el.style.right = "auto";
+      el.style.bottom = "auto";
+    });
+    el.addEventListener("pointermove", (e) => {
+      if (!dragging) return;
+      el.style.left = `${Math.max(8, e.clientX - offsetX)}px`;
+      el.style.top = `${Math.max(8, e.clientY - offsetY)}px`;
+    });
+    el.addEventListener("pointerup", () => { dragging = false; });
+    el.addEventListener("pointercancel", () => { dragging = false; });
+  }
+  browseFloatingCart?.addEventListener("click", () => cartLines.scrollIntoView({ behavior: "smooth", block: "start" }));
+  makeDraggable(browseFloatingCart);
   cartLines.addEventListener("click", (e) => {
     const id = e.target.getAttribute("data-remove");
     const plusId = e.target.getAttribute("data-cart-plus");
@@ -228,8 +336,11 @@
     if (!Object.keys(cart).length) {
       event.preventDefault();
       alert("Please add at least one item.");
+      return;
     }
+    try { window.sessionStorage.removeItem(CART_STORAGE_KEY); } catch (_) {}
   });
+  restoreCartState();
   renderCart();
 </script>
 {% endblock %}

@@ -20,7 +20,15 @@ from .models import (
     CafeOrder,
     CafeOrderItem,
     CafeTable,
+    InventoryCategory,
     InventoryItem,
+    InventoryDailyClosing,
+    InventoryPurchase,
+    InventoryPurchaseLine,
+    InventoryRecipe,
+    InventoryRecipeItem,
+    InventoryVendor,
+    InventoryWastage,
     MenuCategory,
     MenuItem,
     MenuType,
@@ -35,8 +43,10 @@ from .models import (
 bp = Blueprint("cafe", __name__, url_prefix="/cafe")
 
 DEFAULT_ROLE_OPTIONS = (
+    "owner",
     "admin",
     "manager",
+    "accountant",
     "cashier",
     "staff",
     "server",
@@ -120,6 +130,76 @@ def _save_uploaded_file(file_obj, subdir: str, prefix: str):
     full_path = os.path.join(folder, filename)
     file_obj.save(full_path)
     return os.path.relpath(full_path, root)
+
+
+def _save_menu_image(file_obj):
+    if not file_obj or not file_obj.filename:
+        return None
+    ext = os.path.splitext(secure_filename(file_obj.filename))[1].lower()
+    filename = f"menu-{uuid4().hex[:12]}.webp"
+    folder = os.path.join(current_app.static_folder, "uploads", "menu")
+    os.makedirs(folder, exist_ok=True)
+    full_path = os.path.join(folder, filename)
+    try:
+        img = Image.open(file_obj.stream).convert("RGB")
+        img.thumbnail((900, 900))
+        img.save(full_path, format="WEBP", quality=78, optimize=True, method=6)
+    except Exception:
+        return None
+    return f"/static/uploads/menu/{filename}"
+
+
+def _get_or_create_other_category():
+    other = MenuCategory.query.filter(db.func.lower(MenuCategory.name) == "other").first()
+    if other:
+        return other
+    other = MenuCategory(name="Other")
+    db.session.add(other)
+    db.session.flush()
+    return other
+
+
+def _menu_item_category_ids(item: MenuItem) -> list[int]:
+    parsed: list[int] = []
+    if item.category_ids_json:
+        try:
+            raw = json.loads(item.category_ids_json)
+            if isinstance(raw, list):
+                for value in raw:
+                    try:
+                        parsed.append(int(value))
+                    except (TypeError, ValueError):
+                        continue
+        except (TypeError, ValueError, json.JSONDecodeError):
+            pass
+    if not parsed and item.category_id:
+        parsed = [item.category_id]
+    return list(dict.fromkeys(parsed))
+
+
+def _get_item_category_names(item: MenuItem, category_name_by_id: dict[int, str]) -> list[str]:
+    names: list[str] = []
+    names_seen: set[str] = set()
+    for cid in _menu_item_category_ids(item):
+        cname = category_name_by_id.get(cid)
+        if cname and cname.lower() not in names_seen:
+            names.append(cname)
+            names_seen.add(cname.lower())
+    return names
+
+
+def _visible_categories_for_available_menu() -> list[MenuCategory]:
+    categories = MenuCategory.query.order_by(MenuCategory.name.asc()).all()
+    available_items = MenuItem.query.filter_by(available=True).all()
+    used_category_ids: set[int] = set()
+    for item in available_items:
+        for cid in _menu_item_category_ids(item):
+            used_category_ids.add(cid)
+    return [
+        c
+        for c in categories
+        if c.name.lower() != "other" or c.id in used_category_ids
+    ]
 
 
 def _build_staff_id_card(user: User, profile: StaffProfile):
@@ -223,7 +303,15 @@ def _parse_category_ids_from_form():
 
 def _parse_size_pricing_from_form():
     pairs = []
-    for i in range(1, 7):
+    indexes = []
+    for key in request.form.keys():
+        if key.startswith("size_name_"):
+            suffix = key.removeprefix("size_name_")
+            if suffix.isdigit():
+                indexes.append(int(suffix))
+    if not indexes:
+        indexes = [1, 2]
+    for i in sorted(set(indexes)):
         name = (request.form.get(f"size_name_{i}") or "").strip()
         price_raw = (request.form.get(f"size_price_{i}") or "").strip()
         if not name:
@@ -357,6 +445,31 @@ def _recalculate_order_totals(order: CafeOrder):
     order.total_amount = round(line_total + order.packaging_charge + float(order.delivery_charge or 0), 2)
 
 
+def _apply_recipe_inventory_deduction(order: CafeOrder):
+    if not order or not order.order_items:
+        return
+    item_qty_map: dict[int, int] = {}
+    for oi in order.order_items:
+        item_qty_map[oi.menu_item_id] = item_qty_map.get(oi.menu_item_id, 0) + int(oi.quantity or 0)
+    if not item_qty_map:
+        return
+    recipes = InventoryRecipe.query.filter(
+        InventoryRecipe.menu_item_id.in_(list(item_qty_map.keys())),
+        InventoryRecipe.active.is_(True),
+    ).all()
+    recipe_by_menu = {r.menu_item_id: r for r in recipes}
+    for menu_item_id, qty in item_qty_map.items():
+        recipe = recipe_by_menu.get(menu_item_id)
+        if not recipe:
+            continue
+        for ing in recipe.ingredients:
+            inv_item = ing.inventory_item
+            if not inv_item:
+                continue
+            deduct_qty = float(ing.qty_per_menu or 0) * float(qty)
+            inv_item.current_amount = round(max(0.0, float(inv_item.current_amount or 0) - deduct_qty), 3)
+
+
 def create_cafe_order(
     table_id: int,
     ordered_by_user_id: int,
@@ -440,6 +553,7 @@ def create_cafe_order(
     order.delivery_distance_km = delivery_distance_km
     order.delivery_charge = delivery_charge
     order.total_amount = round(total + order.packaging_charge + order.delivery_charge, 2)
+    _apply_recipe_inventory_deduction(order)
     db.session.commit()
     payload = _serialize_order(order)
     socketio.emit("order_created", payload, namespace="/kitchen")
@@ -603,13 +717,16 @@ def menu():
         if not category_ids:
             flash("Please select at least one category.", "error")
             return redirect(url_for("cafe.menu"))
+        uploaded_image = _save_menu_image(request.files.get("image_file"))
+        image_url = uploaded_image or (request.form.get("image_url", "").strip() or None)
         item = MenuItem(
             category_id=category_ids[0],
             subcategory_id=None,
             item_type=menu_type.name,
             category_ids_json=json.dumps(category_ids),
             name=request.form["name"].strip(),
-            image_url=request.form.get("image_url", "").strip() or None,
+            image_url=image_url,
+            short_description=request.form.get("short_description", "").strip() or None,
             description=request.form.get("description", "").strip() or None,
             calories=int(request.form["calories"]) if request.form.get("calories") else None,
             price=float(request.form["price"]),
@@ -627,6 +744,7 @@ def menu():
         return redirect(url_for("cafe.menu"))
     items = MenuItem.query.order_by(MenuItem.name).all()
     item_category_map = {}
+    item_size_map = {}
     for item in items:
         parsed = []
         if item.category_ids_json:
@@ -639,6 +757,17 @@ def menu():
         if not parsed and item.category_id:
             parsed = [item.category_id]
         item_category_map[item.id] = parsed
+        sizes = []
+        if item.size_pricing_json:
+            try:
+                raw_sizes = json.loads(item.size_pricing_json)
+                if isinstance(raw_sizes, list):
+                    for row in raw_sizes:
+                        if isinstance(row, dict) and row.get("size") and row.get("price") is not None:
+                            sizes.append({"size": str(row["size"]), "price": float(row["price"])})
+            except (TypeError, ValueError, json.JSONDecodeError):
+                sizes = []
+        item_size_map[item.id] = sizes
     selected_category_filter = request.args.get("category_filter", type=int)
     availability_items = _apply_category_filter(
         MenuItem.query.order_by(MenuItem.name.asc()), selected_category_filter
@@ -650,9 +779,15 @@ def menu():
         "cafe/menu.html",
         items=items,
         categories=MenuCategory.query.order_by(MenuCategory.name).all(),
+        other_category_id=(
+            MenuCategory.query.filter(db.func.lower(MenuCategory.name) == "other").first().id
+            if MenuCategory.query.filter(db.func.lower(MenuCategory.name) == "other").first()
+            else None
+        ),
         menu_types=MenuType.query.order_by(MenuType.name).all(),
         prep_station_options=PREP_STATION_OPTIONS,
         item_category_map=item_category_map,
+        item_size_map=item_size_map,
         active_menu_section=active_menu_section,
         availability_items=availability_items,
         selected_category_filter=selected_category_filter,
@@ -716,12 +851,38 @@ def update_category(category_id):
 @roles_required("admin", "manager")
 def delete_category(category_id):
     category = MenuCategory.query.get_or_404(category_id)
-    if category.items or category.subcategories:
-        flash("Category cannot be deleted while linked menu items/subcategories exist.", "error")
+    other = _get_or_create_other_category()
+    if category.id == other.id:
+        flash("Other category cannot be deleted.", "error")
         return redirect(url_for("cafe.menu"))
+    linked_items = MenuItem.query.filter(
+        db.or_(
+            MenuItem.category_id == category.id,
+            MenuItem.category_ids_json.ilike(f"%{category.id}%"),
+        )
+    ).all()
+    for item in linked_items:
+        cat_ids = []
+        if item.category_ids_json:
+            try:
+                raw = json.loads(item.category_ids_json)
+                if isinstance(raw, list):
+                    cat_ids = [int(x) for x in raw if str(x).isdigit()]
+            except (TypeError, ValueError, json.JSONDecodeError):
+                cat_ids = []
+        if not cat_ids and item.category_id:
+            cat_ids = [item.category_id]
+        cat_ids = [cid for cid in cat_ids if cid != category.id]
+        if not cat_ids:
+            cat_ids = [other.id]
+        item.category_id = cat_ids[0]
+        item.category_ids_json = json.dumps(cat_ids)
+    if category.subcategories:
+        for sub in category.subcategories:
+            db.session.delete(sub)
     db.session.delete(category)
     db.session.commit()
-    flash("Category deleted.", "success")
+    flash("Category deleted. Linked items moved to Other.", "success")
     return redirect(url_for("cafe.menu"))
 
 
@@ -790,30 +951,62 @@ def toggle_item(item_id):
 @roles_required("admin", "manager")
 def update_menu_item(item_id):
     item = MenuItem.query.get_or_404(item_id)
-    menu_type = MenuType.query.get(int(request.form["menu_type_id"]))
-    if not menu_type:
-        flash("Please select a valid type.", "error")
-        return redirect(url_for("cafe.menu"))
+    menu_type_id = request.form.get("menu_type_id", "").strip()
+    if menu_type_id:
+        menu_type = MenuType.query.get(int(menu_type_id))
+        if not menu_type:
+            flash("Please select a valid type.", "error")
+            return redirect(url_for("cafe.menu"))
+        item.item_type = menu_type.name
+
     category_ids = _parse_category_ids_from_form()
-    if not category_ids:
-        flash("Please select at least one category.", "error")
-        return redirect(url_for("cafe.menu"))
-    item.category_id = category_ids[0]
-    item.category_ids_json = json.dumps(category_ids)
+    if category_ids:
+        item.category_id = category_ids[0]
+        item.category_ids_json = json.dumps(category_ids)
     item.subcategory_id = None
-    item.item_type = menu_type.name
-    item.name = request.form["name"].strip()
-    item.image_url = request.form.get("image_url", "").strip() or None
-    item.description = request.form.get("description", "").strip() or None
-    item.calories = int(request.form["calories"]) if request.form.get("calories") else None
-    item.price = float(request.form["price"])
-    item.has_size_variants = True if request.form.get("has_size_variants") else False
-    if item.has_size_variants:
-        size_pairs = _parse_size_pricing_from_form()
-        item.size_pricing_json = json.dumps(size_pairs) if size_pairs else None
+    item_name = request.form.get("name", "").strip()
+    if item_name:
+        item.name = item_name
+
+    uploaded_image = _save_menu_image(request.files.get("image_file"))
+    if uploaded_image:
+        item.image_url = uploaded_image
     else:
+        image_url = request.form.get("image_url", "").strip()
+        if image_url:
+            item.image_url = image_url
+
+    if "description" in request.form:
+        description = request.form.get("description", "").strip()
+        if description:
+            item.description = description
+    if "short_description" in request.form:
+        short_description = request.form.get("short_description", "").strip()
+        if short_description:
+            item.short_description = short_description
+
+    calories_raw = request.form.get("calories", "").strip()
+    if calories_raw:
+        item.calories = int(calories_raw)
+
+    price_raw = request.form.get("price", "").strip()
+    if price_raw:
+        item.price = float(price_raw)
+
+    has_size_variants = True if request.form.get("has_size_variants") else False
+    if has_size_variants:
+        item.has_size_variants = True
+        size_pairs = _parse_size_pricing_from_form()
+        if size_pairs:
+            item.size_pricing_json = json.dumps(size_pairs)
+    else:
+        item.has_size_variants = False
         item.size_pricing_json = None
-    item.prep_station = request.form.get("prep_station", "kitchen")
+
+    prep_station = request.form.get("prep_station", "").strip().lower()
+    if prep_station in PREP_STATION_OPTIONS:
+        item.prep_station = prep_station
+
     item.available = True if request.form.get("available") else False
     db.session.commit()
     flash("Menu item updated.", "success")
@@ -891,7 +1084,11 @@ def orders():
                 sizes = []
         item_size_map[item.id] = sizes
 
-    categories = MenuCategory.query.order_by(MenuCategory.name.asc()).all()
+    categories = _visible_categories_for_available_menu()
+    category_name_by_id = {c.id: c.name for c in categories}
+    item_category_names_map = {
+        item.id: _get_item_category_names(item, category_name_by_id) for item in menu_items
+    }
     item_types = [
         row[0]
         for row in db.session.query(MenuItem.item_type)
@@ -912,6 +1109,7 @@ def orders():
         selected_item_type=item_type,
         item_frequency=item_frequency,
         item_size_map=item_size_map,
+        item_category_names_map=item_category_names_map,
         selected_table_id=table_id,
         table_orders=CafeOrder.query.filter(
             CafeOrder.table_id == table_id, CafeOrder.status.notin_(["paid", "cancelled"])
@@ -1221,25 +1419,291 @@ def update_order_status(order_id):
 
 
 @bp.route("/inventory", methods=["GET", "POST"])
-@roles_required("admin", "manager", "barista", "inventory_manager")
+@roles_required("owner", "admin", "manager", "accountant", "barista", "inventory_manager")
 def inventory():
+    section = (request.args.get("section") or "dashboard").strip().lower()
+    allowed_sections = {
+        "dashboard", "daily_closing", "stock_levels", "purchases", "vendors",
+        "recipes", "wastage", "analytics", "categories", "settings"
+    }
+    if section not in allowed_sections:
+        section = "dashboard"
+
     if request.method == "POST":
-        item = InventoryItem(
-            area=request.form["area"],
-            name=request.form["name"].strip(),
-            unit=request.form["unit"].strip(),
-            current_amount=float(request.form["current_amount"]),
-            required_amount=float(request.form["required_amount"]),
-            reorder_level=float(request.form["reorder_level"]),
-            note=request.form.get("note", "").strip() or None,
+        action = (request.form.get("action") or "").strip().lower()
+        if action == "add_item":
+            item = InventoryItem(
+                item_code=(request.form.get("item_code") or "").strip() or None,
+                area=(request.form.get("area") or "kitchen").strip(),
+                name=request.form.get("name", "").strip(),
+                category_name=(request.form.get("category_name") or "").strip() or None,
+                subcategory_name=(request.form.get("subcategory_name") or "").strip() or None,
+                unit=(request.form.get("unit") or "pcs").strip(),
+                current_amount=float(request.form.get("current_amount") or 0),
+                required_amount=float(request.form.get("required_amount") or 0),
+                reorder_level=float(request.form.get("reorder_level") or 0),
+                average_daily_usage=float(request.form.get("average_daily_usage") or 0),
+                purchase_price=float(request.form.get("purchase_price") or 0),
+                selling_relation=(request.form.get("selling_relation") or "").strip() or None,
+                shelf_life_days=int(request.form.get("shelf_life_days")) if request.form.get("shelf_life_days") else None,
+                expiry_tracking=True if request.form.get("expiry_tracking") else False,
+                storage_location=(request.form.get("storage_location") or "").strip() or None,
+                vendor_id=int(request.form.get("vendor_id")) if request.form.get("vendor_id") else None,
+                note=(request.form.get("note") or "").strip() or None,
+            )
+            if not item.name:
+                flash("Item name is required.", "error")
+                return redirect(url_for("cafe.inventory", section="stock_levels"))
+            db.session.add(item)
+            db.session.commit()
+            flash("Inventory item added.", "success")
+            return redirect(url_for("cafe.inventory", section="stock_levels"))
+
+        if action == "daily_closing_save":
+            closing_date = date.fromisoformat(request.form.get("closing_date") or date.today().isoformat())
+            item_ids = [int(v) for v in request.form.getlist("item_id") if str(v).isdigit()]
+            for item_id in item_ids:
+                item = InventoryItem.query.get(item_id)
+                if not item:
+                    continue
+                closing_raw = (request.form.get(f"closing_stock_{item_id}") or "").strip()
+                if closing_raw == "":
+                    continue
+                closing_stock = float(closing_raw)
+                prev_row = (
+                    InventoryDailyClosing.query.filter(
+                        InventoryDailyClosing.item_id == item_id,
+                        InventoryDailyClosing.closing_date < closing_date,
+                    )
+                    .order_by(InventoryDailyClosing.closing_date.desc())
+                    .first()
+                )
+                opening_stock = float(prev_row.closing_stock) if prev_row else float(item.current_amount or 0)
+                consumed = round(opening_stock - closing_stock, 3)
+                variance = round(consumed - float(item.average_daily_usage or 0), 3)
+                row = InventoryDailyClosing.query.filter_by(item_id=item_id, closing_date=closing_date).first()
+                if not row:
+                    row = InventoryDailyClosing(item_id=item_id, closing_date=closing_date)
+                    db.session.add(row)
+                row.opening_stock = opening_stock
+                row.closing_stock = closing_stock
+                row.consumed_amount = consumed
+                row.variance_amount = variance
+                item.current_amount = closing_stock
+            db.session.commit()
+            flash("Daily closing saved.", "success")
+            return redirect(url_for("cafe.inventory", section="daily_closing", closing_date=closing_date.isoformat()))
+
+        if action == "add_vendor":
+            vendor = InventoryVendor(
+                name=(request.form.get("name") or "").strip(),
+                vendor_category=(request.form.get("vendor_category") or "").strip() or None,
+                contact_person=(request.form.get("contact_person") or "").strip() or None,
+                phone=(request.form.get("phone") or "").strip() or None,
+                email=(request.form.get("email") or "").strip() or None,
+                gst_number=(request.form.get("gst_number") or "").strip() or None,
+                payment_terms=(request.form.get("payment_terms") or "").strip() or None,
+                outstanding_balance=float(request.form.get("outstanding_balance") or 0),
+                average_rate_note=(request.form.get("average_rate_note") or "").strip() or None,
+                note=(request.form.get("note") or "").strip() or None,
+                active=True,
+            )
+            if not vendor.name:
+                flash("Vendor name is required.", "error")
+                return redirect(url_for("cafe.inventory", section="vendors"))
+            db.session.add(vendor)
+            db.session.commit()
+            flash("Vendor added.", "success")
+            return redirect(url_for("cafe.inventory", section="vendors"))
+
+        if action == "add_purchase":
+            purchase = InventoryPurchase(
+                purchase_date=date.fromisoformat(request.form.get("purchase_date") or date.today().isoformat()),
+                vendor_id=int(request.form.get("vendor_id")) if request.form.get("vendor_id") else None,
+                invoice_number=(request.form.get("invoice_number") or "").strip() or None,
+                tax_amount=float(request.form.get("tax_amount") or 0),
+                payment_status=(request.form.get("payment_status") or "pending").strip(),
+                note=(request.form.get("note") or "").strip() or None,
+            )
+            db.session.add(purchase)
+            db.session.flush()
+            subtotal = 0.0
+            item_ids = [int(v) for v in request.form.getlist("purchase_item_id") if str(v).isdigit()]
+            for item_id in item_ids:
+                qty = float(request.form.get(f"purchase_qty_{item_id}") or 0)
+                unit_price = float(request.form.get(f"purchase_price_{item_id}") or 0)
+                if qty <= 0:
+                    continue
+                line_total = round(qty * unit_price, 2)
+                db.session.add(
+                    InventoryPurchaseLine(
+                        purchase_id=purchase.id,
+                        item_id=item_id,
+                        quantity=qty,
+                        unit_price=unit_price,
+                        line_total=line_total,
+                    )
+                )
+                item = InventoryItem.query.get(item_id)
+                if item:
+                    item.current_amount = round(float(item.current_amount or 0) + qty, 3)
+                    if unit_price > 0:
+                        item.purchase_price = unit_price
+                subtotal += line_total
+            purchase.subtotal = round(subtotal, 2)
+            purchase.total_amount = round(subtotal + float(purchase.tax_amount or 0), 2)
+            db.session.commit()
+            flash("Purchase logged and stock updated.", "success")
+            return redirect(url_for("cafe.inventory", section="purchases"))
+
+        if action == "save_recipe":
+            menu_item_id = int(request.form.get("menu_item_id") or 0)
+            if menu_item_id <= 0:
+                flash("Please select a menu item.", "error")
+                return redirect(url_for("cafe.inventory", section="recipes"))
+            recipe = InventoryRecipe.query.filter_by(menu_item_id=menu_item_id).first()
+            if not recipe:
+                recipe = InventoryRecipe(menu_item_id=menu_item_id, yield_qty=1, active=True)
+                db.session.add(recipe)
+                db.session.flush()
+            recipe.yield_qty = float(request.form.get("yield_qty") or 1)
+            recipe.yield_unit = (request.form.get("yield_unit") or "").strip() or None
+            for old in list(recipe.ingredients):
+                db.session.delete(old)
+            ingredient_ids = [int(v) for v in request.form.getlist("recipe_item_id") if str(v).isdigit()]
+            for inv_id in ingredient_ids:
+                qty = float(request.form.get(f"recipe_qty_{inv_id}") or 0)
+                unit = (request.form.get(f"recipe_unit_{inv_id}") or "pcs").strip()
+                if qty <= 0:
+                    continue
+                db.session.add(
+                    InventoryRecipeItem(
+                        recipe_id=recipe.id,
+                        inventory_item_id=inv_id,
+                        qty_per_menu=qty,
+                        unit=unit,
+                    )
+                )
+            db.session.commit()
+            flash("Recipe saved.", "success")
+            return redirect(url_for("cafe.inventory", section="recipes"))
+
+        if action == "add_wastage":
+            item_id = int(request.form.get("item_id") or 0)
+            qty = float(request.form.get("quantity") or 0)
+            if item_id <= 0 or qty <= 0:
+                flash("Select item and quantity.", "error")
+                return redirect(url_for("cafe.inventory", section="wastage"))
+            wastage = InventoryWastage(
+                wastage_date=date.fromisoformat(request.form.get("wastage_date") or date.today().isoformat()),
+                item_id=item_id,
+                quantity=qty,
+                reason=(request.form.get("reason") or "").strip() or None,
+            )
+            db.session.add(wastage)
+            item = InventoryItem.query.get(item_id)
+            if item:
+                item.current_amount = round(max(0.0, float(item.current_amount or 0) - qty), 3)
+            db.session.commit()
+            flash("Wastage logged.", "success")
+            return redirect(url_for("cafe.inventory", section="wastage"))
+
+        if action == "add_category":
+            name = (request.form.get("name") or "").strip()
+            if not name:
+                flash("Category name is required.", "error")
+                return redirect(url_for("cafe.inventory", section="categories"))
+            if InventoryCategory.query.filter(db.func.lower(InventoryCategory.name) == name.lower()).first():
+                flash("Category already exists.", "error")
+                return redirect(url_for("cafe.inventory", section="categories"))
+            db.session.add(
+                InventoryCategory(
+                    name=name,
+                    icon=(request.form.get("icon") or "").strip() or None,
+                    color=(request.form.get("color") or "").strip() or None,
+                    active=True,
+                )
+            )
+            db.session.commit()
+            flash("Category added.", "success")
+            return redirect(url_for("cafe.inventory", section="categories"))
+
+    closing_date = date.fromisoformat(request.args.get("closing_date") or date.today().isoformat())
+    categories = InventoryCategory.query.filter_by(active=True).order_by(InventoryCategory.name.asc()).all()
+    vendors = InventoryVendor.query.filter_by(active=True).order_by(InventoryVendor.name.asc()).all()
+    items = InventoryItem.query.order_by(InventoryItem.category_name.asc(), InventoryItem.name.asc()).all()
+    purchases = InventoryPurchase.query.order_by(InventoryPurchase.purchase_date.desc(), InventoryPurchase.id.desc()).limit(80).all()
+    wastage_rows = InventoryWastage.query.order_by(InventoryWastage.wastage_date.desc(), InventoryWastage.id.desc()).limit(120).all()
+    recipes = InventoryRecipe.query.order_by(InventoryRecipe.id.desc()).all()
+    menu_items = MenuItem.query.filter_by(available=True).order_by(MenuItem.name.asc()).all()
+
+    category_stats = []
+    for cat in categories:
+        cat_items = [x for x in items if (x.category_name or "").strip().lower() == cat.name.lower()]
+        stock_value = round(sum(float(x.current_amount or 0) * float(x.purchase_price or 0) for x in cat_items), 2)
+        category_stats.append({"category": cat, "item_count": len(cat_items), "stock_value": stock_value})
+
+    low_stock_items = [x for x in items if float(x.current_amount or 0) <= float(x.reorder_level or 0)]
+    total_stock_value = round(sum(float(x.current_amount or 0) * float(x.purchase_price or 0) for x in items), 2)
+    today_purchase_spend = round(
+        sum(float(p.total_amount or 0) for p in purchases if p.purchase_date == date.today()),
+        2,
+    )
+    today_wastage_value = round(
+        sum(float(w.quantity or 0) * float((w.item.purchase_price if w.item else 0) or 0) for w in wastage_rows if w.wastage_date == date.today()),
+        2,
+    )
+
+    today_consumption = (
+        db.session.query(db.func.coalesce(db.func.sum(InventoryDailyClosing.consumed_amount), 0.0))
+        .filter(InventoryDailyClosing.closing_date == closing_date)
+        .scalar()
+        or 0.0
+    )
+
+    daily_rows = []
+    for item in items:
+        existing = InventoryDailyClosing.query.filter_by(item_id=item.id, closing_date=closing_date).first()
+        prev_row = (
+            InventoryDailyClosing.query.filter(
+                InventoryDailyClosing.item_id == item.id,
+                InventoryDailyClosing.closing_date < closing_date,
+            )
+            .order_by(InventoryDailyClosing.closing_date.desc())
+            .first()
         )
-        db.session.add(item)
-        db.session.commit()
-        flash("Inventory item added.", "success")
-        return redirect(url_for("cafe.inventory"))
+        opening = float(prev_row.closing_stock) if prev_row else float(item.current_amount or 0)
+        daily_rows.append({
+            "item": item,
+            "opening": opening,
+            "existing": existing,
+            "consumed": float(existing.consumed_amount) if existing else 0.0,
+        })
+
+    inventory_analytics = {
+        "total_items": len(items),
+        "low_stock_count": len(low_stock_items),
+        "total_stock_value": total_stock_value,
+        "today_purchase_spend": today_purchase_spend,
+        "today_wastage_value": today_wastage_value,
+        "today_consumption": round(today_consumption, 2),
+    }
+
     return render_template(
         "cafe/inventory.html",
-        items=InventoryItem.query.order_by(InventoryItem.area, InventoryItem.name).all(),
+        section=section,
+        categories=categories,
+        category_stats=category_stats,
+        vendors=vendors,
+        items=items,
+        purchases=purchases,
+        recipes=recipes,
+        menu_items=menu_items,
+        wastage_rows=wastage_rows,
+        low_stock_items=low_stock_items,
+        daily_rows=daily_rows,
+        closing_date=closing_date,
+        inventory_analytics=inventory_analytics,
     )
 
 

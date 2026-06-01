@@ -32,9 +32,13 @@
             </form>
           </td>
           <td>
+            {% if other_category_id and c.id == other_category_id %}
+            <span class="muted">Protected</span>
+            {% else %}
             <form method="post" action="{{ url_for('cafe.delete_category', category_id=c.id) }}" class="inline">
               <button type="submit">Delete</button>
             </form>
+            {% endif %}
           </td>
         </tr>
         {% endfor %}
@@ -71,7 +75,7 @@
     {% if active_menu_section == 'add_item' %}
     <section class="panel">
       <h3>Add Menu Item</h3>
-      <form method="post" class="grid grid-4">
+      <form method="post" class="grid grid-4" enctype="multipart/form-data">
         <fieldset class="full">
           <legend>Categories (Select one or more)</legend>
           <div class="grid grid-4">
@@ -92,19 +96,20 @@
           </select>
         </label>
         <label>Image URL <input name="image_url" /></label>
+        <label>Upload Image <input name="image_file" type="file" accept="image/*" /></label>
+        <label>Short Description <input name="short_description" maxlength="140" placeholder="One-line card text" /></label>
         <label>Description <input name="description" /></label>
         <label>Calories <input name="calories" type="number" min="0" /></label>
         <label>Price <input name="price" type="number" min="0" step="0.01" required /></label>
         <label><input type="checkbox" name="has_size_variants" id="has_size_variants_new" /> Item has multiple serving sizes</label>
         <div id="size_pricing_new" class="full hidden">
-          <div class="grid grid-4">
+          <div class="grid grid-4 size-rows" data-next-index="3">
             <label>Size 1 <input name="size_name_1" placeholder="Regular" /></label>
             <label>Price 1 <input name="size_price_1" type="number" step="0.01" min="0" /></label>
             <label>Size 2 <input name="size_name_2" placeholder="Large" /></label>
             <label>Price 2 <input name="size_price_2" type="number" step="0.01" min="0" /></label>
-            <label>Size 3 <input name="size_name_3" placeholder="Family" /></label>
-            <label>Price 3 <input name="size_price_3" type="number" step="0.01" min="0" /></label>
           </div>
+          <button type="button" class="add-size-row-btn" style="margin-top:0.5rem;">Add 1 Serving Size</button>
         </div>
         <label><input type="checkbox" name="available" checked /> Available</label>
         <button type="submit">Add Item</button>
@@ -115,63 +120,71 @@
     {% if active_menu_section == 'items' %}
     <section class="panel">
       <h3>Menu Items</h3>
-      <table>
-        <tr><th>Item</th><th>Station</th><th>Edit Item</th><th>Delete</th></tr>
+      <label>Search Item <input id="menu-item-search" placeholder="Search by name/category/type..." /></label>
+      <table id="menu-items-table">
+        <tr><th>Category</th><th>Item</th><th>Type</th><th>Price</th><th>Image</th><th>Actions</th></tr>
         {% for item in items %}
+        {% set selected_cats = item_category_map.get(item.id, []) %}
         <tr>
+          <td>{% for c in categories if c.id in selected_cats %}{{ c.name }}{% if not loop.last %}, {% endif %}{% endfor %}</td>
+          <td>{{ item.name }}</td>
+          <td>{{ item.item_type }}</td>
+          <td>₹{{ "%.2f"|format(item.price) }}</td>
+          <td>{% if item.image_url %}<a href="{{ item.image_url }}" target="_blank" class="button-link">View Image</a>{% else %}-{% endif %}</td>
           <td>
-            <div class="item-preview">
-              {% if item.image_url %}<img src="{{ item.image_url }}" alt="{{ item.name }}" class="thumb-image" />{% else %}<div class="thumb-image placeholder">No Image</div>{% endif %}
-              <div>
-                <strong>{{ item.name }}</strong>
-                <div class="muted">
-                  Categories:
-                  {% set selected_cats = item_category_map.get(item.id, []) %}
-                  {% for c in categories if c.id in selected_cats %}{{ c.name }}{% if not loop.last %}, {% endif %}{% endfor %}
+            <button type="button" class="menu-preview-btn"
+              data-name="{{ item.name }}"
+              data-image="{{ item.image_url or '' }}"
+              data-meta="{% for c in categories if c.id in selected_cats %}{{ c.name }}{% if not loop.last %}, {% endif %}{% endfor %}{% if item.item_type %}, {{ item.item_type }}{% endif %}"
+              data-short-description="{{ item.short_description or '' }}"
+              data-description="{{ item.description or 'No description available.' }}"
+              data-calories="{{ item.calories or '-' }}"
+              data-price="{{ '%.2f'|format(item.price) }}"
+            >Preview</button>
+            <details style="margin-top:0.35rem;">
+              <summary>Edit</summary>
+              <form method="post" action="{{ url_for('cafe.update_menu_item', item_id=item.id) }}" class="grid grid-4" enctype="multipart/form-data">
+                <fieldset class="full">
+                  <legend>Categories (Select one or more)</legend>
+                  <div class="grid grid-4">
+                    {% for c in categories %}
+                    <label><input type="checkbox" name="category_ids" value="{{ c.id }}" {% if c.id in selected_cats %}checked{% endif %} /> {{ c.name }}</label>
+                    {% endfor %}
+                  </div>
+                </fieldset>
+                <label>Type
+                  <select name="menu_type_id" required>
+                    {% for t in menu_types %}<option value="{{ t.id }}" {% if item.item_type == t.name %}selected{% endif %}>{{ t.name }}</option>{% endfor %}
+                  </select>
+                </label>
+                <label>Name <input name="name" value="{{ item.name }}" required /></label>
+                <label>Prep Station
+                  <select name="prep_station" required>
+                    {% for st in prep_station_options %}<option value="{{ st }}" {% if item.prep_station == st %}selected{% endif %}>{{ st|title }}</option>{% endfor %}
+                  </select>
+                </label>
+                <label>Image URL <input name="image_url" value="{{ item.image_url or '' }}" /></label>
+                <label>Upload Image <input name="image_file" type="file" accept="image/*" /></label>
+                <label>Short Description <input name="short_description" maxlength="140" value="{{ item.short_description or '' }}" /></label>
+                <label>Description <input name="description" value="{{ item.description or '' }}" /></label>
+                <label>Calories <input name="calories" type="number" min="0" value="{{ item.calories or '' }}" /></label>
+                <label>Price <input name="price" type="number" min="0" step="0.01" value="{{ item.price }}" required /></label>
+                <label><input type="checkbox" name="has_size_variants" {% if item.has_size_variants %}checked{% endif %} /> Item has multiple serving sizes</label>
+                <div class="full size-pricing-edit {% if not item.has_size_variants %}hidden{% endif %}">
+                  {% set existing_sizes = item_size_map.get(item.id, []) %}
+                  {% set rows = existing_sizes if existing_sizes|length > 0 else [{'size': '', 'price': ''}, {'size': '', 'price': ''}] %}
+                  <div class="grid grid-4 size-rows" data-next-index="{{ rows|length + 1 }}">
+                    {% for s in rows %}
+                    <label>Size {{ loop.index }} <input name="size_name_{{ loop.index }}" value="{{ s.size }}" /></label>
+                    <label>Price {{ loop.index }} <input name="size_price_{{ loop.index }}" type="number" step="0.01" min="0" value="{{ s.price }}" /></label>
+                    {% endfor %}
+                  </div>
+                  <button type="button" class="add-size-row-btn" style="margin-top:0.5rem;">Add 1 Serving Size</button>
                 </div>
-              </div>
-            </div>
-          </td>
-          <td>{{ item.prep_station|title }}</td>
-          <td>
-            <form method="post" action="{{ url_for('cafe.update_menu_item', item_id=item.id) }}" class="grid grid-4">
-              <fieldset class="full">
-                <legend>Categories (Select one or more)</legend>
-                <div class="grid grid-4">
-                  {% set selected_cats = item_category_map.get(item.id, []) %}
-                  {% for c in categories %}
-                  <label><input type="checkbox" name="category_ids" value="{{ c.id }}" {% if c.id in selected_cats %}checked{% endif %} /> {{ c.name }}</label>
-                  {% endfor %}
-                </div>
-              </fieldset>
-              <label>Type
-                <select name="menu_type_id" required>
-                  {% for t in menu_types %}<option value="{{ t.id }}" {% if item.item_type == t.name %}selected{% endif %}>{{ t.name }}</option>{% endfor %}
-                </select>
-              </label>
-              <label>Name <input name="name" value="{{ item.name }}" required /></label>
-              <label>Prep Station
-                <select name="prep_station" required>
-                  {% for st in prep_station_options %}<option value="{{ st }}" {% if item.prep_station == st %}selected{% endif %}>{{ st|title }}</option>{% endfor %}
-                </select>
-              </label>
-              <label>Image URL <input name="image_url" value="{{ item.image_url or '' }}" /></label>
-              <label>Description <input name="description" value="{{ item.description or '' }}" /></label>
-              <label>Calories <input name="calories" type="number" min="0" value="{{ item.calories or '' }}" /></label>
-              <label>Price <input name="price" type="number" min="0" step="0.01" value="{{ item.price }}" required /></label>
-              <label><input type="checkbox" name="has_size_variants" {% if item.has_size_variants %}checked{% endif %} /> Item has multiple serving sizes</label>
-              <div class="full">
-                <div class="grid grid-4">
-                  <label>Size 1 <input name="size_name_1" /></label><label>Price 1 <input name="size_price_1" type="number" step="0.01" min="0" /></label>
-                  <label>Size 2 <input name="size_name_2" /></label><label>Price 2 <input name="size_price_2" type="number" step="0.01" min="0" /></label>
-                  <label>Size 3 <input name="size_name_3" /></label><label>Price 3 <input name="size_price_3" type="number" step="0.01" min="0" /></label>
-                </div>
-              </div>
-              <label><input type="checkbox" name="available" {% if item.available %}checked{% endif %} /> Available</label>
-              <button type="submit">Save</button>
-            </form>
-          </td>
-          <td>
+                <label><input type="checkbox" name="available" {% if item.available %}checked{% endif %} /> Available</label>
+                <button type="submit">Save</button>
+              </form>
+            </details>
             <form method="post" action="{{ url_for('cafe.delete_menu_item', item_id=item.id) }}" class="inline">
               <button type="submit">Delete</button>
             </form>
@@ -215,6 +228,19 @@
   </div>
 </section>
 
+<div id="menu-preview-modal" class="desc-modal hidden">
+  <div class="desc-dialog">
+    <h3 id="menu-preview-title"></h3>
+    <img id="menu-preview-image" class="item-image" style="height:180px;" />
+    <p class="muted" id="menu-preview-meta"></p>
+    <p class="item-short" id="menu-preview-short"></p>
+    <p id="menu-preview-description"></p>
+    <p><strong>Calories:</strong> <span id="menu-preview-calories"></span></p>
+    <p><strong>Price:</strong> ₹<span id="menu-preview-price"></span></p>
+    <button type="button" id="menu-preview-close">Close</button>
+  </div>
+</div>
+
 <script>
   const hasSizesNew = document.getElementById("has_size_variants_new");
   const sizePricingNew = document.getElementById("size_pricing_new");
@@ -222,5 +248,62 @@
     if (hasSizesNew.checked) sizePricingNew.classList.remove("hidden");
     else sizePricingNew.classList.add("hidden");
   });
+  function addSizeRow(rowsWrap) {
+    if (!rowsWrap) return;
+    const next = Number(rowsWrap.dataset.nextIndex || "1");
+    const l1 = document.createElement("label");
+    l1.innerHTML = `Size ${next} <input name="size_name_${next}" placeholder="Size name" />`;
+    const l2 = document.createElement("label");
+    l2.innerHTML = `Price ${next} <input name="size_price_${next}" type="number" step="0.01" min="0" />`;
+    rowsWrap.appendChild(l1);
+    rowsWrap.appendChild(l2);
+    rowsWrap.dataset.nextIndex = String(next + 1);
+  }
+  document.querySelectorAll(".add-size-row-btn").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const wrap = btn.closest(".full")?.querySelector(".size-rows");
+      addSizeRow(wrap);
+    });
+  });
+  document.querySelectorAll("form[action*='/menu/items/'][action$='/update']").forEach((form) => {
+    const hasSizes = form.querySelector('input[name="has_size_variants"]');
+    const sizeWrap = form.querySelector(".size-pricing-edit");
+    if (!hasSizes || !sizeWrap) return;
+    const sync = () => sizeWrap.classList.toggle("hidden", !hasSizes.checked);
+    hasSizes.addEventListener("change", sync);
+    sync();
+  });
+  const menuSearch = document.getElementById("menu-item-search");
+  menuSearch?.addEventListener("input", () => {
+    const q = menuSearch.value.trim().toLowerCase();
+    document.querySelectorAll("#menu-items-table tr").forEach((row, idx) => {
+      if (idx === 0) return;
+      const text = row.textContent.toLowerCase();
+      row.style.display = !q || text.includes(q) ? "" : "none";
+    });
+  });
+  const previewModal = document.getElementById("menu-preview-modal");
+  const previewTitle = document.getElementById("menu-preview-title");
+  const previewImage = document.getElementById("menu-preview-image");
+  const previewMeta = document.getElementById("menu-preview-meta");
+  const previewDescription = document.getElementById("menu-preview-description");
+  const previewShort = document.getElementById("menu-preview-short");
+  const previewCalories = document.getElementById("menu-preview-calories");
+  const previewPrice = document.getElementById("menu-preview-price");
+  document.querySelectorAll(".menu-preview-btn").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      previewTitle.textContent = btn.dataset.name || "Item";
+      previewImage.src = btn.dataset.image || "";
+      previewImage.style.display = btn.dataset.image ? "block" : "none";
+    previewMeta.textContent = btn.dataset.meta || "";
+    previewShort.textContent = btn.dataset.shortDescription || "";
+    previewDescription.textContent = btn.dataset.description || "";
+      previewCalories.textContent = btn.dataset.calories || "-";
+      previewPrice.textContent = btn.dataset.price || "0.00";
+      previewModal.classList.remove("hidden");
+    });
+  });
+  document.getElementById("menu-preview-close")?.addEventListener("click", () => previewModal.classList.add("hidden"));
+  previewModal?.addEventListener("click", (e) => { if (e.target === previewModal) previewModal.classList.add("hidden"); });
 </script>
 {% endblock %}

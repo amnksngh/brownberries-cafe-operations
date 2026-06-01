@@ -79,6 +79,7 @@ class MenuItem(TimestampMixin, db.Model):
     category_ids_json = db.Column(db.String(500), nullable=True)
     name = db.Column(db.String(120), nullable=False)
     image_url = db.Column(db.String(255), nullable=True)
+    short_description = db.Column(db.String(140), nullable=True)
     description = db.Column(db.String(500), nullable=True)
     calories = db.Column(db.Integer, nullable=True)
     price = db.Column(db.Float, nullable=False, default=0)
@@ -128,13 +129,112 @@ class CafeOrderItem(TimestampMixin, db.Model):
 
 class InventoryItem(TimestampMixin, db.Model):
     id = db.Column(db.Integer, primary_key=True)
+    item_code = db.Column(db.String(40), unique=True, nullable=True)
     area = db.Column(db.String(40), nullable=False)  # barista/kitchen/cafe
     name = db.Column(db.String(120), nullable=False)
+    category_name = db.Column(db.String(80), nullable=True)
+    subcategory_name = db.Column(db.String(80), nullable=True)
     unit = db.Column(db.String(20), nullable=False, default="pcs")
     current_amount = db.Column(db.Float, nullable=False, default=0)
     required_amount = db.Column(db.Float, nullable=False, default=0)
     reorder_level = db.Column(db.Float, nullable=False, default=0)
+    average_daily_usage = db.Column(db.Float, nullable=False, default=0)
+    purchase_price = db.Column(db.Float, nullable=False, default=0)
+    selling_relation = db.Column(db.String(120), nullable=True)
+    shelf_life_days = db.Column(db.Integer, nullable=True)
+    expiry_tracking = db.Column(db.Boolean, default=False, nullable=False)
+    storage_location = db.Column(db.String(120), nullable=True)
+    vendor_id = db.Column(db.Integer, db.ForeignKey("inventory_vendor.id"), nullable=True)
     note = db.Column(db.String(255), nullable=True)
+    vendor = db.relationship("InventoryVendor", backref="items")
+
+
+class InventoryCategory(TimestampMixin, db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(80), unique=True, nullable=False)
+    icon = db.Column(db.String(40), nullable=True)
+    color = db.Column(db.String(20), nullable=True)
+    active = db.Column(db.Boolean, default=True, nullable=False)
+
+
+class InventoryVendor(TimestampMixin, db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(120), nullable=False, unique=True)
+    vendor_category = db.Column(db.String(80), nullable=True)
+    contact_person = db.Column(db.String(120), nullable=True)
+    phone = db.Column(db.String(20), nullable=True)
+    email = db.Column(db.String(120), nullable=True)
+    gst_number = db.Column(db.String(40), nullable=True)
+    payment_terms = db.Column(db.String(120), nullable=True)
+    outstanding_balance = db.Column(db.Float, nullable=False, default=0)
+    average_rate_note = db.Column(db.String(255), nullable=True)
+    note = db.Column(db.String(500), nullable=True)
+    active = db.Column(db.Boolean, default=True, nullable=False)
+
+
+class InventoryPurchase(TimestampMixin, db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    purchase_date = db.Column(db.Date, nullable=False, default=date.today)
+    vendor_id = db.Column(db.Integer, db.ForeignKey("inventory_vendor.id"), nullable=True)
+    invoice_number = db.Column(db.String(80), nullable=True)
+    invoice_file_path = db.Column(db.String(255), nullable=True)
+    subtotal = db.Column(db.Float, nullable=False, default=0)
+    tax_amount = db.Column(db.Float, nullable=False, default=0)
+    total_amount = db.Column(db.Float, nullable=False, default=0)
+    payment_status = db.Column(db.String(20), nullable=False, default="pending")
+    note = db.Column(db.String(255), nullable=True)
+    vendor = db.relationship("InventoryVendor", backref="purchases")
+
+
+class InventoryPurchaseLine(TimestampMixin, db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    purchase_id = db.Column(db.Integer, db.ForeignKey("inventory_purchase.id"), nullable=False)
+    item_id = db.Column(db.Integer, db.ForeignKey("inventory_item.id"), nullable=False)
+    quantity = db.Column(db.Float, nullable=False, default=0)
+    unit_price = db.Column(db.Float, nullable=False, default=0)
+    line_total = db.Column(db.Float, nullable=False, default=0)
+    purchase = db.relationship("InventoryPurchase", backref="lines")
+    item = db.relationship("InventoryItem", backref="purchase_lines")
+
+
+class InventoryDailyClosing(TimestampMixin, db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    closing_date = db.Column(db.Date, nullable=False, default=date.today)
+    item_id = db.Column(db.Integer, db.ForeignKey("inventory_item.id"), nullable=False)
+    opening_stock = db.Column(db.Float, nullable=False, default=0)
+    closing_stock = db.Column(db.Float, nullable=False, default=0)
+    consumed_amount = db.Column(db.Float, nullable=False, default=0)
+    variance_amount = db.Column(db.Float, nullable=False, default=0)
+    note = db.Column(db.String(255), nullable=True)
+    item = db.relationship("InventoryItem", backref="daily_closing_rows")
+
+
+class InventoryRecipe(TimestampMixin, db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    menu_item_id = db.Column(db.Integer, db.ForeignKey("menu_item.id"), nullable=False, unique=True)
+    yield_qty = db.Column(db.Float, nullable=False, default=1)
+    yield_unit = db.Column(db.String(20), nullable=True)
+    active = db.Column(db.Boolean, default=True, nullable=False)
+    menu_item = db.relationship("MenuItem", backref=db.backref("inventory_recipe", uselist=False))
+
+
+class InventoryRecipeItem(TimestampMixin, db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    recipe_id = db.Column(db.Integer, db.ForeignKey("inventory_recipe.id"), nullable=False)
+    inventory_item_id = db.Column(db.Integer, db.ForeignKey("inventory_item.id"), nullable=False)
+    qty_per_menu = db.Column(db.Float, nullable=False, default=0)
+    unit = db.Column(db.String(20), nullable=False, default="pcs")
+    recipe = db.relationship("InventoryRecipe", backref="ingredients")
+    inventory_item = db.relationship("InventoryItem", backref="recipe_links")
+
+
+class InventoryWastage(TimestampMixin, db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    wastage_date = db.Column(db.Date, nullable=False, default=date.today)
+    item_id = db.Column(db.Integer, db.ForeignKey("inventory_item.id"), nullable=False)
+    quantity = db.Column(db.Float, nullable=False, default=0)
+    reason = db.Column(db.String(255), nullable=True)
+    item = db.relationship("InventoryItem", backref="wastage_rows")
 
 
 class StaffProfile(TimestampMixin, db.Model):
