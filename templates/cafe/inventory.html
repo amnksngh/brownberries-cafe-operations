@@ -1,14 +1,22 @@
 {% extends "base.html" %}
 {% block content %}
-<section class="panel">
-  <h2>Inventory OS</h2>
-  <p class="muted">Fast, mobile-first inventory workflows for Brownberries Café.</p>
+<section class="panel inventory-hero">
+  <div class="split-head">
+    <div>
+      <h2>Inventory OS</h2>
+      <p class="muted">Operational stock control for kitchen, barista, and front-of-house.</p>
+    </div>
+    <div class="inventory-hero-badges">
+      <span class="inventory-badge">Closing: {{ closing_date.isoformat() }}</span>
+      <span class="inventory-badge">Items: {{ inventory_analytics.total_items }}</span>
+    </div>
+  </div>
 </section>
 
 <section class="inventory-layout">
   <aside class="inventory-sidebar panel">
     <a href="{{ url_for('cafe.inventory', section='dashboard') }}" class="{% if section=='dashboard' %}active{% endif %}">Dashboard</a>
-    <a href="{{ url_for('cafe.inventory', section='daily_closing') }}" class="{% if section=='daily_closing' %}active{% endif %}">Daily Closing</a>
+    <a href="{{ url_for('cafe.inventory', section='daily_closing', closing_date=closing_date.isoformat()) }}" class="{% if section=='daily_closing' %}active{% endif %}">Daily Closing</a>
     <a href="{{ url_for('cafe.inventory', section='stock_levels') }}" class="{% if section=='stock_levels' %}active{% endif %}">Stock Levels</a>
     <a href="{{ url_for('cafe.inventory', section='purchases') }}" class="{% if section=='purchases' %}active{% endif %}">Purchases</a>
     <a href="{{ url_for('cafe.inventory', section='vendors') }}" class="{% if section=='vendors' %}active{% endif %}">Vendors</a>
@@ -20,64 +28,122 @@
   </aside>
 
   <div class="inventory-content">
-    {% if section == "dashboard" %}
     <section class="panel inventory-card-grid">
       <article class="inventory-kpi"><h4>Total Items</h4><p>{{ inventory_analytics.total_items }}</p></article>
       <article class="inventory-kpi"><h4>Low Stock</h4><p>{{ inventory_analytics.low_stock_count }}</p></article>
+      <article class="inventory-kpi"><h4>Overstock</h4><p>{{ inventory_analytics.overstock_count }}</p></article>
+      <article class="inventory-kpi"><h4>No Vendor Linked</h4><p>{{ inventory_analytics.unassigned_vendor_count }}</p></article>
       <article class="inventory-kpi"><h4>Stock Value</h4><p>₹{{ "%.2f"|format(inventory_analytics.total_stock_value) }}</p></article>
       <article class="inventory-kpi"><h4>Today Spend</h4><p>₹{{ "%.2f"|format(inventory_analytics.today_purchase_spend) }}</p></article>
       <article class="inventory-kpi"><h4>Today Wastage</h4><p>₹{{ "%.2f"|format(inventory_analytics.today_wastage_value) }}</p></article>
       <article class="inventory-kpi"><h4>Daily Consumption</h4><p>{{ "%.2f"|format(inventory_analytics.today_consumption) }}</p></article>
     </section>
-    <section class="panel">
-      <h3>Category Overview</h3>
-      <div class="inventory-category-grid">
-        {% for row in category_stats %}
-        <article class="inventory-category-chip">
-          <h4>{{ row.category.name }}</h4>
-          <p>{{ row.item_count }} items</p>
-          <p>₹{{ "%.2f"|format(row.stock_value) }}</p>
-        </article>
-        {% endfor %}
-      </div>
+
+    {% if section == "dashboard" %}
+    <section class="inventory-two-col">
+      <article class="panel">
+        <h3>Category Overview</h3>
+        <div class="inventory-category-grid">
+          {% for row in category_stats %}
+          <article class="inventory-category-chip">
+            <div class="split-head">
+              <h4>{{ row.category.name }}</h4>
+              <span class="category-dot" style="background:{{ row.category.color or '#b08968' }}"></span>
+            </div>
+            <p>{{ row.item_count }} items</p>
+            <p>₹{{ "%.2f"|format(row.stock_value) }}</p>
+          </article>
+          {% endfor %}
+        </div>
+      </article>
+      <article class="panel">
+        <h3>Priority Alerts</h3>
+        <div class="inventory-alert-list">
+          {% for item in low_stock_items[:8] %}
+          <div class="inventory-alert-row low"><strong>{{ item.name }}</strong><span>{{ item.current_amount }} {{ item.unit }} left</span></div>
+          {% endfor %}
+          {% for item in overstock_items[:4] %}
+          <div class="inventory-alert-row overstock"><strong>{{ item.name }}</strong><span>{{ item.current_amount }} {{ item.unit }} on hand</span></div>
+          {% endfor %}
+          {% if not low_stock_items and not overstock_items %}
+          <p class="muted">No urgent stock alerts.</p>
+          {% endif %}
+        </div>
+      </article>
     </section>
-    <section class="panel">
-      <h3>Low Stock Alerts</h3>
-      <table>
-        <tr><th>Item</th><th>Current</th><th>Reorder</th><th>Location</th></tr>
-        {% for item in low_stock_items %}
-        <tr><td>{{ item.name }}</td><td>{{ item.current_amount }} {{ item.unit }}</td><td>{{ item.reorder_level }} {{ item.unit }}</td><td>{{ item.storage_location or "-" }}</td></tr>
-        {% else %}
-        <tr><td colspan="4">No low stock items.</td></tr>
-        {% endfor %}
-      </table>
+    <section class="inventory-two-col">
+      <article class="panel">
+        <h3>Highest Value Stock</h3>
+        <table>
+          <tr><th>Item</th><th>Area</th><th>Value</th></tr>
+          {% for item in top_stock_value_items %}
+          <tr>
+            <td>{{ item.name }}</td>
+            <td>{{ item.area.title() }}</td>
+            <td>₹{{ "%.2f"|format((item.current_amount or 0) * (item.purchase_price or 0)) }}</td>
+          </tr>
+          {% else %}
+          <tr><td colspan="3">No stock items yet.</td></tr>
+          {% endfor %}
+        </table>
+      </article>
+      <article class="panel">
+        <h3>Recent Purchase Lines</h3>
+        <table>
+          <tr><th>Item</th><th>Qty</th><th>Rate</th></tr>
+          {% for line in recent_purchase_lines %}
+          <tr>
+            <td>{{ line.item.name if line.item else "-" }}</td>
+            <td>{{ line.quantity }}</td>
+            <td>₹{{ "%.2f"|format(line.unit_price) }}</td>
+          </tr>
+          {% else %}
+          <tr><td colspan="3">No recent purchases.</td></tr>
+          {% endfor %}
+        </table>
+      </article>
     </section>
     {% endif %}
 
     {% if section == "daily_closing" %}
     <section class="panel">
-      <h3>Daily Closing Inventory</h3>
-      <form method="get" class="grid grid-4">
-        <input type="hidden" name="section" value="daily_closing" />
-        <label>Date <input type="date" name="closing_date" value="{{ closing_date.isoformat() }}" /></label>
-        <button type="submit">Load</button>
-      </form>
-      <form method="post">
+      <div class="split-head">
+        <h3>Daily Closing Inventory</h3>
+        <form method="get" class="grid inventory-inline-form">
+          <input type="hidden" name="section" value="daily_closing" />
+          <label>Date <input type="date" name="closing_date" value="{{ closing_date.isoformat() }}" /></label>
+          <button type="submit">Load</button>
+        </form>
+      </div>
+      <form method="post" class="grid">
         <input type="hidden" name="action" value="daily_closing_save" />
         <input type="hidden" name="closing_date" value="{{ closing_date.isoformat() }}" />
-        <table>
-          <tr><th>Item</th><th>Yesterday</th><th>Today</th><th>Consumed</th><th>Variance</th></tr>
-          {% for row in daily_rows %}
-          {% set existing = row.existing %}
-          <tr>
-            <td>{{ row.item.name }} <span class="muted">({{ row.item.category_name or 'Uncategorized' }})</span><input type="hidden" name="item_id" value="{{ row.item.id }}" /></td>
-            <td>{{ "%.3f"|format(row.opening) }} {{ row.item.unit }}</td>
-            <td><input type="number" step="0.001" min="0" name="closing_stock_{{ row.item.id }}" value="{{ existing.closing_stock if existing else row.item.current_amount }}" /></td>
-            <td>{{ "%.3f"|format(existing.consumed_amount if existing else 0) }}</td>
-            <td>{{ "%.3f"|format(existing.variance_amount if existing else 0) }}</td>
-          </tr>
-          {% endfor %}
-        </table>
+        {% for category_name, rows in daily_rows_grouped.items() %}
+        <div class="inventory-closing-group">
+          <div class="split-head inventory-closing-head">
+            <h4>{{ category_name }}</h4>
+            <span class="muted">{{ rows|length }} items</span>
+          </div>
+          <table>
+            <tr><th>Item</th><th>Opening</th><th>Closing</th><th>Consumed</th><th>Variance</th><th>Note</th></tr>
+            {% for row in rows %}
+            {% set existing = row.existing %}
+            <tr>
+              <td>
+                <strong>{{ row.item.name }}</strong>
+                <div class="muted">{{ row.item.area.title() }} | {{ row.item.unit }}</div>
+                <input type="hidden" name="item_id" value="{{ row.item.id }}" />
+              </td>
+              <td>{{ "%.3f"|format(row.opening) }}</td>
+              <td><input type="number" step="0.001" min="0" name="closing_stock_{{ row.item.id }}" value="{{ existing.closing_stock if existing else row.item.current_amount }}" /></td>
+              <td>{{ "%.3f"|format(existing.consumed_amount if existing else 0) }}</td>
+              <td>{{ "%.3f"|format(existing.variance_amount if existing else 0) }}</td>
+              <td><input name="closing_note_{{ row.item.id }}" value="{{ existing.note if existing else '' }}" placeholder="Optional note" /></td>
+            </tr>
+            {% endfor %}
+          </table>
+        </div>
+        {% endfor %}
         <button class="inventory-sticky-save" type="submit">Save Daily Closing</button>
       </form>
     </section>
@@ -85,227 +151,385 @@
 
     {% if section == "stock_levels" %}
     <section class="panel">
-      <h3>Add Inventory Item</h3>
-      <form method="post" class="grid grid-4">
-        <input type="hidden" name="action" value="add_item" />
-        <label>Item ID <input name="item_code" placeholder="INV-001" /></label>
-        <label>Name <input name="name" required /></label>
-        <label>Category <input name="category_name" list="inventory-cats" /></label>
-        <label>Subcategory <input name="subcategory_name" /></label>
-        <label>Area
-          <select name="area"><option value="kitchen">Kitchen</option><option value="barista">Barista</option><option value="cafe">Cafe</option></select>
-        </label>
-        <label>Unit <input name="unit" value="pcs" /></label>
-        <label>Current <input name="current_amount" type="number" step="0.001" min="0" value="0" /></label>
-        <label>Reorder <input name="reorder_level" type="number" step="0.001" min="0" value="0" /></label>
-        <label>Required <input name="required_amount" type="number" step="0.001" min="0" value="0" /></label>
-        <label>Avg Daily Usage <input name="average_daily_usage" type="number" step="0.001" min="0" value="0" /></label>
-        <label>Purchase Price <input name="purchase_price" type="number" step="0.01" min="0" value="0" /></label>
-        <label>Shelf Life (days) <input name="shelf_life_days" type="number" min="0" /></label>
-        <label>Vendor
-          <select name="vendor_id"><option value="">-</option>{% for v in vendors %}<option value="{{ v.id }}">{{ v.name }}</option>{% endfor %}</select>
-        </label>
-        <label>Storage <input name="storage_location" /></label>
-        <label>Selling Relation <input name="selling_relation" placeholder="Cold Coffee / Milkshake" /></label>
-        <label><input type="checkbox" name="expiry_tracking" /> Expiry Tracking</label>
-        <label class="full">Notes <input name="note" /></label>
-        <button type="submit">Add Inventory Item</button>
-      </form>
-      <datalist id="inventory-cats">{% for c in categories %}<option value="{{ c.name }}"></option>{% endfor %}</datalist>
+      <div class="split-head">
+        <h3>Stock Control</h3>
+        <form method="get" class="grid inventory-filter-bar">
+          <input type="hidden" name="section" value="stock_levels" />
+          <label>Search <input name="q" value="{{ inventory_search }}" placeholder="Name, code, category, location" /></label>
+          <label>Area
+            <select name="area">
+              <option value="all" {% if inventory_area == 'all' %}selected{% endif %}>All</option>
+              <option value="kitchen" {% if inventory_area == 'kitchen' %}selected{% endif %}>Kitchen</option>
+              <option value="barista" {% if inventory_area == 'barista' %}selected{% endif %}>Barista</option>
+              <option value="cafe" {% if inventory_area == 'cafe' %}selected{% endif %}>Cafe</option>
+            </select>
+          </label>
+          <label>Category
+            <select name="category">
+              <option value="all" {% if inventory_category_filter == 'all' %}selected{% endif %}>All</option>
+              {% for c in categories %}<option value="{{ c.name|lower }}" {% if inventory_category_filter == c.name|lower %}selected{% endif %}>{{ c.name }}</option>{% endfor %}
+            </select>
+          </label>
+          <label>Status
+            <select name="status">
+              <option value="all" {% if inventory_status_filter == 'all' %}selected{% endif %}>All</option>
+              <option value="healthy" {% if inventory_status_filter == 'healthy' %}selected{% endif %}>Healthy</option>
+              <option value="low" {% if inventory_status_filter == 'low' %}selected{% endif %}>Low Stock</option>
+              <option value="overstock" {% if inventory_status_filter == 'overstock' %}selected{% endif %}>Overstock</option>
+            </select>
+          </label>
+          <button type="submit">Apply</button>
+        </form>
+      </div>
+    </section>
+    <section class="inventory-two-col inventory-main-grid">
+      <article class="panel">
+        <h3>Add Inventory Item</h3>
+        <form method="post" class="grid inventory-form-grid">
+          <input type="hidden" name="action" value="add_item" />
+          <label>Item Code <input name="item_code" placeholder="INV-001" /></label>
+          <label>Name <input name="name" required /></label>
+          <label>Category <input name="category_name" list="inventory-cats" /></label>
+          <label>Subcategory <input name="subcategory_name" /></label>
+          <label>Area
+            <select name="area"><option value="kitchen">Kitchen</option><option value="barista">Barista</option><option value="cafe">Cafe</option></select>
+          </label>
+          <label>Unit <input name="unit" value="pcs" /></label>
+          <label>Current Stock <input name="current_amount" type="number" step="0.001" min="0" value="0" /></label>
+          <label>Reorder Level <input name="reorder_level" type="number" step="0.001" min="0" value="0" /></label>
+          <label>Required Stock <input name="required_amount" type="number" step="0.001" min="0" value="0" /></label>
+          <label>Avg Daily Usage <input name="average_daily_usage" type="number" step="0.001" min="0" value="0" /></label>
+          <label>Purchase Price <input name="purchase_price" type="number" step="0.01" min="0" value="0" /></label>
+          <label>Shelf Life (days) <input name="shelf_life_days" type="number" min="0" /></label>
+          <label>Vendor
+            <select name="vendor_id"><option value="">-</option>{% for v in vendors %}<option value="{{ v.id }}">{{ v.name }}</option>{% endfor %}</select>
+          </label>
+          <label>Storage Location <input name="storage_location" /></label>
+          <label>Selling Relation <input name="selling_relation" placeholder="Cold Coffee / Pasta / Dosa" /></label>
+          <label><input type="checkbox" name="expiry_tracking" /> Enable Expiry Tracking</label>
+          <label class="full">Notes <input name="note" /></label>
+          <button type="submit">Add Item</button>
+        </form>
+        <datalist id="inventory-cats">{% for c in categories %}<option value="{{ c.name }}"></option>{% endfor %}</datalist>
+      </article>
+
+      <article class="panel">
+        <h3>Edit Selected Item</h3>
+        {% if selected_item %}
+        <form method="post" class="grid inventory-form-grid">
+          <input type="hidden" name="action" value="update_item" />
+          <input type="hidden" name="item_id" value="{{ selected_item.id }}" />
+          <label>Item Code <input name="item_code" value="{{ selected_item.item_code or '' }}" /></label>
+          <label>Name <input name="name" value="{{ selected_item.name }}" required /></label>
+          <label>Category <input name="category_name" value="{{ selected_item.category_name or '' }}" list="inventory-cats" /></label>
+          <label>Subcategory <input name="subcategory_name" value="{{ selected_item.subcategory_name or '' }}" /></label>
+          <label>Area
+            <select name="area">
+              <option value="kitchen" {% if selected_item.area == 'kitchen' %}selected{% endif %}>Kitchen</option>
+              <option value="barista" {% if selected_item.area == 'barista' %}selected{% endif %}>Barista</option>
+              <option value="cafe" {% if selected_item.area == 'cafe' %}selected{% endif %}>Cafe</option>
+            </select>
+          </label>
+          <label>Unit <input name="unit" value="{{ selected_item.unit }}" /></label>
+          <label>Current Stock <input name="current_amount" type="number" step="0.001" value="{{ selected_item.current_amount }}" /></label>
+          <label>Reorder Level <input name="reorder_level" type="number" step="0.001" value="{{ selected_item.reorder_level }}" /></label>
+          <label>Required Stock <input name="required_amount" type="number" step="0.001" value="{{ selected_item.required_amount }}" /></label>
+          <label>Avg Daily Usage <input name="average_daily_usage" type="number" step="0.001" value="{{ selected_item.average_daily_usage }}" /></label>
+          <label>Purchase Price <input name="purchase_price" type="number" step="0.01" value="{{ selected_item.purchase_price }}" /></label>
+          <label>Shelf Life (days) <input name="shelf_life_days" type="number" value="{{ selected_item.shelf_life_days or '' }}" /></label>
+          <label>Vendor
+            <select name="vendor_id"><option value="">-</option>{% for v in vendors %}<option value="{{ v.id }}" {% if selected_item.vendor_id == v.id %}selected{% endif %}>{{ v.name }}</option>{% endfor %}</select>
+          </label>
+          <label>Storage Location <input name="storage_location" value="{{ selected_item.storage_location or '' }}" /></label>
+          <label>Selling Relation <input name="selling_relation" value="{{ selected_item.selling_relation or '' }}" /></label>
+          <label><input type="checkbox" name="expiry_tracking" {% if selected_item.expiry_tracking %}checked{% endif %} /> Enable Expiry Tracking</label>
+          <label class="full">Notes <input name="note" value="{{ selected_item.note or '' }}" /></label>
+          <button type="submit">Update Item</button>
+        </form>
+        <form method="post" class="grid inventory-inline-form" style="margin-top:0.8rem;">
+          <input type="hidden" name="action" value="adjust_stock" />
+          <input type="hidden" name="item_id" value="{{ selected_item.id }}" />
+          <label>Quick Stock Adjustment
+            <input name="adjustment" type="number" step="0.001" placeholder="-2 or 5" />
+          </label>
+          <button type="submit">Apply Adjustment</button>
+        </form>
+        {% else %}
+        <p class="muted">Choose an item from the list below to edit it here.</p>
+        {% endif %}
+      </article>
     </section>
     <section class="panel">
       <h3>Stock Levels</h3>
       <table>
-        <tr><th>Item</th><th>Category</th><th>Current</th><th>Reorder</th><th>Vendor</th><th>Value</th></tr>
-        {% for item in items %}
+        <tr><th>Item</th><th>Area</th><th>Category</th><th>Current</th><th>Reorder</th><th>Status</th><th>Vendor</th><th>Value</th><th>Open</th></tr>
+        {% for item in filtered_items %}
+        {% set item_status = 'healthy' %}
+        {% if item.current_amount <= item.reorder_level %}
+          {% set item_status = 'low' %}
+        {% elif item.required_amount > 0 and item.current_amount >= item.required_amount * 1.35 %}
+          {% set item_status = 'overstock' %}
+        {% endif %}
         <tr>
-          <td>{{ item.name }}</td>
+          <td><strong>{{ item.name }}</strong><div class="muted">{{ item.item_code or "-" }}</div></td>
+          <td>{{ item.area.title() }}</td>
           <td>{{ item.category_name or "-" }}</td>
           <td>{{ item.current_amount }} {{ item.unit }}</td>
           <td>{{ item.reorder_level }} {{ item.unit }}</td>
+          <td><span class="inventory-status {{ item_status }}">{{ item_status.replace('_', ' ').title() }}</span></td>
           <td>{{ item.vendor.name if item.vendor else "-" }}</td>
           <td>₹{{ "%.2f"|format((item.current_amount or 0) * (item.purchase_price or 0)) }}</td>
+          <td><a href="{{ url_for('cafe.inventory', section='stock_levels', edit_item_id=item.id, q=inventory_search, area=inventory_area, category=inventory_category_filter, status=inventory_status_filter) }}">Edit</a></td>
         </tr>
+        {% else %}
+        <tr><td colspan="9">No items match the current filters.</td></tr>
         {% endfor %}
       </table>
     </section>
     {% endif %}
 
     {% if section == "purchases" %}
-    <section class="panel">
-      <h3>Log Purchase</h3>
-      <form method="post" class="grid">
-        <input type="hidden" name="action" value="add_purchase" />
-        <div class="grid grid-4">
-          <label>Date <input type="date" name="purchase_date" /></label>
-          <label>Vendor <select name="vendor_id"><option value="">-</option>{% for v in vendors %}<option value="{{ v.id }}">{{ v.name }}</option>{% endfor %}</select></label>
-          <label>Invoice # <input name="invoice_number" /></label>
-          <label>Tax (GST) <input name="tax_amount" type="number" step="0.01" min="0" value="0" /></label>
-          <label>Payment Status <select name="payment_status"><option>pending</option><option>paid</option><option>partial</option></select></label>
-          <label class="full">Note <input name="note" /></label>
-        </div>
+    <section class="inventory-two-col">
+      <article class="panel">
+        <h3>Log Purchase</h3>
+        <form method="post" class="grid">
+          <input type="hidden" name="action" value="add_purchase" />
+          <div class="grid inventory-form-grid">
+            <label>Date <input type="date" name="purchase_date" /></label>
+            <label>Vendor <select name="vendor_id"><option value="">-</option>{% for v in vendors %}<option value="{{ v.id }}">{{ v.name }}</option>{% endfor %}</select></label>
+            <label>Invoice # <input name="invoice_number" /></label>
+            <label>Tax (GST) <input name="tax_amount" type="number" step="0.01" min="0" value="0" /></label>
+            <label>Payment Status <select name="payment_status"><option>pending</option><option>paid</option><option>partial</option></select></label>
+            <label class="full">Note <input name="note" /></label>
+          </div>
+          <table>
+            <tr><th>Item</th><th>Qty</th><th>Unit Price</th></tr>
+            {% for item in items %}
+            <tr>
+              <td><label><input type="checkbox" name="purchase_item_id" value="{{ item.id }}" /> {{ item.name }}</label></td>
+              <td><input type="number" step="0.001" min="0" name="purchase_qty_{{ item.id }}" /></td>
+              <td><input type="number" step="0.01" min="0" name="purchase_price_{{ item.id }}" value="{{ item.purchase_price or 0 }}" /></td>
+            </tr>
+            {% endfor %}
+          </table>
+          <button type="submit">Save Purchase</button>
+        </form>
+      </article>
+      <article class="panel">
+        <h3>Purchase History</h3>
         <table>
-          <tr><th>Item</th><th>Qty</th><th>Unit Price</th></tr>
-          {% for item in items %}
-          <tr>
-            <td><label><input type="checkbox" name="purchase_item_id" value="{{ item.id }}" /> {{ item.name }}</label></td>
-            <td><input type="number" step="0.001" min="0" name="purchase_qty_{{ item.id }}" /></td>
-            <td><input type="number" step="0.01" min="0" name="purchase_price_{{ item.id }}" value="{{ item.purchase_price or 0 }}" /></td>
-          </tr>
+          <tr><th>Date</th><th>Vendor</th><th>Invoice</th><th>Total</th><th>Status</th></tr>
+          {% for p in purchases %}
+          <tr><td>{{ p.purchase_date }}</td><td>{{ p.vendor.name if p.vendor else "-" }}</td><td>{{ p.invoice_number or "-" }}</td><td>₹{{ "%.2f"|format(p.total_amount) }}</td><td>{{ p.payment_status }}</td></tr>
+          {% else %}
+          <tr><td colspan="5">No purchases logged.</td></tr>
           {% endfor %}
         </table>
-        <button type="submit">Save Purchase</button>
-      </form>
-    </section>
-    <section class="panel">
-      <h3>Purchase History</h3>
-      <table>
-        <tr><th>Date</th><th>Vendor</th><th>Invoice</th><th>Subtotal</th><th>Tax</th><th>Total</th><th>Status</th></tr>
-        {% for p in purchases %}
-        <tr><td>{{ p.purchase_date }}</td><td>{{ p.vendor.name if p.vendor else "-" }}</td><td>{{ p.invoice_number or "-" }}</td><td>₹{{ "%.2f"|format(p.subtotal) }}</td><td>₹{{ "%.2f"|format(p.tax_amount) }}</td><td>₹{{ "%.2f"|format(p.total_amount) }}</td><td>{{ p.payment_status }}</td></tr>
-        {% else %}
-        <tr><td colspan="7">No purchases logged.</td></tr>
-        {% endfor %}
-      </table>
+      </article>
     </section>
     {% endif %}
 
     {% if section == "vendors" %}
-    <section class="panel">
-      <h3>Add Vendor</h3>
-      <form method="post" class="grid grid-4">
-        <input type="hidden" name="action" value="add_vendor" />
-        <label>Name <input name="name" required /></label>
-        <label>Category <input name="vendor_category" /></label>
-        <label>Contact Person <input name="contact_person" /></label>
-        <label>Phone <input name="phone" /></label>
-        <label>Email <input name="email" /></label>
-        <label>GST Number <input name="gst_number" /></label>
-        <label>Payment Terms <input name="payment_terms" /></label>
-        <label>Outstanding <input name="outstanding_balance" type="number" step="0.01" min="0" value="0" /></label>
-        <label>Average Rates <input name="average_rate_note" /></label>
-        <label class="full">Notes <input name="note" /></label>
-        <button type="submit">Add Vendor</button>
-      </form>
+    <section class="inventory-two-col">
+      <article class="panel">
+        <h3>Add Vendor</h3>
+        <form method="post" class="grid inventory-form-grid">
+          <input type="hidden" name="action" value="add_vendor" />
+          <label>Name <input name="name" required /></label>
+          <label>Category <input name="vendor_category" /></label>
+          <label>Contact Person <input name="contact_person" /></label>
+          <label>Phone <input name="phone" /></label>
+          <label>Email <input name="email" /></label>
+          <label>GST Number <input name="gst_number" /></label>
+          <label>Payment Terms <input name="payment_terms" /></label>
+          <label>Outstanding <input name="outstanding_balance" type="number" step="0.01" min="0" value="0" /></label>
+          <label>Average Rates <input name="average_rate_note" /></label>
+          <label class="full">Notes <input name="note" /></label>
+          <button type="submit">Add Vendor</button>
+        </form>
+      </article>
+      <article class="panel">
+        <h3>Edit Vendor</h3>
+        {% if selected_vendor %}
+        <form method="post" class="grid inventory-form-grid">
+          <input type="hidden" name="action" value="update_vendor" />
+          <input type="hidden" name="vendor_id" value="{{ selected_vendor.id }}" />
+          <label>Name <input name="name" value="{{ selected_vendor.name }}" required /></label>
+          <label>Category <input name="vendor_category" value="{{ selected_vendor.vendor_category or '' }}" /></label>
+          <label>Contact Person <input name="contact_person" value="{{ selected_vendor.contact_person or '' }}" /></label>
+          <label>Phone <input name="phone" value="{{ selected_vendor.phone or '' }}" /></label>
+          <label>Email <input name="email" value="{{ selected_vendor.email or '' }}" /></label>
+          <label>GST Number <input name="gst_number" value="{{ selected_vendor.gst_number or '' }}" /></label>
+          <label>Payment Terms <input name="payment_terms" value="{{ selected_vendor.payment_terms or '' }}" /></label>
+          <label>Outstanding <input name="outstanding_balance" type="number" step="0.01" value="{{ selected_vendor.outstanding_balance }}" /></label>
+          <label>Average Rates <input name="average_rate_note" value="{{ selected_vendor.average_rate_note or '' }}" /></label>
+          <label class="full">Notes <input name="note" value="{{ selected_vendor.note or '' }}" /></label>
+          <button type="submit">Update Vendor</button>
+        </form>
+        {% endif %}
+      </article>
     </section>
     <section class="panel">
       <h3>Vendors</h3>
       <table>
-        <tr><th>Name</th><th>Phone</th><th>GST</th><th>Terms</th><th>Outstanding</th></tr>
+        <tr><th>Name</th><th>Contact</th><th>GST</th><th>Purchases</th><th>Total Spend</th><th>Open</th></tr>
         {% for v in vendors %}
-        <tr><td>{{ v.name }}</td><td>{{ v.phone or "-" }}</td><td>{{ v.gst_number or "-" }}</td><td>{{ v.payment_terms or "-" }}</td><td>₹{{ "%.2f"|format(v.outstanding_balance or 0) }}</td></tr>
+        {% set stats = vendor_purchase_map.get(v.id, {"count": 0, "spend": 0}) %}
+        <tr>
+          <td>{{ v.name }}</td>
+          <td>{{ v.phone or "-" }}</td>
+          <td>{{ v.gst_number or "-" }}</td>
+          <td>{{ stats["count"] }}</td>
+          <td>₹{{ "%.2f"|format(stats["spend"]) }}</td>
+          <td><a href="{{ url_for('cafe.inventory', section='vendors', edit_vendor_id=v.id) }}">Edit</a></td>
+        </tr>
         {% endfor %}
       </table>
     </section>
     {% endif %}
 
     {% if section == "recipes" %}
-    <section class="panel">
-      <h3>Recipe Mapping</h3>
-      <form method="post" class="grid">
-        <input type="hidden" name="action" value="save_recipe" />
-        <div class="grid grid-4">
-          <label>Menu Item
-            <select name="menu_item_id" required>
-              <option value="">Select</option>
-              {% for m in menu_items %}<option value="{{ m.id }}">{{ m.name }}</option>{% endfor %}
-            </select>
-          </label>
-          <label>Yield Qty <input type="number" step="0.001" min="0" name="yield_qty" value="1" /></label>
-          <label>Yield Unit <input name="yield_unit" value="portion" /></label>
-        </div>
+    <section class="inventory-two-col">
+      <article class="panel">
+        <h3>Recipe Mapping / SOP</h3>
+        <form method="post" class="grid">
+          <input type="hidden" name="action" value="save_recipe" />
+          <div class="grid inventory-form-grid">
+            <label>Menu Item
+              <select name="menu_item_id" required>
+                <option value="">Select</option>
+                {% for m in menu_items %}<option value="{{ m.id }}">{{ m.name }}</option>{% endfor %}
+              </select>
+            </label>
+            <label>Yield Qty <input type="number" step="0.001" min="0" name="yield_qty" value="1" /></label>
+            <label>Yield Unit <input name="yield_unit" value="portion" /></label>
+          </div>
+          <table>
+            <tr><th>Ingredient</th><th>Qty Per Menu</th><th>Unit</th></tr>
+            {% for item in items %}
+            <tr>
+              <td><label><input type="checkbox" name="recipe_item_id" value="{{ item.id }}" /> {{ item.name }}</label></td>
+              <td><input type="number" step="0.001" min="0" name="recipe_qty_{{ item.id }}" /></td>
+              <td><input name="recipe_unit_{{ item.id }}" value="{{ item.unit }}" /></td>
+            </tr>
+            {% endfor %}
+          </table>
+          <button type="submit">Save Recipe</button>
+        </form>
+      </article>
+      <article class="panel">
+        <h3>Mapped Recipes</h3>
         <table>
-          <tr><th>Ingredient</th><th>Qty Per Menu</th><th>Unit</th></tr>
-          {% for item in items %}
+          <tr><th>Menu Item</th><th>Yield</th><th>Ingredients</th></tr>
+          {% for r in recipes %}
           <tr>
-            <td><label><input type="checkbox" name="recipe_item_id" value="{{ item.id }}" /> {{ item.name }}</label></td>
-            <td><input type="number" step="0.001" min="0" name="recipe_qty_{{ item.id }}" /></td>
-            <td><input name="recipe_unit_{{ item.id }}" value="{{ item.unit }}" /></td>
+            <td>{{ r.menu_item.name if r.menu_item else "-" }}</td>
+            <td>{{ r.yield_qty }} {{ r.yield_unit or '' }}</td>
+            <td>{% for ing in r.ingredients %}<div>{{ ing.inventory_item.name if ing.inventory_item else "-" }} - {{ ing.qty_per_menu }} {{ ing.unit }}</div>{% endfor %}</td>
           </tr>
+          {% else %}
+          <tr><td colspan="3">No recipes mapped.</td></tr>
           {% endfor %}
         </table>
-        <button type="submit">Save Recipe</button>
-      </form>
-    </section>
-    <section class="panel">
-      <h3>Mapped Recipes</h3>
-      <table>
-        <tr><th>Menu Item</th><th>Yield</th><th>Ingredients</th></tr>
-        {% for r in recipes %}
-        <tr>
-          <td>{{ r.menu_item.name if r.menu_item else "-" }}</td>
-          <td>{{ r.yield_qty }} {{ r.yield_unit or '' }}</td>
-          <td>{% for ing in r.ingredients %}<div>{{ ing.inventory_item.name if ing.inventory_item else "-" }} - {{ ing.qty_per_menu }} {{ ing.unit }}</div>{% endfor %}</td>
-        </tr>
-        {% else %}
-        <tr><td colspan="3">No recipes mapped.</td></tr>
-        {% endfor %}
-      </table>
+      </article>
     </section>
     {% endif %}
 
     {% if section == "wastage" %}
-    <section class="panel">
-      <h3>Log Wastage</h3>
-      <form method="post" class="grid grid-4">
-        <input type="hidden" name="action" value="add_wastage" />
-        <label>Date <input type="date" name="wastage_date" /></label>
-        <label>Item <select name="item_id" required><option value="">Select</option>{% for item in items %}<option value="{{ item.id }}">{{ item.name }}</option>{% endfor %}</select></label>
-        <label>Quantity <input name="quantity" type="number" step="0.001" min="0" required /></label>
-        <label>Reason <input name="reason" /></label>
-        <button type="submit">Save Wastage</button>
-      </form>
-    </section>
-    <section class="panel">
-      <h3>Wastage History</h3>
-      <table>
-        <tr><th>Date</th><th>Item</th><th>Qty</th><th>Reason</th></tr>
-        {% for w in wastage_rows %}
-        <tr><td>{{ w.wastage_date }}</td><td>{{ w.item.name if w.item else "-" }}</td><td>{{ w.quantity }} {{ w.item.unit if w.item else "" }}</td><td>{{ w.reason or "-" }}</td></tr>
-        {% else %}
-        <tr><td colspan="4">No wastage rows.</td></tr>
-        {% endfor %}
-      </table>
+    <section class="inventory-two-col">
+      <article class="panel">
+        <h3>Log Wastage</h3>
+        <form method="post" class="grid inventory-form-grid">
+          <input type="hidden" name="action" value="add_wastage" />
+          <label>Date <input type="date" name="wastage_date" /></label>
+          <label>Item <select name="item_id" required><option value="">Select</option>{% for item in items %}<option value="{{ item.id }}">{{ item.name }}</option>{% endfor %}</select></label>
+          <label>Quantity <input name="quantity" type="number" step="0.001" min="0" required /></label>
+          <label>Reason <input name="reason" /></label>
+          <button type="submit">Save Wastage</button>
+        </form>
+      </article>
+      <article class="panel">
+        <h3>Wastage History</h3>
+        <table>
+          <tr><th>Date</th><th>Item</th><th>Qty</th><th>Reason</th></tr>
+          {% for w in wastage_rows %}
+          <tr><td>{{ w.wastage_date }}</td><td>{{ w.item.name if w.item else "-" }}</td><td>{{ w.quantity }} {{ w.item.unit if w.item else "" }}</td><td>{{ w.reason or "-" }}</td></tr>
+          {% else %}
+          <tr><td colspan="4">No wastage rows.</td></tr>
+          {% endfor %}
+        </table>
+      </article>
     </section>
     {% endif %}
 
     {% if section == "analytics" %}
-    <section class="panel inventory-card-grid">
-      <article class="inventory-kpi"><h4>Stockout Risk</h4><p>{{ low_stock_items|length }}</p></article>
-      <article class="inventory-kpi"><h4>Purchase Orders</h4><p>{{ purchases|length }}</p></article>
-      <article class="inventory-kpi"><h4>Recipe Mappings</h4><p>{{ recipes|length }}</p></article>
-      <article class="inventory-kpi"><h4>Wastage Logs</h4><p>{{ wastage_rows|length }}</p></article>
-    </section>
-    <section class="panel">
-      <h3>Top Consumed (from Daily Closing)</h3>
-      <table>
-        <tr><th>Item</th><th>Total Consumed</th></tr>
-        {% for row in items|sort(attribute='average_daily_usage', reverse=True) %}
-        {% if loop.index <= 10 %}
-        <tr><td>{{ row.name }}</td><td>{{ row.average_daily_usage }}</td></tr>
-        {% endif %}
-        {% endfor %}
-      </table>
+    <section class="inventory-two-col">
+      <article class="panel">
+        <h3>Consumption Drivers</h3>
+        <table>
+          <tr><th>Item</th><th>Latest Consumed</th><th>Avg Daily Usage</th></tr>
+          {% for row in top_consumption_rows %}
+          <tr>
+            <td>{{ row.item.name }}</td>
+            <td>{{ "%.3f"|format(row.existing.consumed_amount if row.existing else 0) }} {{ row.item.unit }}</td>
+            <td>{{ "%.3f"|format(row.item.average_daily_usage or 0) }} {{ row.item.unit }}</td>
+          </tr>
+          {% else %}
+          <tr><td colspan="3">No daily closing data yet.</td></tr>
+          {% endfor %}
+        </table>
+      </article>
+      <article class="panel">
+        <h3>Operational Risk</h3>
+        <div class="inventory-alert-list">
+          <div class="inventory-alert-row low"><strong>Low Stock Items</strong><span>{{ low_stock_items|length }}</span></div>
+          <div class="inventory-alert-row overstock"><strong>Overstock Items</strong><span>{{ overstock_items|length }}</span></div>
+          <div class="inventory-alert-row neutral"><strong>Items Without Vendor</strong><span>{{ items_without_vendor|length }}</span></div>
+          <div class="inventory-alert-row neutral"><strong>Recipe Mappings</strong><span>{{ recipes|length }}</span></div>
+        </div>
+      </article>
     </section>
     {% endif %}
 
     {% if section == "categories" %}
-    <section class="panel">
-      <h3>Add Category</h3>
-      <form method="post" class="grid grid-4">
-        <input type="hidden" name="action" value="add_category" />
-        <label>Name <input name="name" required /></label>
-        <label>Icon <input name="icon" placeholder="leaf" /></label>
-        <label>Color <input name="color" placeholder="#6cab7a" /></label>
-        <button type="submit">Add Category</button>
-      </form>
+    <section class="inventory-two-col">
+      <article class="panel">
+        <h3>Add Category</h3>
+        <form method="post" class="grid inventory-form-grid">
+          <input type="hidden" name="action" value="add_category" />
+          <label>Name <input name="name" required /></label>
+          <label>Icon <input name="icon" placeholder="leaf" /></label>
+          <label>Color <input name="color" placeholder="#6cab7a" /></label>
+          <button type="submit">Add Category</button>
+        </form>
+      </article>
+      <article class="panel">
+        <h3>Edit Category</h3>
+        {% if selected_category %}
+        <form method="post" class="grid inventory-form-grid">
+          <input type="hidden" name="action" value="update_category" />
+          <input type="hidden" name="category_id" value="{{ selected_category.id }}" />
+          <label>Name <input name="name" value="{{ selected_category.name }}" required /></label>
+          <label>Icon <input name="icon" value="{{ selected_category.icon or '' }}" /></label>
+          <label>Color <input name="color" value="{{ selected_category.color or '' }}" /></label>
+          <label><input type="checkbox" name="active" {% if selected_category.active %}checked{% endif %} /> Active</label>
+          <button type="submit">Update Category</button>
+        </form>
+        {% endif %}
+      </article>
     </section>
     <section class="panel">
       <h3>Categories</h3>
       <table>
-        <tr><th>Name</th><th>Icon</th><th>Color</th></tr>
+        <tr><th>Name</th><th>Icon</th><th>Color</th><th>Status</th><th>Open</th></tr>
         {% for c in categories %}
-        <tr><td>{{ c.name }}</td><td>{{ c.icon or "-" }}</td><td><span class="category-dot" style="background:{{ c.color or '#ddd' }}"></span> {{ c.color or '-' }}</td></tr>
+        <tr>
+          <td>{{ c.name }}</td>
+          <td>{{ c.icon or "-" }}</td>
+          <td><span class="category-dot" style="background:{{ c.color or '#ddd' }}"></span> {{ c.color or '-' }}</td>
+          <td>{{ "Active" if c.active else "Inactive" }}</td>
+          <td><a href="{{ url_for('cafe.inventory', section='categories', edit_category_id=c.id) }}">Edit</a></td>
+        </tr>
         {% endfor %}
       </table>
     </section>
@@ -314,12 +538,20 @@
     {% if section == "settings" %}
     <section class="panel">
       <h3>Inventory Settings</h3>
-      <p class="muted">This section is ready for barcode scanning, multi-branch stock, batch tracking, and AI reorder prediction integration.</p>
-      <ul>
-        <li>Default daily closing time: 10:00 PM</li>
-        <li>Low stock alert threshold: reorder level based</li>
-        <li>Predicted stockout model: planned</li>
-      </ul>
+      <div class="inventory-setting-grid">
+        <article class="inventory-category-chip">
+          <h4>Closing Discipline</h4>
+          <p>Daily closing tracks opening, closing, consumed, and variance for each item.</p>
+        </article>
+        <article class="inventory-category-chip">
+          <h4>Stock Health Model</h4>
+          <p>Low stock uses reorder level. Overstock is flagged when current stock rises above 135% of required stock.</p>
+        </article>
+        <article class="inventory-category-chip">
+          <h4>Prepared For Growth</h4>
+          <p>Recipe mapping, vendor linking, purchase logging, and wastage tracking are ready for deeper automation later.</p>
+        </article>
+      </div>
     </section>
     {% endif %}
   </div>

@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="panel">
+  <h2>Brownberries Café Receipt</h2>
+  <p class="muted">Order #{{ order.display_code or order.id }} | {{ order.created_at.strftime("%Y-%m-%d %H:%M") }}</p>
+  <p><strong>Table:</strong> {{ "For Delivery" if order.is_delivery else (order.table.name if order.table else "-") }}</p>
+  <p><strong>Status:</strong> {{ order.status }}</p>
+  <p><strong>Payment:</strong> {{ order.payment_type or "-" }}</p>
+</section>
+<section class="panel">
+  <table>
+    <tr><th>Item</th><th>Qty</th><th>Rate</th><th>Amount</th></tr>
+    {% for oi in order.order_items %}
+    {% if (oi.approval_status or "pending") != "rejected" %}
+    <tr>
+      <td>{{ oi.menu_item.name if oi.menu_item else "Item" }}{% if oi.size_label %} ({{ oi.size_label }}){% endif %}</td>
+      <td>{{ oi.quantity }}</td>
+      <td>₹{{ "%.2f"|format(oi.unit_price or 0) }}</td>
+      <td>₹{{ "%.2f"|format((oi.unit_price or 0) * (oi.quantity or 0)) }}</td>
+    </tr>
+    {% endif %}
+    {% endfor %}
+  </table>
+  <p><strong>Subtotal:</strong> ₹{{ "%.2f"|format(subtotal) }}</p>
+  <p><strong>Packaging Charge:</strong> ₹{{ "%.2f"|format(packaging_charge) }}</p>
+  <p><strong>Service Charge:</strong> ₹{{ "%.2f"|format(service_charge) }}</p>
+  <p><strong>GST/CST:</strong> ₹{{ "%.2f"|format(tax_amount) }}</p>
+  <p><strong>Total:</strong> ₹{{ "%.2f"|format(order.total_amount or 0) }}</p>
+  <button type="button" onclick="window.print()">Print / Download</button>
+</section>
+{% endblock %}

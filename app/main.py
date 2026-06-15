@@ -13,6 +13,7 @@ from werkzeug.utils import secure_filename
 from .auth_helpers import login_required, roles_required
 from .extensions import socketio
 from .extensions import db
+from .deploy_config import load_deployment_config
 from .models import (
     CafeOrder,
     CafeOrderItem,
@@ -154,7 +155,18 @@ def public_home():
         .limit(20)
         .all()
     )
-    return render_template("public_home.html", map_url=map_url, review_url=review_url, slots=slots, upcoming_bookings=upcoming)
+    cfg = load_deployment_config(current_app.instance_path)
+    notice_text = (cfg.get("PUBLIC_NOTICE_TEXT", "") or "").strip()
+    notice_enabled = cfg.get("PUBLIC_NOTICE_ENABLED", "0") in [1, "1", True, "true", "True"]
+    return render_template(
+        "public_home.html",
+        map_url=map_url,
+        review_url=review_url,
+        slots=slots,
+        upcoming_bookings=upcoming,
+        public_notice_text=notice_text,
+        public_notice_enabled=notice_enabled and bool(notice_text),
+    )
 
 
 @bp.route("/book-table", methods=["POST"])

@@ -22,6 +22,10 @@
   </div>
   <p class="muted">Collect payment, mark orders paid, and clear table for next customers.</p>
   <p class="muted">Connection: <strong id="socket-state">Connecting...</strong></p>
+  <div class="qr-category-bar">
+    <a class="qr-cat-pill {% if tab == 'running' %}active{% endif %}" href="{{ url_for('cafe.cashier', tab='running', table_id=selected_table.id if selected_table else None) }}">Running Orders</a>
+    <a class="qr-cat-pill {% if tab == 'all_orders' %}active{% endif %}" href="{{ url_for('cafe.cashier', tab='all_orders', year=sel_year, month=sel_month, day=sel_day) }}">All Orders</a>
+  </div>
   <button type="button" id="enable-sound-btn">Enable Sound Alerts</button>
   <div class="notif-wrap">
     <button type="button" id="notif-bell" class="notif-bell">🔔 <span id="notif-count" class="notif-count">0</span></button>
@@ -30,11 +34,12 @@
       <div id="notif-list" class="grid"></div>
     </div>
   </div>
+  {% if tab == "running" %}
   <div class="cashier-table-grid">
     {% for t in tables %}
     {% set running = running_map.get(t.id, {"count": 0, "total": 0}) %}
     <a
-      href="{{ url_for('cafe.cashier', table_id=t.id) }}"
+      href="{{ url_for('cafe.cashier', tab='running', table_id=t.id) }}"
       class="cashier-table-box {% if selected_table and selected_table.id == t.id %}selected{% endif %} {% if running.count > 0 %}running{% endif %}"
     >
       <strong>{{ t.name }}</strong>
@@ -43,6 +48,7 @@
     </a>
     {% endfor %}
   </div>
+  {% endif %}
 </section>
 
 <div id="cashier-lock-overlay" style="display:none;position:fixed;inset:0;background:rgba(12,10,8,0.88);z-index:9999;align-items:center;justify-content:center;">
@@ -58,7 +64,7 @@
   </div>
 </div>
 
-{% if selected_table %}
+{% if tab == "running" and selected_table %}
 <section class="panel">
   <h3>{{ selected_table.name }} - Unpaid Orders</h3>
   <p><strong>Total Pending:</strong> {{ "%.2f"|format(table_total) }}</p>
@@ -81,10 +87,11 @@
           </td>
           <td>{{ "%.2f"|format(order.total_amount) }}</td>
           <td>
+            <button type="button" class="open-order-modal" data-order-id="{{ order.id }}">Preview</button>
             {% set pending_items = order.order_items | selectattr("approval_status", "equalto", "pending") | list %}
             {% if pending_items %}
             <form method="post" action="{{ url_for('cafe.approve_order', order_id=order.id) }}" class="grid">
-              <input type="hidden" name="next" value="{{ url_for('cafe.cashier', table_id=selected_table.id) }}" />
+              <input type="hidden" name="next" value="{{ url_for('cafe.cashier', tab='running', table_id=selected_table.id) }}" />
               <div class="grid">
                 <strong>Pending Queue</strong>
                 {% for oi in pending_items %}
@@ -98,7 +105,7 @@
             </form>
             {% else %}
             <form method="post" action="{{ url_for('cafe.mark_order_paid', order_id=order.id) }}" class="grid">
-              <input type="hidden" name="next" value="{{ url_for('cafe.cashier', table_id=selected_table.id) }}" />
+              <input type="hidden" name="next" value="{{ url_for('cafe.cashier', tab='running', table_id=selected_table.id) }}" />
               <label>Payment Type
                 <select name="payment_type">
                   <option>Cash</option>
@@ -108,9 +115,39 @@
                 </select>
               </label>
               <label>Reference <input name="payment_reference" /></label>
+              <div class="grid grid-3">
+                <label>Code
+                  <select name="country_code">
+                    <option value="+91" selected>+91</option>
+                    <option value="+1">+1</option>
+                    <option value="+44">+44</option>
+                    <option value="+971">+971</option>
+                  </select>
+                </label>
+                <label>Mobile <input name="mobile" placeholder="Customer number" /></label>
+                <label><input type="checkbox" name="send_receipt_sms" /> Send Receipt SMS</label>
+              </div>
               <button type="submit">Mark Paid</button>
             </form>
             {% endif %}
+            <details style="margin-top:0.4rem;">
+              <summary>Edit Order</summary>
+              <form method="post" action="{{ url_for('cafe.edit_order_items', order_id=order.id) }}" class="grid">
+                <input type="hidden" name="next" value="{{ url_for('cafe.cashier', tab='running', table_id=selected_table.id) }}" />
+                {% for oi in order.order_items %}
+                {% if (oi.approval_status or "pending") != "rejected" %}
+                <input type="hidden" name="keep_{{ oi.id }}" value="0" />
+                <label>
+                  <input type="checkbox" name="keep_{{ oi.id }}" value="1" checked />
+                  {{ oi.menu_item.name }}{% if oi.size_label %} ({{ oi.size_label }}){% endif %}
+                </label>
+                <label>Qty <input type="number" min="1" name="qty_{{ oi.id }}" value="{{ oi.quantity }}" /></label>
+                <label><input type="checkbox" name="is_parcel_{{ oi.id }}" {% if oi.is_parcel %}checked{% endif %} /> Parcel</label>
+                {% endif %}
+                {% endfor %}
+                <button type="submit">Save Edit</button>
+              </form>
+            </details>
           </td>
         </tr>
         {% else %}
@@ -124,7 +161,7 @@
 <section class="panel">
   <h3>Clear Table Orders</h3>
   <form method="post" action="{{ url_for('cafe.clear_table_orders', table_id=selected_table.id) }}" class="grid grid-4">
-    <input type="hidden" name="next" value="{{ url_for('cafe.cashier', table_id=selected_table.id) }}" />
+    <input type="hidden" name="next" value="{{ url_for('cafe.cashier', tab='running', table_id=selected_table.id) }}" />
     <label>Payment Type
       <select name="payment_type">
         <option>Cash</option>
@@ -138,6 +175,70 @@
   </form>
 </section>
 {% endif %}
+{% if tab == "all_orders" %}
+<section class="panel">
+  <h3>All Orders by Date</h3>
+  <form method="get" class="grid grid-4">
+    <input type="hidden" name="tab" value="all_orders" />
+    <label>Year
+      <select name="year">
+        {% for y in years %}
+        <option value="{{ y }}" {% if sel_year == y %}selected{% endif %}>{{ y }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>Month
+      <select name="month">
+        {% for m in range(1, 13) %}
+        <option value="{{ m }}" {% if sel_month == m %}selected{% endif %}>{{ "%02d"|format(m) }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>Day
+      <select name="day">
+        {% for d in range(1, 32) %}
+        <option value="{{ d }}" {% if sel_day == d %}selected{% endif %}>{{ "%02d"|format(d) }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <button type="submit">Load Orders</button>
+  </form>
+  <table>
+    <tr><th>Order</th><th>Table</th><th>Status</th><th>Total</th><th>Created</th><th>Action</th></tr>
+    {% for o in all_orders %}
+    <tr>
+      <td>#{{ o.display_code or o.id }}</td>
+      <td>{{ o.table.name if o.table else "-" }}</td>
+      <td>{{ o.status }}</td>
+      <td>₹{{ "%.2f"|format(o.total_amount) }}</td>
+      <td>{{ o.created_at.strftime("%Y-%m-%d %H:%M") }}</td>
+      <td><button type="button" class="open-order-modal" data-order-id="{{ o.id }}">View</button></td>
+    </tr>
+    {% else %}
+    <tr><td colspan="6">No orders for selected date.</td></tr>
+    {% endfor %}
+  </table>
+</section>
+{% endif %}
+<div id="order-detail-modal" class="desc-modal hidden">
+  <div class="desc-dialog">
+    <h3 id="od-title">Order Details</h3>
+    <div id="od-body" class="grid"></div>
+    <div class="grid grid-3">
+      <label>Country Code
+        <select id="sms-country-code">
+          <option value="+91" selected>India (+91)</option>
+          <option value="+1">USA (+1)</option>
+          <option value="+44">UK (+44)</option>
+          <option value="+971">UAE (+971)</option>
+        </select>
+      </label>
+      <label>Mobile Number <input id="sms-mobile" placeholder="10-digit mobile" /></label>
+      <button type="button" id="send-receipt-sms">Send SMS</button>
+    </div>
+    <button type="button" id="od-close">Close</button>
+  </div>
+</div>
 <script src="{{ url_for('static', filename='js/socket.io.min.js') }}"></script>
 <script>
   const cashierUserId = {{ g.current_user.id if g.current_user else 0 }};
@@ -150,6 +251,9 @@
     reconnectionDelay: 800,
   });
   const selectedTableId = {{ selected_table.id if selected_table else 0 }};
+  const activeTab = "{{ tab }}";
+  const allOrdersPayload = {{ all_orders_payload|tojson }};
+  const sendReceiptSmsUrlTemplate = "{{ url_for('cafe.send_order_receipt_sms', order_id=0) }}";
   const socketState = document.getElementById("socket-state");
   const enableSoundBtn = document.getElementById("enable-sound-btn");
   let cashierReloadTimer = null;
@@ -254,10 +358,84 @@
   window.setInterval(evaluateAutoLock, 5000);
 
   function cashierScheduleReload(payload) {
+    if (activeTab !== "running") return;
     if (!payload || !payload.table_id) return;
     if (cashierReloadTimer) return;
     cashierReloadTimer = setTimeout(() => window.location.reload(), 300);
   }
+
+  const orderModal = document.getElementById("order-detail-modal");
+  const odTitle = document.getElementById("od-title");
+  const odBody = document.getElementById("od-body");
+  const odClose = document.getElementById("od-close");
+  const smsCountry = document.getElementById("sms-country-code");
+  const smsMobile = document.getElementById("sms-mobile");
+  const sendReceiptSmsBtn = document.getElementById("send-receipt-sms");
+  let activeOrderForSms = null;
+  function renderOrderDetails(order) {
+    if (!order || !odBody) return;
+    const itemsHtml = (order.items || []).map((it) => {
+      const size = it.size_label ? ` (${it.size_label})` : "";
+      return `<div>${it.name}${size} x ${it.qty} — ₹${(it.unit_price * it.qty).toFixed(2)}</div>`;
+    }).join("");
+    odTitle.textContent = `Order #${order.code}`;
+    odBody.innerHTML = `
+      <div><strong>Table:</strong> ${order.table}</div>
+      <div><strong>Status:</strong> ${order.status}</div>
+      <div><strong>Payment:</strong> ${order.payment_type}</div>
+      <div><strong>Ref:</strong> ${order.payment_reference || "-"}</div>
+      <div><strong>Items</strong>${itemsHtml || "<div>-</div>"}</div>
+      <div><strong>Subtotal:</strong> ₹${Number(order.subtotal || 0).toFixed(2)}</div>
+      <div><strong>Packaging:</strong> ₹${Number(order.packaging_charge || 0).toFixed(2)}</div>
+      <div><strong>Service Charge:</strong> ₹${Number(order.service_charge || 0).toFixed(2)}</div>
+      <div><strong>GST/CST:</strong> ₹${Number(order.tax_amount || 0).toFixed(2)}</div>
+      <div><strong>Total:</strong> ₹${Number(order.total_amount || 0).toFixed(2)}</div>
+    `;
+  }
+  document.querySelectorAll(".open-order-modal").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const orderId = Number(btn.dataset.orderId || 0);
+      const order = allOrdersPayload.find((x) => Number(x.id) === orderId);
+      if (!order) return;
+      activeOrderForSms = order;
+      renderOrderDetails(order);
+      orderModal?.classList.remove("hidden");
+    });
+  });
+  odClose?.addEventListener("click", () => orderModal?.classList.add("hidden"));
+  orderModal?.addEventListener("click", (event) => {
+    if (event.target === orderModal) orderModal.classList.add("hidden");
+  });
+  sendReceiptSmsBtn?.addEventListener("click", () => {
+    if (!activeOrderForSms) return;
+    const cc = (smsCountry?.value || "+91").trim();
+    const mobile = (smsMobile?.value || "").trim();
+    if (!mobile) {
+      alert("Please enter mobile number.");
+      return;
+    }
+    const url = sendReceiptSmsUrlTemplate.replace("/0/send-receipt-sms", `/${activeOrderForSms.id}/send-receipt-sms`);
+    const formData = new FormData();
+    formData.append("country_code", cc);
+    formData.append("mobile", mobile);
+    sendReceiptSmsBtn.disabled = true;
+    sendReceiptSmsBtn.textContent = "Sending...";
+    fetch(url, { method: "POST", body: formData })
+      .then(async (resp) => {
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok || !data.ok) {
+          throw new Error(data.message || "Could not send SMS.");
+        }
+        alert(data.message || "Receipt SMS sent.");
+      })
+      .catch((err) => {
+        alert(err?.message || "Could not send SMS.");
+      })
+      .finally(() => {
+        sendReceiptSmsBtn.disabled = false;
+        sendReceiptSmsBtn.textContent = "Send SMS";
+      });
+  });
   let audioCtx = null;
   let soundEnabled = false;
   const notifAudio = new Audio(notifSoundUrl);

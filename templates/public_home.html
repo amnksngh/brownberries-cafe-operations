@@ -1,5 +1,12 @@
 {% extends "base.html" %}
 {% block content %}
+{% if public_notice_enabled %}
+<section class="public-notice-bar">
+  <div class="public-notice-track">
+    <span>{{ public_notice_text }}</span>
+  </div>
+</section>
+{% endif %}
 <section class="panel public-welcome">
   <a class="staff-login-link" href="{{ url_for('main.login') }}" target="_blank" rel="noopener">Staff Login</a>
   <div class="public-hero-wrap">

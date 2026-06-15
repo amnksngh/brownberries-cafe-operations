@@ -33,4 +33,62 @@
     <a href="{{ url_for('cafe.stats') }}">Statistics Dashboard</a>
   </div>
 </section>
+{% if g.current_user.role in ["admin", "manager"] %}
+<section class="panel">
+  <h3>Public Notification Bar</h3>
+  <form method="post" action="{{ url_for('cafe.update_public_notice') }}" class="grid grid-4">
+    <label class="full">Notice Text
+      <input name="notice_text" value="{{ public_notice_text or '' }}" placeholder="Example: Cafe closes at 10 PM today." />
+    </label>
+    <label><input type="checkbox" name="notice_enabled" {% if public_notice_enabled %}checked{% endif %} /> Enable Moving Notice</label>
+    <button type="submit">Save Notification</button>
+  </form>
+</section>
+
+<section class="panel">
+  <h3>SMS Gateway Settings</h3>
+  <p class="muted">Configure Twilio settings for receipt SMS and alerts from this server.</p>
+  <form method="post" action="{{ url_for('cafe.update_sms_settings') }}" class="grid grid-4">
+    <label>Provider
+      <select name="sms_provider">
+        <option value="twilio" {% if sms_provider == "twilio" %}selected{% endif %}>Twilio</option>
+      </select>
+    </label>
+    <label>Twilio Account SID
+      <input name="twilio_account_sid" placeholder="AC..." />
+      {% if twilio_sid_hint %}<small class="muted">Current: {{ twilio_sid_hint }}</small>{% endif %}
+    </label>
+    <label>Twilio Auth Token
+      <input type="password" name="twilio_auth_token" placeholder="Enter new token or leave blank" />
+      {% if twilio_token_hint %}<small class="muted">Current: {{ twilio_token_hint }}</small>{% endif %}
+    </label>
+    <label>From Number
+      <input name="sms_from" value="{{ sms_from or '' }}" placeholder="+1xxxxxxxxxx or +91xxxxxxxxxx" />
+    </label>
+    <label>CA Bundle Path (Optional)
+      <input name="sms_ca_bundle" value="{{ sms_ca_bundle or '' }}" placeholder="/path/to/cacert.pem" />
+    </label>
+    <label><input type="checkbox" name="sms_enabled" {% if sms_enabled %}checked{% endif %} /> Enable SMS Gateway</label>
+    <label><input type="checkbox" name="sms_allow_insecure_ssl" {% if sms_allow_insecure_ssl %}checked{% endif %} /> Emergency: Allow Insecure SSL (not recommended)</label>
+    <button type="submit">Save SMS Settings</button>
+  </form>
+  <form method="post" action="{{ url_for('cafe.test_sms_settings') }}" class="grid grid-4" style="margin-top:0.75rem;">
+    <label>Country Code
+      <select name="test_country_code">
+        <option value="+91" selected>India (+91)</option>
+        <option value="+1">USA (+1)</option>
+        <option value="+44">UK (+44)</option>
+        <option value="+971">UAE (+971)</option>
+      </select>
+    </label>
+    <label>Mobile Number
+      <input name="test_mobile" placeholder="Test number" />
+    </label>
+    <label>Test Message
+      <input name="test_message" placeholder="Brownberries Cafe SMS test message." />
+    </label>
+    <button type="submit">Send Test SMS</button>
+  </form>
+</section>
+{% endif %}
 {% endblock %}

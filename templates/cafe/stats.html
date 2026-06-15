@@ -1,27 +1,469 @@
 {% extends "base.html" %}
 {% block content %}
-<section class="panel">
-  <h2>Statistics Dashboard</h2>
-  <form method="get" class="grid grid-3">
-    <label>From <input type="datetime-local" name="from" /></label>
-    <label>To <input type="datetime-local" name="to" /></label>
-    <button type="submit">Apply</button>
+<section class="panel stats-hero">
+  <div class="split-head">
+    <div>
+      <h2>Statistics Dashboard</h2>
+      <p class="muted">Period: {{ stats_payload.period.label }} | Updated: {{ stats_payload.generated_at }} IST</p>
+    </div>
+    <div class="stats-export-actions">
+      <a class="button-link" href="{{ url_for('cafe.export_stats', preset=filters.preset, startDate=filters.startDate, endDate=filters.endDate, salesSource=filters.salesSource, orderType=filters.orderType, category=filters.category) }}">Export Excel</a>
+      <button type="button" id="stats-export-pdf">Export PDF</button>
+      <button type="button" id="stats-print-btn">Print Report</button>
+    </div>
+  </div>
+  <form method="get" class="grid stats-filter-grid">
+    <label>Date Range
+      <select name="preset" id="stats-preset">
+        <option value="today" {% if filters.preset == "today" %}selected{% endif %}>Today</option>
+        <option value="yesterday" {% if filters.preset == "yesterday" %}selected{% endif %}>Yesterday</option>
+        <option value="last_7_days" {% if filters.preset == "last_7_days" %}selected{% endif %}>Last 7 Days</option>
+        <option value="last_30_days" {% if filters.preset == "last_30_days" %}selected{% endif %}>Last 30 Days</option>
+        <option value="this_month" {% if filters.preset == "this_month" %}selected{% endif %}>This Month</option>
+        <option value="last_month" {% if filters.preset == "last_month" %}selected{% endif %}>Last Month</option>
+        <option value="this_quarter" {% if filters.preset == "this_quarter" %}selected{% endif %}>This Quarter</option>
+        <option value="last_quarter" {% if filters.preset == "last_quarter" %}selected{% endif %}>Last Quarter</option>
+        <option value="this_year" {% if filters.preset == "this_year" %}selected{% endif %}>This Year</option>
+        <option value="custom" {% if filters.preset == "custom" %}selected{% endif %}>Custom Date Range</option>
+      </select>
+    </label>
+    <label>Sales Source
+      <select name="salesSource">
+        <option value="all" {% if filters.salesSource == "all" %}selected{% endif %}>All</option>
+        <option value="barista" {% if filters.salesSource == "barista" %}selected{% endif %}>Barista Counter</option>
+        <option value="kitchen" {% if filters.salesSource == "kitchen" %}selected{% endif %}>Kitchen</option>
+      </select>
+    </label>
+    <label>Order Type
+      <select name="orderType">
+        <option value="all" {% if filters.orderType == "all" %}selected{% endif %}>All</option>
+        <option value="dine_in" {% if filters.orderType == "dine_in" %}selected{% endif %}>Dine In</option>
+        <option value="takeaway" {% if filters.orderType == "takeaway" %}selected{% endif %}>Takeaway</option>
+        <option value="online_order" {% if filters.orderType == "online_order" %}selected{% endif %}>Online Order</option>
+      </select>
+    </label>
+    <label>Category
+      <select name="category">
+        <option value="all" {% if filters.category|lower == "all" %}selected{% endif %}>All Categories</option>
+        {% for category_name in category_options %}
+        <option value="{{ category_name }}" {% if filters.category|lower == category_name|lower %}selected{% endif %}>{{ category_name }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label id="custom-start-wrap" {% if filters.preset != "custom" %}style="display:none;"{% endif %}>
+      Custom Start
+      <input type="date" name="startDate" value="{{ filters.startDate }}" />
+    </label>
+    <label id="custom-end-wrap" {% if filters.preset != "custom" %}style="display:none;"{% endif %}>
+      Custom End
+      <input type="date" name="endDate" value="{{ filters.endDate }}" />
+    </label>
+    <div class="stats-filter-actions">
+      <button type="submit">Apply Filters</button>
+      <a class="button-link ghost" href="{{ url_for('cafe.stats') }}">Reset Filters</a>
+    </div>
   </form>
-  <p><strong>Total Sales:</strong> {{ "%.2f"|format(total_sales) }}</p>
-  <a class="button-link" href="{{ url_for('cafe.export_stats') }}">Download Excel</a>
 </section>
+
+<section class="stats-kpi-grid">
+  <article class="metric kpi-card">
+    <h3>Total Sales</h3>
+    <p>₹{{ "%.2f"|format(stats_payload.summary.revenue.total_sales) }}</p>
+    <span class="kpi-delta {% if stats_payload.summary.growth.total_sales_pct >= 0 %}positive{% else %}negative{% endif %}">
+      {{ "%+.2f"|format(stats_payload.summary.growth.total_sales_pct) }}%
+    </span>
+  </article>
+  <article class="metric kpi-card">
+    <h3>Total Orders</h3>
+    <p>{{ stats_payload.summary.revenue.total_orders }}</p>
+    <span class="kpi-delta {% if stats_payload.summary.growth.orders_pct >= 0 %}positive{% else %}negative{% endif %}">
+      {{ "%+.2f"|format(stats_payload.summary.growth.orders_pct) }}%
+    </span>
+  </article>
+  <article class="metric kpi-card">
+    <h3>Average Order Value</h3>
+    <p>₹{{ "%.2f"|format(stats_payload.summary.revenue.average_order_value) }}</p>
+    <span class="kpi-delta {% if stats_payload.summary.growth.average_order_value_pct >= 0 %}positive{% else %}negative{% endif %}">
+      {{ "%+.2f"|format(stats_payload.summary.growth.average_order_value_pct) }}%
+    </span>
+  </article>
+  <article class="metric kpi-card">
+    <h3>Highest Order Value</h3>
+    <p>₹{{ "%.2f"|format(stats_payload.summary.revenue.highest_order_value) }}</p>
+  </article>
+  <article class="metric kpi-card">
+    <h3>Lowest Order Value</h3>
+    <p>₹{{ "%.2f"|format(stats_payload.summary.revenue.lowest_order_value) }}</p>
+  </article>
+  <article class="metric kpi-card">
+    <h3>Total Customers Served</h3>
+    <p>{{ stats_payload.summary.customers.total_customers_served }}</p>
+  </article>
+  <article class="metric kpi-card">
+    <h3>New Customers</h3>
+    <p>{{ stats_payload.summary.customers.new_customers }}</p>
+  </article>
+  <article class="metric kpi-card">
+    <h3>Returning Customers</h3>
+    <p>{{ stats_payload.summary.customers.returning_customers }}</p>
+  </article>
+  <article class="metric kpi-card">
+    <h3>Total Items Sold</h3>
+    <p>{{ stats_payload.summary.products.total_items_sold }}</p>
+  </article>
+  <article class="metric kpi-card">
+    <h3>Unique Items Sold</h3>
+    <p>{{ stats_payload.summary.products.unique_items_sold }}</p>
+  </article>
+  <article class="metric kpi-card">
+    <h3>Kitchen Sales</h3>
+    <p>₹{{ "%.2f"|format(stats_payload.summary.operations.kitchen_sales) }}</p>
+    <small>{{ "%.2f"|format(stats_payload.summary.operations.kitchen_contribution_pct) }}%</small>
+  </article>
+  <article class="metric kpi-card">
+    <h3>Barista Sales</h3>
+    <p>₹{{ "%.2f"|format(stats_payload.summary.operations.barista_sales) }}</p>
+    <small>{{ "%.2f"|format(stats_payload.summary.operations.barista_contribution_pct) }}%</small>
+  </article>
+</section>
+
 <section class="panel">
-  <table>
-    <tr><th>ID</th><th>Table</th><th>Status</th><th>Payment</th><th>Total</th></tr>
-    {% for order in orders %}
-    <tr>
-      <td>{{ order.id }}</td>
-      <td>{{ order.table.name }}</td>
-      <td>{{ order.status }}</td>
-      <td>{{ order.payment_type or "-" }}</td>
-      <td>{{ "%.2f"|format(order.total_amount) }}</td>
-    </tr>
-    {% endfor %}
-  </table>
+  <h3>Revenue Visualization</h3>
+  <div class="stats-chart-grid">
+    <article class="panel inner">
+      <h4>Revenue Trend</h4>
+      <canvas id="revenue-trend-chart" height="140"></canvas>
+    </article>
+    <article class="panel inner">
+      <h4>Revenue Split</h4>
+      <canvas id="revenue-split-chart" height="140"></canvas>
+    </article>
+    <article class="panel inner">
+      <h4>Kitchen vs Barista Revenue</h4>
+      <canvas id="revenue-compare-chart" height="140"></canvas>
+    </article>
+  </div>
 </section>
+
+<section class="panel">
+  <h3>Order Analytics</h3>
+  <div class="stats-chart-grid">
+    <article class="panel inner">
+      <h4>Orders Over Time</h4>
+      <canvas id="orders-trend-chart" height="130"></canvas>
+    </article>
+    <article class="panel inner">
+      <h4>Order Type Distribution</h4>
+      <canvas id="order-type-chart" height="130"></canvas>
+    </article>
+    <article class="panel inner">
+      <h4>Peak Business Hours</h4>
+      <canvas id="peak-hours-chart" height="130"></canvas>
+    </article>
+  </div>
+  <div class="stats-best-days">
+    <article class="metric">
+      <h3>Best Day Ever</h3>
+      <p>{{ stats_payload.orders_analytics.best_sales_days.best_day_ever.day }}</p>
+      <small>₹{{ "%.2f"|format(stats_payload.orders_analytics.best_sales_days.best_day_ever.revenue) }} | {{ stats_payload.orders_analytics.best_sales_days.best_day_ever.orders }} orders</small>
+    </article>
+    <article class="metric">
+      <h3>Best Day This Month</h3>
+      <p>{{ stats_payload.orders_analytics.best_sales_days.best_day_this_month.day }}</p>
+      <small>₹{{ "%.2f"|format(stats_payload.orders_analytics.best_sales_days.best_day_this_month.revenue) }} | {{ stats_payload.orders_analytics.best_sales_days.best_day_this_month.orders }} orders</small>
+    </article>
+    <article class="metric">
+      <h3>Best Day Last Month</h3>
+      <p>{{ stats_payload.orders_analytics.best_sales_days.best_day_last_month.day }}</p>
+      <small>₹{{ "%.2f"|format(stats_payload.orders_analytics.best_sales_days.best_day_last_month.revenue) }} | {{ stats_payload.orders_analytics.best_sales_days.best_day_last_month.orders }} orders</small>
+    </article>
+  </div>
+</section>
+
+<section class="panel">
+  <div class="split-head">
+    <h3>Item Performance</h3>
+    <label>Sort Top Items By
+      <select id="top-item-sort">
+        <option value="qty">Quantity Sold</option>
+        <option value="revenue">Revenue Generated</option>
+      </select>
+    </label>
+  </div>
+  <div class="stats-chart-grid">
+    <article class="panel inner">
+      <h4>Top Selling Items</h4>
+      <div class="table-wrap">
+        <table id="top-items-table">
+          <thead>
+            <tr><th>Rank</th><th>Item</th><th>Category</th><th>Qty</th><th>Revenue</th><th>Avg Price</th><th>Contribution</th></tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </article>
+    <article class="panel inner">
+      <h4>Bottom Performing / Zero Sales</h4>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Item</th><th>Category</th><th>Status</th></tr></thead>
+          <tbody>
+            {% for x in stats_payload.item_analytics.bottom_items %}
+            <tr><td>{{ x.name }}</td><td>{{ x.category }}</td><td>Low Sales</td></tr>
+            {% endfor %}
+            {% for x in stats_payload.item_analytics.zero_sales_items %}
+            <tr><td>{{ x.name }}</td><td>{{ x.category }}</td><td>Zero Sales</td></tr>
+            {% endfor %}
+            {% if not stats_payload.item_analytics.bottom_items and not stats_payload.item_analytics.zero_sales_items %}
+            <tr><td colspan="3">No low/zero sales items for selected filters.</td></tr>
+            {% endif %}
+          </tbody>
+        </table>
+      </div>
+    </article>
+    <article class="panel inner">
+      <h4>Item Revenue Contribution</h4>
+      <canvas id="item-contribution-chart" height="130"></canvas>
+    </article>
+  </div>
+</section>
+
+<section class="panel">
+  <h3>Category Analytics</h3>
+  <div class="stats-chart-grid">
+    <article class="panel inner">
+      <h4>Category Revenue Pie</h4>
+      <canvas id="category-pie-chart" height="130"></canvas>
+    </article>
+    <article class="panel inner">
+      <h4>Category Revenue Bar</h4>
+      <canvas id="category-bar-chart" height="130"></canvas>
+    </article>
+    <article class="panel inner">
+      <h4>Category Performance</h4>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Category</th><th>Revenue</th><th>Orders</th><th>Qty</th><th>Avg Price</th></tr></thead>
+          <tbody>
+            {% for c in stats_payload.category_analytics.rows %}
+            <tr>
+              <td>{{ c.name }}</td>
+              <td>₹{{ "%.2f"|format(c.revenue) }}</td>
+              <td>{{ c.orders }}</td>
+              <td>{{ "%.2f"|format(c.qty) }}</td>
+              <td>₹{{ "%.2f"|format(c.avg_price) }}</td>
+            </tr>
+            {% else %}
+            <tr><td colspan="5">No category data for selected filters.</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </article>
+  </div>
+</section>
+
+<section class="panel">
+  <h3>Kitchen vs Barista Analytics</h3>
+  <div class="stats-kv-grid">
+    <article class="metric"><h3>Kitchen Revenue</h3><p>₹{{ "%.2f"|format(stats_payload.kitchen_vs_barista.revenue_comparison.kitchen) }}</p></article>
+    <article class="metric"><h3>Barista Revenue</h3><p>₹{{ "%.2f"|format(stats_payload.kitchen_vs_barista.revenue_comparison.barista) }}</p></article>
+    <article class="metric"><h3>Kitchen Orders</h3><p>{{ stats_payload.kitchen_vs_barista.order_count_comparison.kitchen_orders }}</p></article>
+    <article class="metric"><h3>Barista Orders</h3><p>{{ stats_payload.kitchen_vs_barista.order_count_comparison.barista_orders }}</p></article>
+    <article class="metric"><h3>Best Kitchen Item</h3><p>{{ stats_payload.kitchen_vs_barista.best_kitchen_item.name }}</p><small>₹{{ "%.2f"|format(stats_payload.kitchen_vs_barista.best_kitchen_item.revenue) }} | {{ stats_payload.kitchen_vs_barista.best_kitchen_item.qty }}</small></article>
+    <article class="metric"><h3>Best Barista Item</h3><p>{{ stats_payload.kitchen_vs_barista.best_barista_item.name }}</p><small>₹{{ "%.2f"|format(stats_payload.kitchen_vs_barista.best_barista_item.revenue) }} | {{ stats_payload.kitchen_vs_barista.best_barista_item.qty }}</small></article>
+    <article class="metric"><h3>Kitchen Avg Ticket</h3><p>₹{{ "%.2f"|format(stats_payload.kitchen_vs_barista.average_ticket_size.kitchen) }}</p></article>
+    <article class="metric"><h3>Barista Avg Ticket</h3><p>₹{{ "%.2f"|format(stats_payload.kitchen_vs_barista.average_ticket_size.barista) }}</p></article>
+  </div>
+  <article class="panel inner">
+    <h4>Contribution Trend (%)</h4>
+    <canvas id="contribution-trend-chart" height="120"></canvas>
+  </article>
+</section>
+
+<section class="panel">
+  <h3>Inventory Consumption Insights</h3>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Ingredient</th><th>Estimated Consumption</th><th>Unit</th></tr></thead>
+      <tbody>
+        {% for row in stats_payload.inventory_consumption.estimated_consumption %}
+        <tr><td>{{ row.ingredient }}</td><td>{{ "%.3f"|format(row.consumption) }}</td><td>{{ row.unit }}</td></tr>
+        {% else %}
+        <tr><td colspan="3">No mapped recipe consumption data yet.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section class="panel">
+  <h3>All Orders (Filtered)</h3>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>Order</th><th>Table</th><th>Type</th><th>Source Mix</th><th>Status</th><th>Payment</th><th>Total</th><th>Created</th></tr>
+      </thead>
+      <tbody>
+        {% for order in stats_payload.orders %}
+        <tr>
+          <td>#{{ order.code }}</td>
+          <td>{{ order.table }}</td>
+          <td>{{ order.order_type_label }}</td>
+          <td>{{ order.sales_source_mix }}</td>
+          <td>{{ order.status }}</td>
+          <td>{{ order.payment_type }}</td>
+          <td>₹{{ "%.2f"|format(order.total_amount) }}</td>
+          <td>{{ order.created_at }}</td>
+        </tr>
+        {% else %}
+        <tr><td colspan="8">No orders found for selected filters.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.5.0/chart.umd.min.js"></script>
+<script>
+  const statsPayload = {{ stats_payload|tojson }};
+  const topItemsSource = [...(statsPayload.item_analytics.top_items || [])];
+
+  const presetSel = document.getElementById("stats-preset");
+  const customStartWrap = document.getElementById("custom-start-wrap");
+  const customEndWrap = document.getElementById("custom-end-wrap");
+  presetSel?.addEventListener("change", () => {
+    const show = presetSel.value === "custom";
+    if (customStartWrap) customStartWrap.style.display = show ? "" : "none";
+    if (customEndWrap) customEndWrap.style.display = show ? "" : "none";
+  });
+
+  document.getElementById("stats-print-btn")?.addEventListener("click", () => window.print());
+  document.getElementById("stats-export-pdf")?.addEventListener("click", () => window.print());
+
+  const chartTextColor = "#4b3a2f";
+  const gridColor = "rgba(79, 63, 50, 0.15)";
+  function buildLineChart(id, labels, data, label, color) {
+    const node = document.getElementById(id);
+    if (!node || !window.Chart) return;
+    return new Chart(node, {
+      type: "line",
+      data: { labels, datasets: [{ label, data, borderColor: color, backgroundColor: color + "33", tension: 0.28, fill: true }] },
+      options: { responsive: true, plugins: { legend: { labels: { color: chartTextColor } } }, scales: { x: { ticks: { color: chartTextColor }, grid: { color: gridColor } }, y: { ticks: { color: chartTextColor }, grid: { color: gridColor } } } },
+    });
+  }
+  function buildBarChart(id, labels, data, label, color) {
+    const node = document.getElementById(id);
+    if (!node || !window.Chart) return;
+    return new Chart(node, {
+      type: "bar",
+      data: { labels, datasets: [{ label, data, backgroundColor: color }] },
+      options: { responsive: true, plugins: { legend: { labels: { color: chartTextColor } } }, scales: { x: { ticks: { color: chartTextColor }, grid: { color: gridColor } }, y: { ticks: { color: chartTextColor }, grid: { color: gridColor } } } },
+    });
+  }
+  function buildPieChart(id, labels, data) {
+    const node = document.getElementById(id);
+    if (!node || !window.Chart) return;
+    return new Chart(node, {
+      type: "pie",
+      data: {
+        labels,
+        datasets: [
+          {
+            data,
+            backgroundColor: ["#6f4a35", "#2d7070", "#d4a574", "#8f6c96", "#4d8b53", "#9b5b5b", "#567fb5", "#a38656", "#5b5b5b", "#a16f3b", "#3f6e8f"],
+          },
+        ],
+      },
+      options: { responsive: true, plugins: { legend: { labels: { color: chartTextColor } } } },
+    });
+  }
+
+  buildLineChart("revenue-trend-chart", statsPayload.revenue.trend.labels, statsPayload.revenue.trend.values, "Revenue", "#6f4a35");
+  buildPieChart("revenue-split-chart", ["Kitchen", "Barista"], [statsPayload.revenue.split.kitchen, statsPayload.revenue.split.barista]);
+  buildBarChart("revenue-compare-chart", ["Kitchen", "Barista"], [statsPayload.revenue.comparison.kitchen, statsPayload.revenue.comparison.barista], "Revenue", ["#6f4a35", "#2d7070"]);
+  buildLineChart("orders-trend-chart", statsPayload.orders_analytics.orders_over_time.labels, statsPayload.orders_analytics.orders_over_time.values, "Orders", "#2d7070");
+  buildPieChart("order-type-chart", ["Dine In", "Takeaway", "Online"], [
+    statsPayload.orders_analytics.order_type_distribution.dine_in || 0,
+    statsPayload.orders_analytics.order_type_distribution.takeaway || 0,
+    statsPayload.orders_analytics.order_type_distribution.online_order || 0,
+  ]);
+  buildBarChart(
+    "peak-hours-chart",
+    (statsPayload.orders_analytics.peak_hours || []).map((x) => x.hour),
+    (statsPayload.orders_analytics.peak_hours || []).map((x) => x.orders),
+    "Order Volume",
+    "#8b5e3c"
+  );
+  buildPieChart(
+    "item-contribution-chart",
+    statsPayload.item_analytics.item_revenue_contribution.labels || [],
+    statsPayload.item_analytics.item_revenue_contribution.values || []
+  );
+  buildPieChart("category-pie-chart", statsPayload.category_analytics.pie.labels || [], statsPayload.category_analytics.pie.values || []);
+  buildBarChart("category-bar-chart", statsPayload.category_analytics.bar.labels || [], statsPayload.category_analytics.bar.values || [], "Revenue", "#6f4a35");
+  const ctrend = statsPayload.kitchen_vs_barista.contribution_trend || { labels: [], kitchen_pct: [], barista_pct: [] };
+  const nodeC = document.getElementById("contribution-trend-chart");
+  if (nodeC && window.Chart) {
+    new Chart(nodeC, {
+      type: "line",
+      data: {
+        labels: ctrend.labels,
+        datasets: [
+          { label: "Kitchen %", data: ctrend.kitchen_pct, borderColor: "#6f4a35", backgroundColor: "#6f4a3533", tension: 0.22 },
+          { label: "Barista %", data: ctrend.barista_pct, borderColor: "#2d7070", backgroundColor: "#2d707033", tension: 0.22 },
+        ],
+      },
+      options: { responsive: true, plugins: { legend: { labels: { color: chartTextColor } } }, scales: { x: { ticks: { color: chartTextColor }, grid: { color: gridColor } }, y: { ticks: { color: chartTextColor }, grid: { color: gridColor } } } },
+    });
+  }
+
+  const topItemsBody = document.querySelector("#top-items-table tbody");
+  function renderTopItems(sortBy) {
+    if (!topItemsBody) return;
+    const rows = [...topItemsSource].sort((a, b) => {
+      if (sortBy === "revenue") return (b.revenue || 0) - (a.revenue || 0);
+      return (b.qty || 0) - (a.qty || 0);
+    });
+    topItemsBody.innerHTML = rows.slice(0, 25).map((x, idx) => `
+      <tr data-item-id="${x.id}">
+        <td>${idx + 1}</td>
+        <td><button type="button" class="link-btn show-item-trend" data-item-id="${x.id}">${x.name}</button></td>
+        <td>${x.category || "Other"}</td>
+        <td>${x.qty}</td>
+        <td>₹${Number(x.revenue || 0).toFixed(2)}</td>
+        <td>₹${Number(x.avg_price || 0).toFixed(2)}</td>
+        <td>${Number(x.contribution_pct || 0).toFixed(2)}%</td>
+      </tr>
+    `).join("") || '<tr><td colspan="7">No item data for selected filters.</td></tr>';
+  }
+  renderTopItems("qty");
+  document.getElementById("top-item-sort")?.addEventListener("change", (e) => renderTopItems(e.target.value));
+
+  topItemsBody?.addEventListener("click", async (e) => {
+    const btn = e.target.closest(".show-item-trend");
+    if (!btn) return;
+    const itemId = btn.dataset.itemId;
+    if (!itemId) return;
+    const q = new URLSearchParams({
+      preset: statsPayload.filters.preset,
+      startDate: statsPayload.filters.startDate || "",
+      endDate: statsPayload.filters.endDate || "",
+      salesSource: statsPayload.filters.salesSource,
+      orderType: statsPayload.filters.orderType,
+      category: statsPayload.filters.category,
+      itemId,
+    });
+    const resp = await fetch(`/cafe/api/statistics/items?${q.toString()}`);
+    const data = await resp.json();
+    const trend = data?.item_trend;
+    if (!trend || !trend.labels) {
+      alert("Item trend unavailable.");
+      return;
+    }
+    const title = btn.textContent.trim();
+    const html = trend.labels.map((d, i) => `${d}: Qty ${trend.qty_values[i]} | ₹${Number(trend.revenue_values[i] || 0).toFixed(2)}`).join("\n");
+    alert(`Trend for ${title}\n\n${html || "No trend data for selected period."}`);
+  });
+</script>
 {% endblock %}

@@ -2,19 +2,25 @@ import json
 import calendar
 import math
 import os
-from datetime import date, datetime
+import base64
+import ssl
+from datetime import date, datetime, timedelta, time
 from io import BytesIO
+from urllib.parse import urlencode
+from urllib.request import Request, urlopen
 from uuid import uuid4
+from zoneinfo import ZoneInfo
 
 import qrcode
 from PIL import Image, ImageDraw, ImageFont
-from flask import Blueprint, Response, current_app, flash, g, redirect, render_template, request, url_for
+from flask import Blueprint, Response, current_app, flash, g, jsonify, redirect, render_template, request, url_for
 from openpyxl import Workbook
 from sqlalchemy.orm import joinedload
 from werkzeug.security import check_password_hash, generate_password_hash
 from werkzeug.utils import secure_filename
 
 from .auth_helpers import login_required, roles_required
+from .deploy_config import load_deployment_config, save_deployment_config
 from .extensions import db, socketio
 from .models import (
     CafeOrder,
@@ -59,6 +65,39 @@ DEFAULT_ROLE_OPTIONS = (
 )
 STAFF_ROLES = DEFAULT_ROLE_OPTIONS
 PREP_STATION_OPTIONS = ("kitchen", "barista")
+IST_TZ = ZoneInfo("Asia/Kolkata")
+UTC_TZ = ZoneInfo("UTC")
+
+
+def _safe_float(value, default=0.0):
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return float(default)
+
+
+def _safe_int(value, default=0):
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return int(default)
+
+
+def _utc_naive_from_ist(dt_value: datetime) -> datetime:
+    localized = dt_value.replace(tzinfo=IST_TZ) if dt_value.tzinfo is None else dt_value.astimezone(IST_TZ)
+    return localized.astimezone(UTC_TZ).replace(tzinfo=None)
+
+
+def _ist_from_utc_naive(dt_value: datetime | None):
+    if not dt_value:
+        return None
+    aware_utc = dt_value.replace(tzinfo=UTC_TZ) if dt_value.tzinfo is None else dt_value.astimezone(UTC_TZ)
+    return aware_utc.astimezone(IST_TZ)
+
+
+def _format_ist(dt_value: datetime | None, fmt: str = "%Y-%m-%d %H:%M"):
+    local = _ist_from_utc_naive(dt_value)
+    return local.strftime(fmt) if local else "-"
 
 
 def _emit_ops_notification(message: str, kind: str = "order", payload: dict | None = None):
@@ -262,6 +301,7 @@ def _serialize_order(order: CafeOrder):
                 "name": item.menu_item.name if item.menu_item else "-",
                 "qty": item.quantity,
                 "size_label": item.size_label,
+                "is_parcel": bool(item.is_parcel),
                 "prep_station": item.menu_item.prep_station if item.menu_item else "kitchen",
                 "approval_status": item.approval_status or "pending",
             }
@@ -435,12 +475,19 @@ def _create_order(table_id: int, ordered_by_user_id: int, status: str, payment_t
 def _recalculate_order_totals(order: CafeOrder):
     line_total = 0.0
     packaging_charge = 0.0
-    for oi in order.order_items:
+    order_items = (
+        CafeOrderItem.query.filter_by(order_id=order.id)
+        .order_by(CafeOrderItem.id.asc())
+        .all()
+    )
+    for oi in order_items:
+        if (oi.approval_status or "pending") == "rejected":
+            continue
         line_total += float(oi.unit_price or 0) * int(oi.quantity or 0)
         if order.is_delivery:
             packaging_charge += 20.0 * int(oi.quantity or 0)
-    if not order.is_delivery:
-        packaging_charge = float(order.packaging_charge or 0)
+        elif oi.is_parcel:
+            packaging_charge += 20.0 * int(oi.quantity or 0)
     order.packaging_charge = round(packaging_charge, 2)
     order.total_amount = round(line_total + order.packaging_charge + float(order.delivery_charge or 0), 2)
 
@@ -468,6 +515,60 @@ def _apply_recipe_inventory_deduction(order: CafeOrder):
                 continue
             deduct_qty = float(ing.qty_per_menu or 0) * float(qty)
             inv_item.current_amount = round(max(0.0, float(inv_item.current_amount or 0) - deduct_qty), 3)
+
+
+def _receipt_link_for_order(order: CafeOrder) -> str:
+    base = (current_app.config.get("PUBLIC_BASE_URL") or request.host_url.rstrip("/")).rstrip("/")
+    return f"{base}/cafe/receipt/{order.id}"
+
+
+def _send_receipt_sms(country_code: str, mobile: str, message: str):
+    cfg = load_deployment_config(current_app.instance_path)
+    enabled = str(cfg.get("SMS_ENABLED", "0")).strip() in ["1", "true", "True"]
+    provider = (cfg.get("SMS_PROVIDER") or "twilio").strip().lower()
+    if not enabled:
+        return False, "SMS gateway is disabled."
+    if provider != "twilio":
+        return False, "Unsupported SMS provider configured."
+    sid = (cfg.get("TWILIO_ACCOUNT_SID") or "").strip()
+    token = (cfg.get("TWILIO_AUTH_TOKEN") or "").strip()
+    from_number = (cfg.get("SMS_FROM") or cfg.get("TWILIO_FROM_NUMBER") or "").strip()
+    if not sid or not token or not from_number:
+        return False, "SMS provider credentials are incomplete."
+    to_number = f"{country_code}{mobile}"
+    payload = urlencode({"To": to_number, "From": from_number, "Body": message}).encode("utf-8")
+    auth_raw = f"{sid}:{token}".encode("utf-8")
+    auth_b64 = base64.b64encode(auth_raw).decode("utf-8")
+    req = Request(
+        f"https://api.twilio.com/2010-04-01/Accounts/{sid}/Messages.json",
+        data=payload,
+        method="POST",
+        headers={
+            "Authorization": f"Basic {auth_b64}",
+            "Content-Type": "application/x-www-form-urlencoded",
+        },
+    )
+    ca_bundle = (cfg.get("SMS_CA_BUNDLE") or "").strip()
+    allow_insecure_ssl = str(cfg.get("SMS_ALLOW_INSECURE_SSL", "0")).strip() in ["1", "true", "True"]
+    context = None
+    try:
+        if allow_insecure_ssl:
+            context = ssl._create_unverified_context()
+        elif ca_bundle and os.path.exists(ca_bundle):
+            context = ssl.create_default_context(cafile=ca_bundle)
+        else:
+            import certifi  # type: ignore
+
+            context = ssl.create_default_context(cafile=certifi.where())
+    except Exception:
+        context = ssl.create_default_context()
+    try:
+        with urlopen(req, timeout=12, context=context) as resp:
+            if 200 <= resp.status < 300:
+                return True, "SMS sent."
+            return False, f"SMS gateway returned status {resp.status}."
+    except Exception as exc:
+        return False, f"SMS sending failed: {exc}"
 
 
 def create_cafe_order(
@@ -511,8 +612,6 @@ def create_cafe_order(
     db.session.add(order)
     db.session.flush()
 
-    total = 0.0
-    packaging_charge = 0.0
     for row in line_items:
         if len(row) == 5:
             menu_item, qty, is_parcel, size_label, unit_price = row
@@ -526,9 +625,6 @@ def create_cafe_order(
             size_label = None
             unit_price = None
         price_to_use = float(unit_price) if unit_price is not None else float(menu_item.price)
-        total += price_to_use * qty
-        if is_parcel:
-            packaging_charge += 20.0 * qty
         db.session.add(
             CafeOrderItem(
                 order_id=order.id,
@@ -536,6 +632,7 @@ def create_cafe_order(
                 quantity=qty,
                 unit_price=price_to_use,
                 size_label=size_label,
+                is_parcel=bool(is_parcel),
                 approval_status="pending" if status == "pending_approval" else "approved",
             )
         )
@@ -549,10 +646,9 @@ def create_cafe_order(
         delivery_distance_km = round(direct_km * 1.3, 2)
         delivery_charge = round(delivery_distance_km * 5.0, 2)
 
-    order.packaging_charge = round(packaging_charge, 2)
     order.delivery_distance_km = delivery_distance_km
     order.delivery_charge = delivery_charge
-    order.total_amount = round(total + order.packaging_charge + order.delivery_charge, 2)
+    _recalculate_order_totals(order)
     _apply_recipe_inventory_deduction(order)
     db.session.commit()
     payload = _serialize_order(order)
@@ -564,6 +660,16 @@ def create_cafe_order(
 @bp.route("/")
 @login_required
 def home():
+    cfg = load_deployment_config(current_app.instance_path)
+    sms_enabled = str(cfg.get("SMS_ENABLED", "0")).strip() in ["1", "true", "True"]
+    sms_provider = (cfg.get("SMS_PROVIDER") or "twilio").strip().lower() or "twilio"
+    sms_from = (cfg.get("SMS_FROM") or cfg.get("TWILIO_FROM_NUMBER") or "").strip()
+    twilio_sid = (cfg.get("TWILIO_ACCOUNT_SID") or "").strip()
+    twilio_auth_token = (cfg.get("TWILIO_AUTH_TOKEN") or "").strip()
+    sid_hint = f"{twilio_sid[:4]}...{twilio_sid[-4:]}" if len(twilio_sid) >= 10 else twilio_sid
+    token_hint = f"{twilio_auth_token[:3]}...{twilio_auth_token[-3:]}" if len(twilio_auth_token) >= 8 else ("Set" if twilio_auth_token else "")
+    sms_ca_bundle = (cfg.get("SMS_CA_BUNDLE") or "").strip()
+    sms_allow_insecure_ssl = str(cfg.get("SMS_ALLOW_INSECURE_SSL", "0")).strip() in ["1", "true", "True"]
     return render_template(
         "cafe/home.html",
         tables=CafeTable.query.count(),
@@ -576,7 +682,77 @@ def home():
             TableBooking.booking_date >= date.today(),
             TableBooking.status == "booked",
         ).count(),
+        public_notice_text=(cfg.get("PUBLIC_NOTICE_TEXT", "") or "").strip(),
+        public_notice_enabled=(cfg.get("PUBLIC_NOTICE_ENABLED", "0") in [1, "1", True, "true", "True"]),
+        sms_enabled=sms_enabled,
+        sms_provider=sms_provider,
+        sms_from=sms_from,
+        twilio_sid_hint=sid_hint,
+        twilio_token_hint=token_hint,
+        sms_ca_bundle=sms_ca_bundle,
+        sms_allow_insecure_ssl=sms_allow_insecure_ssl,
     )
+
+
+@bp.route("/public-notice", methods=["POST"])
+@roles_required("admin", "manager")
+def update_public_notice():
+    text = (request.form.get("notice_text") or "").strip()
+    enabled = True if request.form.get("notice_enabled") else False
+    save_deployment_config(
+        current_app.instance_path,
+        {
+            "PUBLIC_NOTICE_TEXT": text,
+            "PUBLIC_NOTICE_ENABLED": "1" if (enabled and text) else "0",
+        },
+    )
+    flash("Public notification updated.", "success")
+    return redirect(url_for("cafe.home"))
+
+
+@bp.route("/sms-settings", methods=["POST"])
+@roles_required("admin", "manager")
+def update_sms_settings():
+    cfg = load_deployment_config(current_app.instance_path)
+    sms_enabled = True if request.form.get("sms_enabled") else False
+    provider = (request.form.get("sms_provider") or "twilio").strip().lower()
+    if provider not in ["twilio"]:
+        provider = "twilio"
+    sid = (request.form.get("twilio_account_sid") or "").strip()
+    token = (request.form.get("twilio_auth_token") or "").strip()
+    from_number = (request.form.get("sms_from") or "").strip()
+    ca_bundle = (request.form.get("sms_ca_bundle") or "").strip()
+    allow_insecure_ssl = True if request.form.get("sms_allow_insecure_ssl") else False
+
+    updates = {
+        "SMS_ENABLED": "1" if sms_enabled else "0",
+        "SMS_PROVIDER": provider,
+        "TWILIO_ACCOUNT_SID": sid or (cfg.get("TWILIO_ACCOUNT_SID") or ""),
+        "TWILIO_AUTH_TOKEN": token or (cfg.get("TWILIO_AUTH_TOKEN") or ""),
+        "SMS_FROM": from_number or (cfg.get("SMS_FROM") or cfg.get("TWILIO_FROM_NUMBER") or ""),
+        "SMS_CA_BUNDLE": ca_bundle or (cfg.get("SMS_CA_BUNDLE") or ""),
+        "SMS_ALLOW_INSECURE_SSL": "1" if allow_insecure_ssl else "0",
+    }
+    save_deployment_config(current_app.instance_path, updates)
+    flash("SMS gateway settings saved.", "success")
+    return redirect(url_for("cafe.home"))
+
+
+@bp.route("/sms-settings/test", methods=["POST"])
+@roles_required("admin", "manager")
+def test_sms_settings():
+    cc = (request.form.get("test_country_code") or "+91").strip()
+    mobile = "".join(ch for ch in (request.form.get("test_mobile") or "") if ch.isdigit())
+    message = (request.form.get("test_message") or "").strip() or "Brownberries Cafe SMS test message."
+    if not mobile:
+        flash("Please enter a valid test mobile number.", "error")
+        return redirect(url_for("cafe.home"))
+    ok, msg = _send_receipt_sms(cc, mobile, message)
+    if ok:
+        flash("Test SMS sent successfully.", "success")
+    else:
+        flash(f"Test SMS failed: {msg}", "error")
+    return redirect(url_for("cafe.home"))
 
 
 @bp.route("/bookings", methods=["GET", "POST"])
@@ -1133,11 +1309,21 @@ def mark_order_paid(order_id):
     order.status = "paid"
     order.payment_type = payment_type
     order.payment_reference = payment_reference
+    sms_message = ""
+    if request.form.get("send_receipt_sms"):
+        cc = (request.form.get("country_code") or "+91").strip()
+        mobile = "".join(ch for ch in (request.form.get("mobile") or "") if ch.isdigit())
+        if mobile:
+            msg = f"Brownberries Cafe receipt for Order #{order.display_code or order.id}: {_receipt_link_for_order(order)}"
+            ok, sms_resp = _send_receipt_sms(cc, mobile, msg)
+            sms_message = " SMS sent." if ok else f" SMS not sent: {sms_resp}"
+        else:
+            sms_message = " SMS not sent: mobile missing."
     db.session.commit()
     payload = _serialize_order(order)
     socketio.emit("order_updated", payload, namespace="/kitchen")
     socketio.emit("order_updated", payload, namespace="/table")
-    flash(f"Order #{order.id} marked as paid.", "success")
+    flash(f"Order #{order.id} marked as paid.{sms_message}", "success")
     next_url = request.form.get("next", "").strip() or request.args.get("next", "").strip()
     if next_url:
         return redirect(next_url)
@@ -1176,9 +1362,7 @@ def approve_order(order_id):
 
     pending_left = [oi for oi in order.order_items if (oi.approval_status or "pending") == "pending"]
     approved_items = [oi for oi in order.order_items if (oi.approval_status or "pending") == "approved"]
-    non_rejected_items = [oi for oi in order.order_items if (oi.approval_status or "pending") != "rejected"]
-    line_total = round(sum(float(oi.unit_price or 0) * int(oi.quantity or 0) for oi in non_rejected_items), 2)
-    order.total_amount = round(line_total + float(order.packaging_charge or 0) + float(order.delivery_charge or 0), 2)
+    _recalculate_order_totals(order)
     if approved_items:
         order.status = "open"
     elif pending_left:
@@ -1233,7 +1417,20 @@ def clear_table_orders(table_id):
 @bp.route("/cashier")
 @roles_required("admin", "manager", "cashier")
 def cashier():
+    tab = (request.args.get("tab") or "running").strip().lower()
+    if tab not in ["running", "all_orders"]:
+        tab = "running"
     table_id = request.args.get("table_id", type=int)
+    sel_year = request.args.get("year", type=int) or date.today().year
+    sel_month = request.args.get("month", type=int) or date.today().month
+    sel_day = request.args.get("day", type=int) or date.today().day
+    try:
+        selected_date = date(sel_year, sel_month, sel_day)
+    except ValueError:
+        selected_date = date.today()
+        sel_year, sel_month, sel_day = selected_date.year, selected_date.month, selected_date.day
+    day_start = datetime.combine(selected_date, time.min)
+    day_end = day_start + timedelta(days=1)
     tables = CafeTable.query.filter_by(active=True).order_by(CafeTable.name).all()
     running_rows = (
         db.session.query(
@@ -1241,7 +1438,11 @@ def cashier():
             db.func.count(CafeOrder.id).label("order_count"),
             db.func.coalesce(db.func.sum(CafeOrder.total_amount), 0).label("pending_total"),
         )
-        .filter(CafeOrder.status.notin_(["paid", "cancelled"]))
+        .filter(
+            CafeOrder.status.notin_(["paid", "cancelled"]),
+            CafeOrder.created_at >= day_start,
+            CafeOrder.created_at < day_end,
+        )
         .group_by(CafeOrder.table_id)
         .all()
     )
@@ -1270,20 +1471,145 @@ def cashier():
             CafeOrder.query.filter(
                 CafeOrder.table_id == selected_table.id,
                 CafeOrder.status.notin_(["paid", "cancelled"]),
+                CafeOrder.created_at >= day_start,
+                CafeOrder.created_at < day_end,
             )
             .order_by(CafeOrder.created_at.asc())
             .all()
         )
         table_total = round(sum(o.total_amount for o in unpaid_orders), 2)
+    all_orders = (
+        CafeOrder.query.options(joinedload(CafeOrder.table), joinedload(CafeOrder.order_items).joinedload(CafeOrderItem.menu_item))
+        .filter(CafeOrder.created_at >= day_start, CafeOrder.created_at < day_end)
+        .order_by(CafeOrder.created_at.desc())
+        .all()
+    )
+    all_orders_payload = []
+    public_base = (current_app.config.get("PUBLIC_BASE_URL") or request.host_url.rstrip("/")).rstrip("/")
+    for o in all_orders:
+        line_subtotal = round(
+            sum(
+                float(x.unit_price or 0) * int(x.quantity or 0)
+                for x in o.order_items
+                if (x.approval_status or "pending") != "rejected"
+            ),
+            2,
+        )
+        all_orders_payload.append(
+            {
+                "id": o.id,
+                "code": o.display_code or str(o.id),
+                "table": o.table.name if o.table else "-",
+                "status": o.status,
+                "payment_type": o.payment_type or "-",
+                "payment_reference": o.payment_reference or "-",
+                "created_at": o.created_at.strftime("%Y-%m-%d %H:%M"),
+                "items": [
+                    {
+                        "name": (oi.menu_item.name if oi.menu_item else "Item"),
+                        "qty": int(oi.quantity or 0),
+                        "size_label": oi.size_label or "",
+                        "is_parcel": bool(oi.is_parcel),
+                        "unit_price": round(float(oi.unit_price or 0), 2),
+                    }
+                    for oi in o.order_items
+                    if (oi.approval_status or "pending") != "rejected"
+                ],
+                "subtotal": line_subtotal,
+                "packaging_charge": round(float(o.packaging_charge or 0), 2),
+                "service_charge": 0.0,
+                "tax_amount": 0.0,
+                "total_amount": round(float(o.total_amount or 0), 2),
+                "receipt_link": f"{public_base}/cafe/receipt/{o.id}",
+            }
+        )
+    years = list(range(max(2024, date.today().year - 2), date.today().year + 3))
     return render_template(
         "cafe/cashier.html",
+        tab=tab,
         tables=tables,
         running_map=running_map,
         selected_table=selected_table,
         unpaid_orders=unpaid_orders,
         table_total=table_total,
         total_sale_today=round(float(total_sale_today), 2),
+        all_orders=all_orders,
+        all_orders_payload=all_orders_payload,
+        selected_date=selected_date,
+        sel_year=sel_year,
+        sel_month=sel_month,
+        sel_day=sel_day,
+        years=years,
     )
+
+
+@bp.route("/receipt/<int:order_id>")
+def public_receipt(order_id):
+    order = CafeOrder.query.options(
+        joinedload(CafeOrder.table),
+        joinedload(CafeOrder.order_items).joinedload(CafeOrderItem.menu_item),
+    ).get_or_404(order_id)
+    subtotal = round(sum(float(oi.unit_price or 0) * int(oi.quantity or 0) for oi in order.order_items if (oi.approval_status or "pending") != "rejected"), 2)
+    packaging_charge = round(float(order.packaging_charge or 0), 2)
+    service_charge = 0.0
+    tax_amount = 0.0
+    return render_template(
+        "cafe/receipt_public.html",
+        order=order,
+        subtotal=subtotal,
+        packaging_charge=packaging_charge,
+        service_charge=service_charge,
+        tax_amount=tax_amount,
+    )
+
+
+@bp.route("/orders/<int:order_id>/send-receipt-sms", methods=["POST"])
+@roles_required("admin", "manager", "cashier")
+def send_order_receipt_sms(order_id):
+    order = CafeOrder.query.options(joinedload(CafeOrder.table)).get_or_404(order_id)
+    country_code = (request.form.get("country_code") or "+91").strip()
+    mobile = (request.form.get("mobile") or "").strip()
+    if not mobile or not any(ch.isdigit() for ch in mobile):
+        return jsonify({"ok": False, "message": "Valid mobile number is required."}), 400
+    mobile_digits = "".join(ch for ch in mobile if ch.isdigit())
+    message = f"Brownberries Cafe receipt for Order #{order.display_code or order.id}: {_receipt_link_for_order(order)}"
+    ok, msg = _send_receipt_sms(country_code, mobile_digits, message)
+    if ok:
+        return jsonify({"ok": True, "message": "Receipt SMS sent."})
+    return jsonify({"ok": False, "message": msg}), 400
+
+
+@bp.route("/orders/<int:order_id>/edit-items", methods=["POST"])
+@roles_required("admin", "manager", "cashier")
+def edit_order_items(order_id):
+    order = CafeOrder.query.get_or_404(order_id)
+    if order.status in ["paid", "cancelled"]:
+        flash("Paid/cancelled orders cannot be edited.", "error")
+        return redirect(request.form.get("next") or url_for("cafe.cashier", table_id=order.table_id, tab="running"))
+    rows = list(order.order_items)
+    kept = 0
+    for oi in rows:
+        keep_values = request.form.getlist(f"keep_{oi.id}")
+        include_flag = "1" in keep_values
+        qty_raw = (request.form.get(f"qty_{oi.id}") or "").strip()
+        qty = int(qty_raw) if qty_raw.isdigit() else 0
+        if not include_flag or qty <= 0:
+            db.session.delete(oi)
+            continue
+        oi.quantity = qty
+        oi.is_parcel = True if request.form.get(f"is_parcel_{oi.id}") else False
+        kept += 1
+    db.session.flush()
+    order = CafeOrder.query.options(joinedload(CafeOrder.order_items)).get(order_id)
+    if kept == 0:
+        order.status = "cancelled"
+    _recalculate_order_totals(order)
+    db.session.commit()
+    payload = _serialize_order(order)
+    socketio.emit("order_updated", payload, namespace="/kitchen")
+    socketio.emit("order_updated", payload, namespace="/table")
+    flash("Order updated.", "success")
+    return redirect(request.form.get("next") or url_for("cafe.cashier", table_id=order.table_id, tab="running"))
 
 
 @bp.route("/table-order", methods=["POST"])
@@ -1343,14 +1669,9 @@ def edit_pending_table_order(order_id):
         return redirect(url_for("main.table_qr_page", slug=slug))
     for oi in list(order.order_items):
         db.session.delete(oi)
-    total = 0.0
-    packaging_charge = 0.0
     for row in line_items:
         menu_item, qty, is_parcel, size_label, unit_price = row if len(row) == 5 else (*row, None, None)  # type: ignore
         price_to_use = float(unit_price) if unit_price is not None else float(menu_item.price)
-        total += price_to_use * qty
-        if is_parcel:
-            packaging_charge += 20.0 * qty
         db.session.add(
             CafeOrderItem(
                 order_id=order.id,
@@ -1358,11 +1679,12 @@ def edit_pending_table_order(order_id):
                 quantity=qty,
                 unit_price=price_to_use,
                 size_label=size_label,
+                is_parcel=bool(is_parcel),
                 approval_status="pending",
             )
         )
-    order.packaging_charge = round(packaging_charge, 2)
-    order.total_amount = round(total + order.packaging_charge + (order.delivery_charge or 0), 2)
+    db.session.flush()
+    _recalculate_order_totals(order)
     db.session.commit()
     payload = _serialize_order(order)
     socketio.emit("order_updated", payload, namespace="/kitchen")
@@ -1418,6 +1740,45 @@ def update_order_status(order_id):
     return redirect(url_for("cafe.kitchen_display"))
 
 
+def _inventory_item_status(item: InventoryItem):
+    current_amount = float(item.current_amount or 0)
+    reorder_level = float(item.reorder_level or 0)
+    required_amount = float(item.required_amount or 0)
+    if current_amount <= reorder_level:
+        return "low"
+    if required_amount > 0 and current_amount >= required_amount * 1.35:
+        return "overstock"
+    return "healthy"
+
+
+def _inventory_filtered_items(items, search_text: str, area_filter: str, category_filter: str, status_filter: str):
+    filtered = []
+    q = search_text.strip().lower()
+    for item in items:
+        status_key = _inventory_item_status(item)
+        if q:
+            hay = " ".join(
+                [
+                    item.name or "",
+                    item.item_code or "",
+                    item.category_name or "",
+                    item.subcategory_name or "",
+                    item.storage_location or "",
+                    item.selling_relation or "",
+                ]
+            ).lower()
+            if q not in hay:
+                continue
+        if area_filter != "all" and (item.area or "").lower() != area_filter:
+            continue
+        if category_filter != "all" and (item.category_name or "").strip().lower() != category_filter:
+            continue
+        if status_filter != "all" and status_key != status_filter:
+            continue
+        filtered.append(item)
+    return filtered
+
+
 @bp.route("/inventory", methods=["GET", "POST"])
 @roles_required("owner", "admin", "manager", "accountant", "barista", "inventory_manager")
 def inventory():
@@ -1439,13 +1800,13 @@ def inventory():
                 category_name=(request.form.get("category_name") or "").strip() or None,
                 subcategory_name=(request.form.get("subcategory_name") or "").strip() or None,
                 unit=(request.form.get("unit") or "pcs").strip(),
-                current_amount=float(request.form.get("current_amount") or 0),
-                required_amount=float(request.form.get("required_amount") or 0),
-                reorder_level=float(request.form.get("reorder_level") or 0),
-                average_daily_usage=float(request.form.get("average_daily_usage") or 0),
-                purchase_price=float(request.form.get("purchase_price") or 0),
+                current_amount=_safe_float(request.form.get("current_amount"), 0),
+                required_amount=_safe_float(request.form.get("required_amount"), 0),
+                reorder_level=_safe_float(request.form.get("reorder_level"), 0),
+                average_daily_usage=_safe_float(request.form.get("average_daily_usage"), 0),
+                purchase_price=_safe_float(request.form.get("purchase_price"), 0),
                 selling_relation=(request.form.get("selling_relation") or "").strip() or None,
-                shelf_life_days=int(request.form.get("shelf_life_days")) if request.form.get("shelf_life_days") else None,
+                shelf_life_days=_safe_int(request.form.get("shelf_life_days"), 0) if request.form.get("shelf_life_days") else None,
                 expiry_tracking=True if request.form.get("expiry_tracking") else False,
                 storage_location=(request.form.get("storage_location") or "").strip() or None,
                 vendor_id=int(request.form.get("vendor_id")) if request.form.get("vendor_id") else None,
@@ -1459,6 +1820,43 @@ def inventory():
             flash("Inventory item added.", "success")
             return redirect(url_for("cafe.inventory", section="stock_levels"))
 
+        if action == "update_item":
+            item = InventoryItem.query.get_or_404(_safe_int(request.form.get("item_id"), 0))
+            item.item_code = (request.form.get("item_code") or "").strip() or None
+            item.name = (request.form.get("name") or "").strip()
+            item.category_name = (request.form.get("category_name") or "").strip() or None
+            item.subcategory_name = (request.form.get("subcategory_name") or "").strip() or None
+            item.area = (request.form.get("area") or item.area or "kitchen").strip()
+            item.unit = (request.form.get("unit") or item.unit or "pcs").strip()
+            item.current_amount = _safe_float(request.form.get("current_amount"), item.current_amount or 0)
+            item.reorder_level = _safe_float(request.form.get("reorder_level"), item.reorder_level or 0)
+            item.required_amount = _safe_float(request.form.get("required_amount"), item.required_amount or 0)
+            item.average_daily_usage = _safe_float(request.form.get("average_daily_usage"), item.average_daily_usage or 0)
+            item.purchase_price = _safe_float(request.form.get("purchase_price"), item.purchase_price or 0)
+            item.shelf_life_days = _safe_int(request.form.get("shelf_life_days"), 0) if request.form.get("shelf_life_days") else None
+            item.expiry_tracking = True if request.form.get("expiry_tracking") else False
+            item.vendor_id = _safe_int(request.form.get("vendor_id"), 0) or None
+            item.storage_location = (request.form.get("storage_location") or "").strip() or None
+            item.selling_relation = (request.form.get("selling_relation") or "").strip() or None
+            item.note = (request.form.get("note") or "").strip() or None
+            if not item.name:
+                flash("Item name is required.", "error")
+                return redirect(url_for("cafe.inventory", section="stock_levels", edit_item_id=item.id))
+            db.session.commit()
+            flash("Inventory item updated.", "success")
+            return redirect(url_for("cafe.inventory", section="stock_levels", edit_item_id=item.id))
+
+        if action == "adjust_stock":
+            item = InventoryItem.query.get_or_404(_safe_int(request.form.get("item_id"), 0))
+            adjustment = _safe_float(request.form.get("adjustment"), 0)
+            if adjustment == 0:
+                flash("Enter a stock adjustment value.", "error")
+                return redirect(url_for("cafe.inventory", section="stock_levels"))
+            item.current_amount = round(max(0.0, float(item.current_amount or 0) + adjustment), 3)
+            db.session.commit()
+            flash("Stock adjusted.", "success")
+            return redirect(url_for("cafe.inventory", section="stock_levels", edit_item_id=item.id))
+
         if action == "daily_closing_save":
             closing_date = date.fromisoformat(request.form.get("closing_date") or date.today().isoformat())
             item_ids = [int(v) for v in request.form.getlist("item_id") if str(v).isdigit()]
@@ -1469,7 +1867,7 @@ def inventory():
                 closing_raw = (request.form.get(f"closing_stock_{item_id}") or "").strip()
                 if closing_raw == "":
                     continue
-                closing_stock = float(closing_raw)
+                closing_stock = _safe_float(closing_raw, 0)
                 prev_row = (
                     InventoryDailyClosing.query.filter(
                         InventoryDailyClosing.item_id == item_id,
@@ -1489,6 +1887,7 @@ def inventory():
                 row.closing_stock = closing_stock
                 row.consumed_amount = consumed
                 row.variance_amount = variance
+                row.note = (request.form.get(f"closing_note_{item_id}") or "").strip() or None
                 item.current_amount = closing_stock
             db.session.commit()
             flash("Daily closing saved.", "success")
@@ -1503,7 +1902,7 @@ def inventory():
                 email=(request.form.get("email") or "").strip() or None,
                 gst_number=(request.form.get("gst_number") or "").strip() or None,
                 payment_terms=(request.form.get("payment_terms") or "").strip() or None,
-                outstanding_balance=float(request.form.get("outstanding_balance") or 0),
+                outstanding_balance=_safe_float(request.form.get("outstanding_balance"), 0),
                 average_rate_note=(request.form.get("average_rate_note") or "").strip() or None,
                 note=(request.form.get("note") or "").strip() or None,
                 active=True,
@@ -1516,12 +1915,28 @@ def inventory():
             flash("Vendor added.", "success")
             return redirect(url_for("cafe.inventory", section="vendors"))
 
+        if action == "update_vendor":
+            vendor = InventoryVendor.query.get_or_404(_safe_int(request.form.get("vendor_id"), 0))
+            vendor.name = (request.form.get("name") or "").strip() or vendor.name
+            vendor.vendor_category = (request.form.get("vendor_category") or "").strip() or None
+            vendor.contact_person = (request.form.get("contact_person") or "").strip() or None
+            vendor.phone = (request.form.get("phone") or "").strip() or None
+            vendor.email = (request.form.get("email") or "").strip() or None
+            vendor.gst_number = (request.form.get("gst_number") or "").strip() or None
+            vendor.payment_terms = (request.form.get("payment_terms") or "").strip() or None
+            vendor.outstanding_balance = _safe_float(request.form.get("outstanding_balance"), vendor.outstanding_balance or 0)
+            vendor.average_rate_note = (request.form.get("average_rate_note") or "").strip() or None
+            vendor.note = (request.form.get("note") or "").strip() or None
+            db.session.commit()
+            flash("Vendor updated.", "success")
+            return redirect(url_for("cafe.inventory", section="vendors", edit_vendor_id=vendor.id))
+
         if action == "add_purchase":
             purchase = InventoryPurchase(
                 purchase_date=date.fromisoformat(request.form.get("purchase_date") or date.today().isoformat()),
                 vendor_id=int(request.form.get("vendor_id")) if request.form.get("vendor_id") else None,
                 invoice_number=(request.form.get("invoice_number") or "").strip() or None,
-                tax_amount=float(request.form.get("tax_amount") or 0),
+                tax_amount=_safe_float(request.form.get("tax_amount"), 0),
                 payment_status=(request.form.get("payment_status") or "pending").strip(),
                 note=(request.form.get("note") or "").strip() or None,
             )
@@ -1530,8 +1945,8 @@ def inventory():
             subtotal = 0.0
             item_ids = [int(v) for v in request.form.getlist("purchase_item_id") if str(v).isdigit()]
             for item_id in item_ids:
-                qty = float(request.form.get(f"purchase_qty_{item_id}") or 0)
-                unit_price = float(request.form.get(f"purchase_price_{item_id}") or 0)
+                qty = _safe_float(request.form.get(f"purchase_qty_{item_id}"), 0)
+                unit_price = _safe_float(request.form.get(f"purchase_price_{item_id}"), 0)
                 if qty <= 0:
                     continue
                 line_total = round(qty * unit_price, 2)
@@ -1566,13 +1981,13 @@ def inventory():
                 recipe = InventoryRecipe(menu_item_id=menu_item_id, yield_qty=1, active=True)
                 db.session.add(recipe)
                 db.session.flush()
-            recipe.yield_qty = float(request.form.get("yield_qty") or 1)
+            recipe.yield_qty = _safe_float(request.form.get("yield_qty"), 1)
             recipe.yield_unit = (request.form.get("yield_unit") or "").strip() or None
             for old in list(recipe.ingredients):
                 db.session.delete(old)
             ingredient_ids = [int(v) for v in request.form.getlist("recipe_item_id") if str(v).isdigit()]
             for inv_id in ingredient_ids:
-                qty = float(request.form.get(f"recipe_qty_{inv_id}") or 0)
+                qty = _safe_float(request.form.get(f"recipe_qty_{inv_id}"), 0)
                 unit = (request.form.get(f"recipe_unit_{inv_id}") or "pcs").strip()
                 if qty <= 0:
                     continue
@@ -1590,7 +2005,7 @@ def inventory():
 
         if action == "add_wastage":
             item_id = int(request.form.get("item_id") or 0)
-            qty = float(request.form.get("quantity") or 0)
+            qty = _safe_float(request.form.get("quantity"), 0)
             if item_id <= 0 or qty <= 0:
                 flash("Select item and quantity.", "error")
                 return redirect(url_for("cafe.inventory", section="wastage"))
@@ -1628,14 +2043,39 @@ def inventory():
             flash("Category added.", "success")
             return redirect(url_for("cafe.inventory", section="categories"))
 
+        if action == "update_category":
+            category = InventoryCategory.query.get_or_404(_safe_int(request.form.get("category_id"), 0))
+            category.name = (request.form.get("name") or "").strip() or category.name
+            category.icon = (request.form.get("icon") or "").strip() or None
+            category.color = (request.form.get("color") or "").strip() or None
+            category.active = True if request.form.get("active") else False
+            db.session.commit()
+            flash("Category updated.", "success")
+            return redirect(url_for("cafe.inventory", section="categories", edit_category_id=category.id))
+
     closing_date = date.fromisoformat(request.args.get("closing_date") or date.today().isoformat())
+    inventory_search = (request.args.get("q") or "").strip()
+    inventory_area = (request.args.get("area") or "all").strip().lower()
+    if inventory_area not in ["all", "kitchen", "barista", "cafe"]:
+        inventory_area = "all"
+    inventory_category_filter = (request.args.get("category") or "all").strip().lower()
+    inventory_status_filter = (request.args.get("status") or "all").strip().lower()
+    if inventory_status_filter not in ["all", "healthy", "low", "overstock"]:
+        inventory_status_filter = "all"
     categories = InventoryCategory.query.filter_by(active=True).order_by(InventoryCategory.name.asc()).all()
     vendors = InventoryVendor.query.filter_by(active=True).order_by(InventoryVendor.name.asc()).all()
     items = InventoryItem.query.order_by(InventoryItem.category_name.asc(), InventoryItem.name.asc()).all()
+    filtered_items = _inventory_filtered_items(items, inventory_search, inventory_area, inventory_category_filter, inventory_status_filter)
     purchases = InventoryPurchase.query.order_by(InventoryPurchase.purchase_date.desc(), InventoryPurchase.id.desc()).limit(80).all()
     wastage_rows = InventoryWastage.query.order_by(InventoryWastage.wastage_date.desc(), InventoryWastage.id.desc()).limit(120).all()
     recipes = InventoryRecipe.query.order_by(InventoryRecipe.id.desc()).all()
     menu_items = MenuItem.query.filter_by(available=True).order_by(MenuItem.name.asc()).all()
+    edit_item_id = request.args.get("edit_item_id", type=int)
+    selected_item = InventoryItem.query.get(edit_item_id) if edit_item_id else (filtered_items[0] if filtered_items else None)
+    edit_vendor_id = request.args.get("edit_vendor_id", type=int)
+    selected_vendor = InventoryVendor.query.get(edit_vendor_id) if edit_vendor_id else (vendors[0] if vendors else None)
+    edit_category_id = request.args.get("edit_category_id", type=int)
+    selected_category = InventoryCategory.query.get(edit_category_id) if edit_category_id else (categories[0] if categories else None)
 
     category_stats = []
     for cat in categories:
@@ -1644,6 +2084,8 @@ def inventory():
         category_stats.append({"category": cat, "item_count": len(cat_items), "stock_value": stock_value})
 
     low_stock_items = [x for x in items if float(x.current_amount or 0) <= float(x.reorder_level or 0)]
+    overstock_items = [x for x in items if _inventory_item_status(x) == "overstock"]
+    items_without_vendor = [x for x in items if not x.vendor_id]
     total_stock_value = round(sum(float(x.current_amount or 0) * float(x.purchase_price or 0) for x in items), 2)
     today_purchase_spend = round(
         sum(float(p.total_amount or 0) for p in purchases if p.purchase_date == date.today()),
@@ -1679,10 +2121,40 @@ def inventory():
             "existing": existing,
             "consumed": float(existing.consumed_amount) if existing else 0.0,
         })
+    daily_rows_grouped = {}
+    for row in daily_rows:
+        key = row["item"].category_name or "Uncategorized"
+        daily_rows_grouped.setdefault(key, []).append(row)
+
+    vendor_purchase_map = {}
+    for purchase in purchases:
+        if purchase.vendor_id:
+            data = vendor_purchase_map.setdefault(purchase.vendor_id, {"count": 0, "spend": 0.0})
+            data["count"] += 1
+            data["spend"] = round(data["spend"] + float(purchase.total_amount or 0), 2)
+
+    top_stock_value_items = sorted(
+        items,
+        key=lambda x: float(x.current_amount or 0) * float(x.purchase_price or 0),
+        reverse=True,
+    )[:8]
+    top_consumption_rows = sorted(
+        daily_rows,
+        key=lambda x: float(x["existing"].consumed_amount if x["existing"] else 0),
+        reverse=True,
+    )[:8]
+    recent_purchase_lines = (
+        InventoryPurchaseLine.query.options(joinedload(InventoryPurchaseLine.item), joinedload(InventoryPurchaseLine.purchase))
+        .order_by(InventoryPurchaseLine.created_at.desc())
+        .limit(12)
+        .all()
+    )
 
     inventory_analytics = {
         "total_items": len(items),
         "low_stock_count": len(low_stock_items),
+        "overstock_count": len(overstock_items),
+        "unassigned_vendor_count": len(items_without_vendor),
         "total_stock_value": total_stock_value,
         "today_purchase_spend": today_purchase_spend,
         "today_wastage_value": today_wastage_value,
@@ -1697,49 +2169,110 @@ def inventory():
         vendors=vendors,
         items=items,
         purchases=purchases,
+        recent_purchase_lines=recent_purchase_lines,
         recipes=recipes,
         menu_items=menu_items,
         wastage_rows=wastage_rows,
         low_stock_items=low_stock_items,
+        overstock_items=overstock_items,
+        items_without_vendor=items_without_vendor,
         daily_rows=daily_rows,
+        daily_rows_grouped=daily_rows_grouped,
         closing_date=closing_date,
         inventory_analytics=inventory_analytics,
+        filtered_items=filtered_items,
+        selected_item=selected_item,
+        selected_vendor=selected_vendor,
+        selected_category=selected_category,
+        inventory_search=inventory_search,
+        inventory_area=inventory_area,
+        inventory_category_filter=inventory_category_filter,
+        inventory_status_filter=inventory_status_filter,
+        top_stock_value_items=top_stock_value_items,
+        top_consumption_rows=top_consumption_rows,
+        vendor_purchase_map=vendor_purchase_map,
     )
 
 
 @bp.route("/stats")
 @roles_required("admin", "manager")
 def stats():
-    from_str = request.args.get("from")
-    to_str = request.args.get("to")
-    query = CafeOrder.query
-    if from_str:
-        query = query.filter(CafeOrder.created_at >= datetime.fromisoformat(from_str))
-    if to_str:
-        query = query.filter(CafeOrder.created_at <= datetime.fromisoformat(to_str))
-    orders = query.order_by(CafeOrder.created_at.desc()).all()
-    total_sales = round(sum(o.total_amount for o in orders), 2)
-    return render_template("cafe/stats.html", orders=orders, total_sales=total_sales)
+    payload = _build_stats_payload(_parse_stats_filters(request.args))
+    category_options = _stats_category_options()
+    return render_template(
+        "cafe/stats.html",
+        stats_payload=payload,
+        filters=payload["filters"],
+        category_options=category_options,
+    )
 
 
 @bp.route("/stats/export")
 @roles_required("admin", "manager")
 def export_stats():
+    payload = _build_stats_payload(_parse_stats_filters(request.args), use_cache=False)
+    filters = payload["filters"]
     wb = Workbook()
     ws = wb.active
-    ws.title = "Cafe Sales"
-    ws.append(["Order ID", "Table", "Status", "Payment Type", "Total", "Created At"])
-    for order in CafeOrder.query.order_by(CafeOrder.created_at.desc()).all():
+    ws.title = "Orders"
+    ws.append(
+        [
+            "Order",
+            "Table",
+            "Order Type",
+            "Sales Source Mix",
+            "Status",
+            "Payment Type",
+            "Subtotal",
+            "Packaging",
+            "Delivery",
+            "Total",
+            "Created At",
+        ]
+    )
+    for order in payload["orders"]:
         ws.append(
             [
-                order.id,
-                order.table.name if order.table else "",
-                order.status,
-                order.payment_type or "",
-                order.total_amount,
-                order.created_at.strftime("%Y-%m-%d %H:%M"),
+                order["code"],
+                order["table"],
+                order["order_type_label"],
+                order["sales_source_mix"],
+                order["status"],
+                order["payment_type"],
+                order["line_subtotal"],
+                order["packaging_charge"],
+                order["delivery_charge"],
+                order["total_amount"],
+                order["created_at"],
             ]
         )
+    ws2 = wb.create_sheet(title="Top Items")
+    ws2.append(["Rank", "Item", "Category", "Qty", "Revenue", "Avg Price", "Contribution %"])
+    for row in payload["item_analytics"]["top_items"]:
+        ws2.append(
+            [
+                row["rank"],
+                row["name"],
+                row["category"],
+                row["qty"],
+                row["revenue"],
+                row["avg_price"],
+                row["contribution_pct"],
+            ]
+        )
+    ws3 = wb.create_sheet(title="Summary")
+    ws3.append(["Period", payload["period"]["label"]])
+    ws3.append(["Preset", filters["preset"]])
+    ws3.append(["Sales Source", filters["salesSource"]])
+    ws3.append(["Order Type", filters["orderType"]])
+    ws3.append(["Category", filters["category"]])
+    ws3.append([])
+    kpi = payload["summary"]
+    ws3.append(["Total Sales", kpi["revenue"]["total_sales"]])
+    ws3.append(["Total Orders", kpi["revenue"]["total_orders"]])
+    ws3.append(["Average Order Value", kpi["revenue"]["average_order_value"]])
+    ws3.append(["Kitchen Sales", kpi["operations"]["kitchen_sales"]])
+    ws3.append(["Barista Sales", kpi["operations"]["barista_sales"]])
     from io import BytesIO
 
     output = BytesIO()
@@ -1748,10 +2281,876 @@ def export_stats():
     return Response(
         output.getvalue(),
         headers={
-            "Content-Disposition": 'attachment; filename="cafe_stats.xlsx"',
+            "Content-Disposition": f'attachment; filename="cafe_stats_{filters["preset"]}.xlsx"',
             "Content-Type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         },
     )
+
+
+_STATS_CACHE = {}
+_STATS_CACHE_TTL_SECONDS = 120
+_STAT_FILTER_PRESETS = {
+    "today": "Today",
+    "yesterday": "Yesterday",
+    "last_7_days": "Last 7 Days",
+    "last_30_days": "Last 30 Days",
+    "this_month": "This Month",
+    "last_month": "Last Month",
+    "this_quarter": "This Quarter",
+    "last_quarter": "Last Quarter",
+    "this_year": "This Year",
+    "custom": "Custom Date Range",
+}
+
+
+def _parse_date_only(value):
+    if not value:
+        return None
+    try:
+        return date.fromisoformat(value.strip())
+    except (TypeError, ValueError, AttributeError):
+        return None
+
+
+def _parse_datetime_flexible(value):
+    if not value:
+        return None
+    raw = value.strip()
+    for parser in (datetime.fromisoformat,):
+        try:
+            return parser(raw)
+        except ValueError:
+            continue
+    parsed_date = _parse_date_only(raw)
+    if parsed_date:
+        return datetime.combine(parsed_date, time.min)
+    return None
+
+
+def _quarter_start(d: date):
+    q = ((d.month - 1) // 3) * 3 + 1
+    return date(d.year, q, 1)
+
+
+def _month_start(d: date):
+    return date(d.year, d.month, 1)
+
+
+def _next_month_start(d: date):
+    if d.month == 12:
+        return date(d.year + 1, 1, 1)
+    return date(d.year, d.month + 1, 1)
+
+
+def _resolve_period_from_filters(filters):
+    today = datetime.now(IST_TZ).date()
+    preset = filters["preset"]
+    if preset == "yesterday":
+        start = datetime.combine(today - timedelta(days=1), time.min)
+        end = start + timedelta(days=1)
+        label = "Yesterday"
+        granularity = "hour"
+    elif preset == "last_7_days":
+        start = datetime.combine(today - timedelta(days=6), time.min)
+        end = datetime.combine(today + timedelta(days=1), time.min)
+        label = "Last 7 Days"
+        granularity = "day"
+    elif preset == "last_30_days":
+        start = datetime.combine(today - timedelta(days=29), time.min)
+        end = datetime.combine(today + timedelta(days=1), time.min)
+        label = "Last 30 Days"
+        granularity = "day"
+    elif preset == "this_month":
+        month_start = _month_start(today)
+        start = datetime.combine(month_start, time.min)
+        end = datetime.combine(today + timedelta(days=1), time.min)
+        label = today.strftime("%B %Y")
+        granularity = "day"
+    elif preset == "last_month":
+        this_month_start = _month_start(today)
+        prev_month_end = this_month_start - timedelta(days=1)
+        prev_month_start = _month_start(prev_month_end)
+        start = datetime.combine(prev_month_start, time.min)
+        end = datetime.combine(this_month_start, time.min)
+        label = prev_month_start.strftime("%B %Y")
+        granularity = "day"
+    elif preset == "this_quarter":
+        qstart = _quarter_start(today)
+        start = datetime.combine(qstart, time.min)
+        end = datetime.combine(today + timedelta(days=1), time.min)
+        quarter_no = ((today.month - 1) // 3) + 1
+        label = f"Q{quarter_no} {today.year}"
+        granularity = "day"
+    elif preset == "last_quarter":
+        this_q_start = _quarter_start(today)
+        prev_q_end = this_q_start - timedelta(days=1)
+        prev_q_start = _quarter_start(prev_q_end)
+        start = datetime.combine(prev_q_start, time.min)
+        end = datetime.combine(this_q_start, time.min)
+        quarter_no = ((prev_q_start.month - 1) // 3) + 1
+        label = f"Q{quarter_no} {prev_q_start.year}"
+        granularity = "day"
+    elif preset == "this_year":
+        year_start = date(today.year, 1, 1)
+        start = datetime.combine(year_start, time.min)
+        end = datetime.combine(today + timedelta(days=1), time.min)
+        label = str(today.year)
+        granularity = "month"
+    elif preset == "custom":
+        start_date = _parse_date_only(filters.get("startDate"))
+        end_date = _parse_date_only(filters.get("endDate"))
+        if not start_date:
+            start_date = today
+        if not end_date:
+            end_date = start_date
+        if end_date < start_date:
+            start_date, end_date = end_date, start_date
+        start = datetime.combine(start_date, time.min)
+        end = datetime.combine(end_date + timedelta(days=1), time.min)
+        label = f"{start_date.isoformat()} to {end_date.isoformat()}"
+        days = (end - start).days
+        granularity = "hour" if days <= 1 else ("day" if days <= 92 else "month")
+    else:
+        start = datetime.combine(today, time.min)
+        end = start + timedelta(days=1)
+        label = "Today"
+        granularity = "hour"
+    return start, end, label, granularity
+
+
+def _parse_stats_filters(args):
+    mode = (args.get("mode") or "").strip().lower()
+    day_str = (args.get("day") or "").strip()
+    from_str = (args.get("from") or "").strip()
+    to_str = (args.get("to") or "").strip()
+    preset = (args.get("preset") or "").strip().lower()
+    if not preset and mode in ["day", "week", "month", "range"]:
+        if mode == "day":
+            preset = "custom" if day_str else "today"
+            if day_str:
+                args = dict(args)
+                args["startDate"] = day_str
+                args["endDate"] = day_str
+        elif mode == "week":
+            preset = "last_7_days"
+        elif mode == "month":
+            preset = "this_month"
+        else:
+            preset = "custom"
+            if from_str:
+                parsed = _parse_datetime_flexible(from_str)
+                if parsed:
+                    args = dict(args)
+                    args["startDate"] = parsed.date().isoformat()
+            if to_str:
+                parsed = _parse_datetime_flexible(to_str)
+                if parsed:
+                    args = dict(args)
+                    args["endDate"] = parsed.date().isoformat()
+    if preset not in _STAT_FILTER_PRESETS:
+        preset = "today"
+    sales_source = (args.get("salesSource") or "all").strip().lower()
+    if sales_source not in ["all", "barista", "kitchen"]:
+        sales_source = "all"
+    order_type = (args.get("orderType") or "all").strip().lower()
+    if order_type not in ["all", "dine_in", "takeaway", "online_order"]:
+        order_type = "all"
+    category = (args.get("category") or "all").strip()
+    return {
+        "preset": preset,
+        "startDate": (args.get("startDate") or "").strip(),
+        "endDate": (args.get("endDate") or "").strip(),
+        "salesSource": sales_source,
+        "orderType": order_type,
+        "category": category or "all",
+    }
+
+
+def _stats_category_options():
+    defaults = ["Coffee", "Tea", "Shake", "Mocktail", "Pizza", "Pasta", "Noodles", "Snacks", "Other"]
+    from_db = [c.name for c in MenuCategory.query.order_by(MenuCategory.name.asc()).all() if c.name]
+    out = []
+    seen = set()
+    for name in (defaults + from_db):
+        key = name.strip().lower()
+        if key and key not in seen:
+            out.append(name.strip())
+            seen.add(key)
+    return out
+
+
+def _menu_item_category_names_for_stats(item: MenuItem, category_map: dict[int, str]):
+    names = _get_item_category_names(item, category_map)
+    return names or ["Other"]
+
+
+def _order_type_key(order: CafeOrder, approved_items):
+    if order.is_delivery:
+        return "online_order"
+    if approved_items and all(bool(x.is_parcel) for x in approved_items):
+        return "takeaway"
+    return "dine_in"
+
+
+def _order_type_label(key):
+    return {
+        "dine_in": "Dine In",
+        "takeaway": "Takeaway",
+        "online_order": "Online Order",
+    }.get(key, "Dine In")
+
+
+def _growth(curr, prev):
+    if prev == 0:
+        if curr == 0:
+            return 0.0
+        return 100.0
+    return round(((curr - prev) / prev) * 100.0, 2)
+
+
+def _bucket_key(dt: datetime, granularity: str):
+    if granularity == "hour":
+        return dt.replace(minute=0, second=0, microsecond=0)
+    if granularity == "month":
+        return dt.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    return dt.replace(hour=0, minute=0, second=0, microsecond=0)
+
+
+def _bucket_label(dt: datetime, granularity: str):
+    if granularity == "hour":
+        return dt.strftime("%H:00")
+    if granularity == "month":
+        return dt.strftime("%b %Y")
+    return dt.strftime("%d %b")
+
+
+def _build_stats_payload(filters, use_cache=True):
+    start_dt, end_dt, period_label, granularity = _resolve_period_from_filters(filters)
+    query_start_dt = _utc_naive_from_ist(start_dt)
+    query_end_dt = _utc_naive_from_ist(end_dt)
+    prev_start = start_dt - (end_dt - start_dt)
+    prev_end = start_dt
+    prev_query_start = _utc_naive_from_ist(prev_start)
+    prev_query_end = _utc_naive_from_ist(prev_end)
+    cache_key = (
+        start_dt.isoformat(),
+        end_dt.isoformat(),
+        filters["salesSource"],
+        filters["orderType"],
+        filters["category"].strip().lower(),
+    )
+    now_ts = datetime.utcnow().timestamp()
+    if use_cache:
+        existing = _STATS_CACHE.get(cache_key)
+        if existing and (now_ts - existing["ts"] < _STATS_CACHE_TTL_SECONDS):
+            return existing["payload"]
+
+    category_rows = MenuCategory.query.order_by(MenuCategory.name.asc()).all()
+    category_map = {c.id: c.name for c in category_rows}
+    selected_category = (filters["category"] or "all").strip().lower()
+    sales_source = filters["salesSource"]
+    order_type_filter = filters["orderType"]
+
+    orders = (
+        CafeOrder.query.options(
+            joinedload(CafeOrder.table),
+            joinedload(CafeOrder.order_items).joinedload(CafeOrderItem.menu_item),
+        )
+        .filter(
+            CafeOrder.created_at >= query_start_dt,
+            CafeOrder.created_at < query_end_dt,
+            CafeOrder.status != "cancelled",
+        )
+        .order_by(CafeOrder.created_at.asc())
+        .all()
+    )
+    prev_orders = (
+        CafeOrder.query.options(joinedload(CafeOrder.order_items).joinedload(CafeOrderItem.menu_item))
+        .filter(
+            CafeOrder.created_at >= prev_query_start,
+            CafeOrder.created_at < prev_query_end,
+            CafeOrder.status != "cancelled",
+        )
+        .all()
+    )
+
+    def _filtered_rows(order_rows):
+        filtered = []
+        for order in order_rows:
+            approved_items = [oi for oi in order.order_items if (oi.approval_status or "pending") != "rejected" and oi.menu_item]
+            if not approved_items:
+                continue
+            otype = _order_type_key(order, approved_items)
+            if order_type_filter != "all" and otype != order_type_filter:
+                continue
+            all_line_subtotal = round(sum(float(oi.unit_price or 0) * int(oi.quantity or 0) for oi in approved_items), 2)
+            matched_items = []
+            for oi in approved_items:
+                if sales_source != "all" and (oi.menu_item.prep_station or "kitchen") != sales_source:
+                    continue
+                categories = _menu_item_category_names_for_stats(oi.menu_item, category_map)
+                if selected_category != "all" and selected_category not in [c.lower() for c in categories]:
+                    continue
+                matched_items.append((oi, categories))
+            if not matched_items:
+                continue
+            matched_subtotal = round(sum(float(oi.unit_price or 0) * int(oi.quantity or 0) for oi, _ in matched_items), 2)
+            extra = float(order.packaging_charge or 0) + float(order.delivery_charge or 0)
+            ratio = (matched_subtotal / all_line_subtotal) if all_line_subtotal > 0 else 1.0
+            matched_total = round(matched_subtotal + (extra * ratio), 2)
+            filtered.append(
+                {
+                    "order": order,
+                    "order_type": otype,
+                    "approved_items": approved_items,
+                    "matched_items": matched_items,
+                    "matched_subtotal": matched_subtotal,
+                    "matched_total": matched_total,
+                    "ratio": ratio,
+                }
+            )
+        return filtered
+
+    filtered_orders = _filtered_rows(orders)
+    filtered_prev_orders = _filtered_rows(prev_orders)
+
+    total_sales = round(sum(row["matched_total"] for row in filtered_orders), 2)
+    total_orders = len(filtered_orders)
+    avg_order_value = round(total_sales / total_orders, 2) if total_orders else 0.0
+    highest_order = round(max((row["matched_total"] for row in filtered_orders), default=0), 2)
+    lowest_order = round(min((row["matched_total"] for row in filtered_orders), default=0), 2)
+    prev_total_sales = round(sum(row["matched_total"] for row in filtered_prev_orders), 2)
+    prev_total_orders = len(filtered_prev_orders)
+    prev_avg = round(prev_total_sales / prev_total_orders, 2) if prev_total_orders else 0.0
+
+    kitchen_sales = 0.0
+    barista_sales = 0.0
+    station_order_counts = {"kitchen": 0, "barista": 0}
+    station_items = {"kitchen": {}, "barista": {}}
+
+    total_items_sold = 0
+    unique_item_ids = set()
+    item_stats = {}
+    orders_payload = []
+    order_type_counts = {"dine_in": 0, "takeaway": 0, "online_order": 0}
+    bucket_sales = {}
+    bucket_orders = {}
+    bucket_kitchen = {}
+    bucket_barista = {}
+    peak_hour_orders = {h: 0 for h in range(24)}
+    peak_hour_sales = {h: 0.0 for h in range(24)}
+
+    category_stats = {}
+    category_order_ids = {}
+    customers = set()
+    mobile_customers = set()
+
+    for row in filtered_orders:
+        order = row["order"]
+        order_local_dt = _ist_from_utc_naive(order.created_at)
+        order_type_counts[row["order_type"]] += 1
+        bucket = _bucket_key(order_local_dt.replace(tzinfo=None), granularity)
+        bucket_sales[bucket] = round(bucket_sales.get(bucket, 0.0) + row["matched_total"], 2)
+        bucket_orders[bucket] = bucket_orders.get(bucket, 0) + 1
+        peak_hour_orders[order_local_dt.hour] += 1
+        peak_hour_sales[order_local_dt.hour] = round(peak_hour_sales[order_local_dt.hour] + row["matched_total"], 2)
+        if order.is_delivery and (order.delivery_customer_mobile or "").strip():
+            key = f"m:{order.delivery_customer_mobile.strip()}"
+            customers.add(key)
+            mobile_customers.add(order.delivery_customer_mobile.strip())
+        else:
+            customers.add(f"o:{order.id}")
+
+        order_station_mix = {"kitchen": 0.0, "barista": 0.0}
+        for oi, categories in row["matched_items"]:
+            qty = int(oi.quantity or 0)
+            line_amount = round(float(oi.unit_price or 0) * qty, 2)
+            total_items_sold += qty
+            unique_item_ids.add(oi.menu_item_id)
+
+            stat = item_stats.setdefault(
+                oi.menu_item_id,
+                {
+                    "id": oi.menu_item_id,
+                    "name": oi.menu_item.name,
+                    "category": ", ".join(categories[:2]),
+                    "qty": 0,
+                    "revenue": 0.0,
+                    "order_ids": set(),
+                    "station": oi.menu_item.prep_station or "kitchen",
+                },
+            )
+            stat["qty"] += qty
+            stat["revenue"] = round(stat["revenue"] + line_amount, 2)
+            stat["order_ids"].add(order.id)
+
+            station = (oi.menu_item.prep_station or "kitchen")
+            order_station_mix[station] = round(order_station_mix.get(station, 0.0) + line_amount, 2)
+            st_item = station_items[station].setdefault(
+                oi.menu_item_id,
+                {"name": oi.menu_item.name, "qty": 0, "revenue": 0.0},
+            )
+            st_item["qty"] += qty
+            st_item["revenue"] = round(st_item["revenue"] + line_amount, 2)
+
+            cats_for_agg = categories or ["Other"]
+            split = 1.0 / len(cats_for_agg)
+            for cname in cats_for_agg:
+                c = category_stats.setdefault(cname, {"revenue": 0.0, "qty": 0.0})
+                c["revenue"] = round(c["revenue"] + line_amount * split, 2)
+                c["qty"] = round(c["qty"] + qty * split, 2)
+                category_order_ids.setdefault(cname, set()).add(order.id)
+
+        order_mix_parts = []
+        for station in ["kitchen", "barista"]:
+            val = order_station_mix[station]
+            if val > 0:
+                order_mix_parts.append(f"{station.title()} ₹{val:.2f}")
+                station_order_counts[station] += 1
+        mix_label = ", ".join(order_mix_parts) if order_mix_parts else "-"
+
+        line_subtotal = round(sum(float(oi.unit_price or 0) * int(oi.quantity or 0) for oi, _ in row["matched_items"]), 2)
+        ratio = (line_subtotal / row["matched_subtotal"]) if row["matched_subtotal"] > 0 else 0
+        packaging_m = round(float(order.packaging_charge or 0) * row["ratio"], 2)
+        delivery_m = round(float(order.delivery_charge or 0) * row["ratio"], 2)
+        orders_payload.append(
+            {
+                "id": order.id,
+                "code": order.display_code or str(order.id),
+                "table": "For Delivery" if order.is_delivery else (order.table.name if order.table else "-"),
+                "order_type": row["order_type"],
+                "order_type_label": _order_type_label(row["order_type"]),
+                "sales_source_mix": mix_label,
+                "status": order.status,
+                "payment_type": order.payment_type or "-",
+                "line_subtotal": line_subtotal,
+                "packaging_charge": packaging_m,
+                "delivery_charge": delivery_m,
+                "total_amount": row["matched_total"],
+                "created_at": _format_ist(order.created_at),
+                "items": [
+                    {
+                        "name": oi.menu_item.name,
+                        "qty": int(oi.quantity or 0),
+                        "unit_price": float(oi.unit_price or 0),
+                        "size_label": oi.size_label or "",
+                        "is_parcel": bool(oi.is_parcel),
+                    }
+                    for oi, _ in row["matched_items"]
+                ],
+            }
+        )
+
+        total_line_revenue_for_alloc = sum(order_station_mix.values())
+        if total_line_revenue_for_alloc <= 0:
+            total_line_revenue_for_alloc = 1.0
+        extra = row["matched_total"] - row["matched_subtotal"]
+        for station in ["kitchen", "barista"]:
+            station_line = order_station_mix[station]
+            alloc = extra * (station_line / total_line_revenue_for_alloc)
+            station_total = station_line + alloc
+            if station == "kitchen":
+                kitchen_sales = round(kitchen_sales + station_total, 2)
+                bucket_kitchen[bucket] = round(bucket_kitchen.get(bucket, 0.0) + station_total, 2)
+            else:
+                barista_sales = round(barista_sales + station_total, 2)
+                bucket_barista[bucket] = round(bucket_barista.get(bucket, 0.0) + station_total, 2)
+
+    prev_kitchen = 0.0
+    prev_barista = 0.0
+    for row in filtered_prev_orders:
+        order_station_mix = {"kitchen": 0.0, "barista": 0.0}
+        for oi, _ in row["matched_items"]:
+            station = oi.menu_item.prep_station or "kitchen"
+            order_station_mix[station] = round(order_station_mix[station] + float(oi.unit_price or 0) * int(oi.quantity or 0), 2)
+        total_line_revenue = sum(order_station_mix.values()) or 1.0
+        extra = row["matched_total"] - row["matched_subtotal"]
+        prev_kitchen += order_station_mix["kitchen"] + (extra * (order_station_mix["kitchen"] / total_line_revenue))
+        prev_barista += order_station_mix["barista"] + (extra * (order_station_mix["barista"] / total_line_revenue))
+    prev_kitchen = round(prev_kitchen, 2)
+    prev_barista = round(prev_barista, 2)
+
+    kitchen_pct = round((kitchen_sales / total_sales) * 100, 2) if total_sales else 0.0
+    barista_pct = round((barista_sales / total_sales) * 100, 2) if total_sales else 0.0
+
+    recurring_mobile_set = set()
+    if mobile_customers:
+        prior_mobile_rows = (
+            db.session.query(CafeOrder.delivery_customer_mobile)
+            .filter(
+                CafeOrder.delivery_customer_mobile.in_(list(mobile_customers)),
+                CafeOrder.created_at < query_start_dt,
+                CafeOrder.status != "cancelled",
+            )
+            .all()
+        )
+        recurring_mobile_set = {row[0].strip() for row in prior_mobile_rows if row and row[0]}
+    returning = len(recurring_mobile_set)
+    new_customers = max(len(customers) - returning, 0)
+
+    item_rows = []
+    for _, s in item_stats.items():
+        avg_price = round((s["revenue"] / s["qty"]), 2) if s["qty"] else 0.0
+        contribution = round((s["revenue"] / total_sales) * 100, 2) if total_sales else 0.0
+        item_rows.append(
+            {
+                "id": s["id"],
+                "name": s["name"],
+                "category": s["category"] or "Other",
+                "qty": int(s["qty"]),
+                "revenue": round(float(s["revenue"]), 2),
+                "avg_price": avg_price,
+                "contribution_pct": contribution,
+                "station": s["station"],
+                "order_count": len(s["order_ids"]),
+            }
+        )
+    top_by_qty = sorted(item_rows, key=lambda x: (-x["qty"], -x["revenue"], x["name"].lower()))
+    for idx, row in enumerate(top_by_qty, start=1):
+        row["rank"] = idx
+    top_items = top_by_qty[:15]
+    bottom_items = sorted(item_rows, key=lambda x: (x["qty"], x["revenue"], x["name"].lower()))[:10]
+    menu_q = MenuItem.query.filter(MenuItem.available.is_(True))
+    if sales_source in ["kitchen", "barista"]:
+        menu_q = menu_q.filter(MenuItem.prep_station == sales_source)
+    menu_all = menu_q.all()
+    zero_sales = []
+    sold_ids = {x["id"] for x in item_rows}
+    for item in menu_all:
+        if item.id in sold_ids:
+            continue
+        c_names = _menu_item_category_names_for_stats(item, category_map)
+        if selected_category != "all" and selected_category not in [c.lower() for c in c_names]:
+            continue
+        zero_sales.append({"id": item.id, "name": item.name, "category": ", ".join(c_names[:2])})
+    zero_sales = sorted(zero_sales, key=lambda x: x["name"].lower())[:20]
+
+    sorted_buckets = sorted(bucket_sales.keys())
+    revenue_trend_labels = [_bucket_label(b, granularity) for b in sorted_buckets]
+    revenue_trend_values = [round(bucket_sales.get(b, 0.0), 2) for b in sorted_buckets]
+    order_trend_values = [int(bucket_orders.get(b, 0)) for b in sorted_buckets]
+    kitchen_trend = [round(bucket_kitchen.get(b, 0.0), 2) for b in sorted_buckets]
+    barista_trend = [round(bucket_barista.get(b, 0.0), 2) for b in sorted_buckets]
+    kitchen_contrib_trend = []
+    barista_contrib_trend = []
+    for i in range(len(sorted_buckets)):
+        total_b = kitchen_trend[i] + barista_trend[i]
+        if total_b <= 0:
+            kitchen_contrib_trend.append(0.0)
+            barista_contrib_trend.append(0.0)
+        else:
+            kitchen_contrib_trend.append(round((kitchen_trend[i] / total_b) * 100, 2))
+            barista_contrib_trend.append(round((barista_trend[i] / total_b) * 100, 2))
+
+    peak_hours = [
+        {
+            "hour": f"{h:02d}:00-{(h + 1) % 24:02d}:00",
+            "orders": int(peak_hour_orders[h]),
+            "sales": round(peak_hour_sales[h], 2),
+        }
+        for h in range(24)
+    ]
+
+    def _best_day_for_range(day_start_dt, day_end_dt):
+        day_start_query = _utc_naive_from_ist(day_start_dt)
+        day_end_query = _utc_naive_from_ist(day_end_dt)
+        rows = (
+            db.session.query(
+                db.func.date(CafeOrder.created_at).label("day"),
+                db.func.count(CafeOrder.id),
+                db.func.coalesce(db.func.sum(CafeOrder.total_amount), 0.0),
+            )
+            .filter(
+                CafeOrder.created_at >= day_start_query,
+                CafeOrder.created_at < day_end_query,
+                CafeOrder.status != "cancelled",
+            )
+            .group_by(db.func.date(CafeOrder.created_at))
+            .all()
+        )
+        if not rows:
+            return {"day": "-", "revenue": 0.0, "orders": 0}
+        remapped = []
+        for row_day, row_count, row_revenue in rows:
+            parsed_day = datetime.fromisoformat(str(row_day))
+            remapped.append(
+                {
+                    "day": _format_ist(parsed_day, "%Y-%m-%d"),
+                    "revenue": round(float(row_revenue or 0), 2),
+                    "orders": int(row_count or 0),
+                }
+            )
+        best = max(remapped, key=lambda x: x["revenue"])
+        return best
+
+    today = datetime.now(IST_TZ).date()
+    month_start = datetime.combine(_month_start(today), time.min)
+    month_end = datetime.combine(_next_month_start(today), time.min)
+    prev_month_start_date = _month_start(_month_start(today) - timedelta(days=1))
+    prev_month_start = datetime.combine(prev_month_start_date, time.min)
+    prev_month_end = datetime.combine(_month_start(today), time.min)
+    best_day_ever = _best_day_for_range(datetime(2020, 1, 1), datetime.combine(today + timedelta(days=1), time.min))
+    best_day_this_month = _best_day_for_range(month_start, month_end)
+    best_day_last_month = _best_day_for_range(prev_month_start, prev_month_end)
+
+    category_rows_out = []
+    for name, data in sorted(category_stats.items(), key=lambda kv: kv[1]["revenue"], reverse=True):
+        qty = float(data["qty"])
+        rev = float(data["revenue"])
+        category_rows_out.append(
+            {
+                "name": name,
+                "revenue": round(rev, 2),
+                "orders": len(category_order_ids.get(name, set())),
+                "qty": round(qty, 2),
+                "avg_price": round(rev / qty, 2) if qty else 0.0,
+            }
+        )
+
+    def _best_station_item(station):
+        rows = list(station_items[station].values())
+        if not rows:
+            return {"name": "-", "qty": 0, "revenue": 0.0}
+        best = max(rows, key=lambda x: x["revenue"])
+        return {"name": best["name"], "qty": int(best["qty"]), "revenue": round(best["revenue"], 2)}
+
+    recipes = (
+        InventoryRecipe.query.options(joinedload(InventoryRecipe.ingredients).joinedload(InventoryRecipeItem.inventory_item))
+        .filter(InventoryRecipe.active.is_(True))
+        .all()
+    )
+    recipe_map = {r.menu_item_id: r for r in recipes}
+    ingredient_usage = {}
+    for row in filtered_orders:
+        for oi, _ in row["matched_items"]:
+            recipe = recipe_map.get(oi.menu_item_id)
+            if not recipe:
+                continue
+            for ing in recipe.ingredients:
+                if not ing.inventory_item:
+                    continue
+                key = ing.inventory_item.name
+                total_qty = float(ing.qty_per_menu or 0) * int(oi.quantity or 0)
+                u = ingredient_usage.setdefault(
+                    key,
+                    {
+                        "ingredient": key,
+                        "unit": ing.unit or ing.inventory_item.unit or "unit",
+                        "consumption": 0.0,
+                    },
+                )
+                u["consumption"] = round(u["consumption"] + total_qty, 3)
+    inventory_consumption_rows = sorted(ingredient_usage.values(), key=lambda x: x["consumption"], reverse=True)
+
+    item_contrib_rows = sorted(item_rows, key=lambda x: x["revenue"], reverse=True)
+    top10 = item_contrib_rows[:10]
+    top10_sum = sum(x["revenue"] for x in top10)
+    others_sum = round(max(total_sales - top10_sum, 0), 2)
+
+    summary = {
+        "revenue": {
+            "total_sales": round(total_sales, 2),
+            "total_orders": total_orders,
+            "average_order_value": round(avg_order_value, 2),
+            "highest_order_value": highest_order,
+            "lowest_order_value": lowest_order,
+        },
+        "customers": {
+            "total_customers_served": len(customers),
+            "new_customers": int(new_customers),
+            "returning_customers": int(returning),
+        },
+        "products": {
+            "total_items_sold": int(total_items_sold),
+            "unique_items_sold": len(unique_item_ids),
+        },
+        "operations": {
+            "kitchen_sales": round(kitchen_sales, 2),
+            "barista_sales": round(barista_sales, 2),
+            "kitchen_contribution_pct": kitchen_pct,
+            "barista_contribution_pct": barista_pct,
+        },
+        "growth": {
+            "total_sales_pct": _growth(total_sales, prev_total_sales),
+            "orders_pct": _growth(total_orders, prev_total_orders),
+            "average_order_value_pct": _growth(avg_order_value, prev_avg),
+            "kitchen_sales_pct": _growth(kitchen_sales, prev_kitchen),
+            "barista_sales_pct": _growth(barista_sales, prev_barista),
+        },
+    }
+
+    payload = {
+        "filters": filters,
+        "period": {
+            "label": period_label,
+            "start": query_start_dt.isoformat(),
+            "end": query_end_dt.isoformat(),
+            "previous_start": prev_query_start.isoformat(),
+            "previous_end": prev_query_end.isoformat(),
+            "granularity": granularity,
+            "display_start_ist": start_dt.isoformat(),
+            "display_end_ist": end_dt.isoformat(),
+        },
+        "summary": summary,
+        "revenue": {
+            "trend": {"labels": revenue_trend_labels, "values": revenue_trend_values},
+            "split": {"kitchen": round(kitchen_sales, 2), "barista": round(barista_sales, 2)},
+            "comparison": {"kitchen": round(kitchen_sales, 2), "barista": round(barista_sales, 2)},
+            "contribution_trend": {
+                "labels": revenue_trend_labels,
+                "kitchen_pct": kitchen_contrib_trend,
+                "barista_pct": barista_contrib_trend,
+            },
+        },
+        "orders_analytics": {
+            "orders_over_time": {"labels": revenue_trend_labels, "values": order_trend_values},
+            "order_type_distribution": order_type_counts,
+            "peak_hours": peak_hours,
+            "best_sales_days": {
+                "best_day_ever": best_day_ever,
+                "best_day_this_month": best_day_this_month,
+                "best_day_last_month": best_day_last_month,
+            },
+        },
+        "item_analytics": {
+            "top_items": top_items,
+            "bottom_items": bottom_items,
+            "zero_sales_items": zero_sales,
+            "item_revenue_contribution": {
+                "labels": [x["name"] for x in top10] + (["Others"] if others_sum > 0 else []),
+                "values": [round(x["revenue"], 2) for x in top10] + ([others_sum] if others_sum > 0 else []),
+            },
+            "profitability": [
+                {
+                    "item_id": x["id"],
+                    "name": x["name"],
+                    "revenue": x["revenue"],
+                    "estimated_cost": 0.0,
+                    "profit": x["revenue"],
+                    "profit_margin_pct": 100.0 if x["revenue"] > 0 else 0.0,
+                }
+                for x in top_items[:20]
+            ],
+        },
+        "category_analytics": {
+            "rows": category_rows_out,
+            "pie": {"labels": [x["name"] for x in category_rows_out], "values": [x["revenue"] for x in category_rows_out]},
+            "bar": {"labels": [x["name"] for x in category_rows_out], "values": [x["revenue"] for x in category_rows_out]},
+            "trend": {"labels": revenue_trend_labels, "values": revenue_trend_values},
+        },
+        "kitchen_vs_barista": {
+            "revenue_comparison": {"kitchen": round(kitchen_sales, 2), "barista": round(barista_sales, 2)},
+            "order_count_comparison": {
+                "kitchen_orders": int(station_order_counts["kitchen"]),
+                "barista_orders": int(station_order_counts["barista"]),
+            },
+            "best_kitchen_item": _best_station_item("kitchen"),
+            "best_barista_item": _best_station_item("barista"),
+            "average_ticket_size": {
+                "kitchen": round(kitchen_sales / station_order_counts["kitchen"], 2) if station_order_counts["kitchen"] else 0.0,
+                "barista": round(barista_sales / station_order_counts["barista"], 2) if station_order_counts["barista"] else 0.0,
+            },
+            "contribution_trend": {
+                "labels": revenue_trend_labels,
+                "kitchen_pct": kitchen_contrib_trend,
+                "barista_pct": barista_contrib_trend,
+            },
+        },
+        "inventory_consumption": {
+            "estimated_consumption": inventory_consumption_rows[:30],
+            "most_consumed": inventory_consumption_rows[:10],
+            "trend": {"labels": revenue_trend_labels, "values": [0 for _ in revenue_trend_labels]},
+        },
+        "orders": list(reversed(orders_payload))[:400],
+        "generated_at": _format_ist(datetime.utcnow()),
+    }
+
+    _STATS_CACHE[cache_key] = {"ts": now_ts, "payload": payload}
+    if len(_STATS_CACHE) > 250:
+        for key in list(_STATS_CACHE.keys())[:80]:
+            _STATS_CACHE.pop(key, None)
+    return payload
+
+
+@bp.route("/api/statistics/summary")
+@roles_required("admin", "manager")
+def api_stats_summary():
+    payload = _build_stats_payload(_parse_stats_filters(request.args))
+    return jsonify({"ok": True, "period": payload["period"], "filters": payload["filters"], "summary": payload["summary"]})
+
+
+@bp.route("/api/statistics/revenue")
+@roles_required("admin", "manager")
+def api_stats_revenue():
+    payload = _build_stats_payload(_parse_stats_filters(request.args))
+    return jsonify({"ok": True, "period": payload["period"], "filters": payload["filters"], "revenue": payload["revenue"]})
+
+
+@bp.route("/api/statistics/orders")
+@roles_required("admin", "manager")
+def api_stats_orders():
+    payload = _build_stats_payload(_parse_stats_filters(request.args))
+    return jsonify({"ok": True, "period": payload["period"], "filters": payload["filters"], "orders_analytics": payload["orders_analytics"]})
+
+
+@bp.route("/api/statistics/items")
+@roles_required("admin", "manager")
+def api_stats_items():
+    payload = _build_stats_payload(_parse_stats_filters(request.args))
+    item_id = request.args.get("itemId", type=int)
+    data = payload["item_analytics"]
+    if item_id:
+        start_dt = datetime.fromisoformat(payload["period"]["start"])
+        end_dt = datetime.fromisoformat(payload["period"]["end"])
+        rows = (
+            CafeOrder.query.options(joinedload(CafeOrder.order_items))
+            .filter(
+                CafeOrder.created_at >= start_dt,
+                CafeOrder.created_at < end_dt,
+                CafeOrder.status != "cancelled",
+            )
+            .order_by(CafeOrder.created_at.asc())
+            .all()
+        )
+        daily = {}
+        for order in rows:
+            order_local_day = _format_ist(order.created_at, "%Y-%m-%d")
+            for oi in order.order_items:
+                if oi.menu_item_id != item_id or (oi.approval_status or "pending") == "rejected":
+                    continue
+                key = order_local_day
+                d = daily.setdefault(key, {"qty": 0, "revenue": 0.0})
+                d["qty"] += int(oi.quantity or 0)
+                d["revenue"] = round(d["revenue"] + float(oi.unit_price or 0) * int(oi.quantity or 0), 2)
+        labels = sorted(daily.keys())
+        trend = {
+            "labels": labels,
+            "qty_values": [daily[k]["qty"] for k in labels],
+            "revenue_values": [daily[k]["revenue"] for k in labels],
+        }
+        return jsonify({"ok": True, "filters": payload["filters"], "item_trend": trend, "item_analytics": data})
+    return jsonify({"ok": True, "filters": payload["filters"], "item_analytics": data})
+
+
+@bp.route("/api/statistics/categories")
+@roles_required("admin", "manager")
+def api_stats_categories():
+    payload = _build_stats_payload(_parse_stats_filters(request.args))
+    return jsonify({"ok": True, "filters": payload["filters"], "category_analytics": payload["category_analytics"]})
+
+
+@bp.route("/api/statistics/kitchen-vs-barista")
+@roles_required("admin", "manager")
+def api_stats_kitchen_barista():
+    payload = _build_stats_payload(_parse_stats_filters(request.args))
+    return jsonify({"ok": True, "filters": payload["filters"], "kitchen_vs_barista": payload["kitchen_vs_barista"]})
+
+
+@bp.route("/api/statistics/inventory-consumption")
+@roles_required("admin", "manager")
+def api_stats_inventory_consumption():
+    payload = _build_stats_payload(_parse_stats_filters(request.args))
+    return jsonify({"ok": True, "filters": payload["filters"], "inventory_consumption": payload["inventory_consumption"]})
 
 
 @bp.route("/staff", methods=["GET", "POST"])

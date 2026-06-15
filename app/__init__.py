@@ -77,6 +77,7 @@ def _ensure_sqlite_schema_columns():
         "cafe_order_item": {
             "size_label": "TEXT",
             "approval_status": "TEXT NOT NULL DEFAULT 'pending'",
+            "is_parcel": "BOOLEAN NOT NULL DEFAULT 0",
         },
         "inventory_item": {
             "item_code": "TEXT",
@@ -108,6 +109,12 @@ def _ensure_sqlite_schema_columns():
     )
     db.session.execute(
         text("CREATE INDEX IF NOT EXISTS idx_cafe_order_status_created ON cafe_order (status, created_at)")
+    )
+    db.session.execute(
+        text("CREATE INDEX IF NOT EXISTS idx_cafe_order_created ON cafe_order (created_at)")
+    )
+    db.session.execute(
+        text("CREATE INDEX IF NOT EXISTS idx_cafe_order_delivery_created ON cafe_order (is_delivery, created_at)")
     )
     db.session.execute(
         text("CREATE INDEX IF NOT EXISTS idx_cafe_order_item_order ON cafe_order_item (order_id)")
