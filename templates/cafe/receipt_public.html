@@ -2,7 +2,7 @@
 {% block content %}
 <section class="panel">
   <h2>Brownberries Café Receipt</h2>
-  <p class="muted">Order #{{ order.display_code or order.id }} | {{ order.created_at.strftime("%Y-%m-%d %H:%M") }}</p>
+  <p class="muted">Order #{{ order.daily_sequence or order.id }} | Internal Ref: {{ order.display_code or order.id }} | {{ order.created_at.strftime("%Y-%m-%d %H:%M") }}</p>
   <p><strong>Table:</strong> {{ "For Delivery" if order.is_delivery else (order.table.name if order.table else "-") }}</p>
   <p><strong>Status:</strong> {{ order.status }}</p>
   <p><strong>Payment:</strong> {{ order.payment_type or "-" }}</p>

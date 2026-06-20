@@ -1,5 +1,6 @@
 import json
 import os
+import calendar
 from datetime import date, datetime
 from io import BytesIO
 from uuid import uuid4
@@ -25,6 +26,7 @@ from .models import (
     Customer,
     StaffAttendance,
     StaffDocument,
+    StaffLeaveRequest,
     StaffProfile,
     SalaryReceipt,
     TableBooking,
@@ -34,6 +36,38 @@ from .models import (
 
 bp = Blueprint("main", __name__)
 PROTECTED_ADMIN_EMAIL = "admin@brownberries.local"
+PROTECTED_MENU_CATEGORY_NAMES = {"other", "utility"}
+ATTENDANCE_STATUS_LABELS = {
+    "present_all_day": "Present All Day",
+    "first_half": "First Half",
+    "second_half": "Second Half",
+    "on_leave": "On Leave",
+    "sick_leave": "Sick Leave",
+    "weekly_off": "Weekly Off",
+    "late_entry": "Late Entry",
+    "early_exit": "Early Exit",
+    "missed_checkout": "Missed Checkout",
+    "absent": "Absent",
+}
+ATTENDANCE_STATUS_OPTIONS = [
+    ("present_all_day", "Present All Day"),
+    ("first_half", "First Half"),
+    ("second_half", "Second Half"),
+    ("on_leave", "On Leave"),
+    ("sick_leave", "Sick Leave"),
+    ("weekly_off", "Weekly Off"),
+    ("late_entry", "Late Entry"),
+    ("early_exit", "Early Exit"),
+    ("missed_checkout", "Missed Checkout"),
+    ("absent", "Absent"),
+]
+LEAVE_TYPE_OPTIONS = [
+    ("casual", "Casual"),
+    ("sick", "Sick"),
+    ("planned", "Planned"),
+    ("earned", "Earned"),
+    ("emergency", "Emergency"),
+]
 
 
 def _is_cafe_admin(user: User) -> bool:
@@ -60,31 +94,6 @@ def _apply_menu_category_filter(query, category_id: int | None):
     )
 
 
-def _get_item_category_names(item: MenuItem, category_name_by_id: dict[int, str]) -> list[str]:
-    names: list[str] = []
-    names_seen: set[str] = set()
-    if item.category_ids_json:
-        try:
-            raw = json.loads(item.category_ids_json)
-            if isinstance(raw, list):
-                for value in raw:
-                    try:
-                        cid = int(value)
-                    except (TypeError, ValueError):
-                        continue
-                    cname = category_name_by_id.get(cid)
-                    if cname and cname.lower() not in names_seen:
-                        names.append(cname)
-                        names_seen.add(cname.lower())
-        except (TypeError, ValueError, json.JSONDecodeError):
-            pass
-    if item.category and item.category.name:
-        if item.category.name.lower() not in names_seen:
-            names.append(item.category.name)
-            names_seen.add(item.category.name.lower())
-    return names
-
-
 def _menu_item_category_ids(item: MenuItem) -> list[int]:
     parsed: list[int] = []
     if item.category_ids_json:
@@ -103,17 +112,174 @@ def _menu_item_category_ids(item: MenuItem) -> list[int]:
     return list(dict.fromkeys(parsed))
 
 
+def _attendance_status_label(status: str | None) -> str:
+    if not status:
+        return "-"
+    return ATTENDANCE_STATUS_LABELS.get(status, status.replace("_", " ").title())
+
+
+def _worked_hours_for_row(row: StaffAttendance | None) -> float:
+    if not row or not row.check_in_at or not row.check_out_at:
+        return 0.0
+    seconds = max(0.0, (row.check_out_at - row.check_in_at).total_seconds())
+    return round(seconds / 3600, 2)
+
+
+def _attendance_flags_for_row(row: StaffAttendance | None) -> list[str]:
+    if not row:
+        return []
+    flags = []
+    worked_hours = _worked_hours_for_row(row)
+    if row.check_in_at and row.check_in_at.time() > datetime.strptime("09:10", "%H:%M").time():
+        flags.append("Late")
+    if row.check_out_at and row.check_out_at.time() < datetime.strptime("18:00", "%H:%M").time():
+        flags.append("Early Exit")
+    if row.check_in_at and not row.check_out_at:
+        flags.append("Missed Checkout")
+    if worked_hours >= 8:
+        flags.append("Full Shift")
+    elif worked_hours >= 4.5:
+        flags.append("Half Shift")
+    if row.manager_override:
+        flags.append("Manager Override")
+    return flags
+
+
+def _attendance_pay_fraction(status: str | None) -> float:
+    if status in ["present_all_day", "weekly_off", "late_entry", "early_exit", "on_leave"]:
+        return 1.0
+    if status in ["first_half", "second_half"]:
+        return 0.5
+    return 0.0
+
+
+def _build_attendance_summary(attendance_logs: list[StaffAttendance]):
+    summary = {
+        "present_days": 0,
+        "half_days": 0,
+        "leave_days": 0,
+        "sick_days": 0,
+        "weekly_off_days": 0,
+        "late_marks": 0,
+        "early_exits": 0,
+        "missed_checkouts": 0,
+        "worked_hours": 0.0,
+    }
+    for row in attendance_logs:
+        status = row.status or ""
+        if status in ["present_all_day", "late_entry", "early_exit"]:
+            summary["present_days"] += 1
+        elif status in ["first_half", "second_half"]:
+            summary["half_days"] += 1
+        elif status == "on_leave":
+            summary["leave_days"] += 1
+        elif status == "sick_leave":
+            summary["sick_days"] += 1
+        elif status == "weekly_off":
+            summary["weekly_off_days"] += 1
+        flags = _attendance_flags_for_row(row)
+        if "Late" in flags:
+            summary["late_marks"] += 1
+        if "Early Exit" in flags:
+            summary["early_exits"] += 1
+        if "Missed Checkout" in flags:
+            summary["missed_checkouts"] += 1
+        summary["worked_hours"] = round(summary["worked_hours"] + _worked_hours_for_row(row), 2)
+    return summary
+
+
+def _build_salary_summary(profile, attendance_logs: list[StaffAttendance], ref_date: date | None = None):
+    ref_date = ref_date or date.today()
+    days_in_month = calendar.monthrange(ref_date.year, ref_date.month)[1]
+    monthly_salary = float(profile.salary_amount or 0)
+    per_day_salary = round((monthly_salary / days_in_month), 2) if monthly_salary and days_in_month else 0.0
+    payable_days = 0.0
+    unpaid_days = 0.0
+    for row in attendance_logs:
+        fraction = _attendance_pay_fraction(row.status)
+        payable_days += fraction
+        unpaid_days += max(0.0, 1.0 - fraction)
+    estimated_pay = round(per_day_salary * payable_days, 2)
+    return {
+        "salary_type": profile.salary_type or "monthly",
+        "salary_amount": monthly_salary,
+        "days_in_month": days_in_month,
+        "per_day_salary": per_day_salary,
+        "payable_days": round(payable_days, 2),
+        "unpaid_days": round(unpaid_days, 2),
+        "estimated_pay": estimated_pay,
+        "payment_day": 6,
+    }
+
+
+def _leave_notice_message(start_date: date, end_date: date):
+    leave_days = (end_date - start_date).days + 1
+    today = date.today()
+    notice_days = max(0, (start_date - today).days)
+    if leave_days > 7 and notice_days < 30:
+        return "Leaves longer than 7 days should be requested at least 1 month in advance."
+    if leave_days > 1 and notice_days < 7:
+        return "Leaves longer than 1 day should ideally be requested at least 7 days in advance."
+    return ""
+
+
+def _public_menu_category_ids(item: MenuItem, category_name_by_id: dict[int, str]) -> list[int]:
+    visible_ids: list[int] = []
+    seen: set[int] = set()
+    for cid in _menu_item_category_ids(item):
+        cname = (category_name_by_id.get(cid) or "").strip().lower()
+        if not cname or cname in PROTECTED_MENU_CATEGORY_NAMES or cid in seen:
+            continue
+        visible_ids.append(cid)
+        seen.add(cid)
+    return visible_ids
+
+
+def _get_item_category_names(item: MenuItem, category_name_by_id: dict[int, str], include_protected: bool = True) -> list[str]:
+    names: list[str] = []
+    names_seen: set[str] = set()
+    if item.category_ids_json:
+        try:
+            raw = json.loads(item.category_ids_json)
+            if isinstance(raw, list):
+                for value in raw:
+                    try:
+                        cid = int(value)
+                    except (TypeError, ValueError):
+                        continue
+                    cname = category_name_by_id.get(cid)
+                    if cname and (not include_protected) and cname.strip().lower() in PROTECTED_MENU_CATEGORY_NAMES:
+                        continue
+                    if cname and cname.lower() not in names_seen:
+                        names.append(cname)
+                        names_seen.add(cname.lower())
+        except (TypeError, ValueError, json.JSONDecodeError):
+            pass
+    if item.category and item.category.name:
+        if include_protected or item.category.name.strip().lower() not in PROTECTED_MENU_CATEGORY_NAMES:
+            if item.category.name.lower() not in names_seen:
+                names.append(item.category.name)
+                names_seen.add(item.category.name.lower())
+    return names
+
+
+def _is_public_menu_item(item: MenuItem, category_name_by_id: dict[int, str]) -> bool:
+    return len(_public_menu_category_ids(item, category_name_by_id)) > 0
+
+
 def _visible_categories_for_available_menu() -> list[MenuCategory]:
-    categories = MenuCategory.query.order_by(MenuCategory.name.asc()).all()
-    available_items = MenuItem.query.filter_by(available=True).all()
+    all_categories = MenuCategory.query.order_by(MenuCategory.name.asc()).all()
+    category_name_by_id = {c.id: c.name for c in all_categories}
+    categories = [c for c in all_categories if (c.name or "").strip().lower() not in PROTECTED_MENU_CATEGORY_NAMES]
+    available_items = MenuItem.query.filter_by(available=True, is_deleted=False).all()
     used_category_ids: set[int] = set()
     for item in available_items:
-        for cid in _menu_item_category_ids(item):
+        for cid in _public_menu_category_ids(item, category_name_by_id):
             used_category_ids.add(cid)
     return [
         c
         for c in categories
-        if c.name.lower() != "other" or c.id in used_category_ids
+        if c.id in used_category_ids
     ]
 
 
@@ -255,7 +421,9 @@ def dashboard():
         LibraryLoan.status == "issued",
         LibraryLoan.due_date == db.func.date(db.func.datetime("now", "+1 day")),
     ).count()
-    open_orders = CafeOrder.query.filter_by(status="open").count()
+    open_orders = CafeOrder.query.filter(
+        CafeOrder.status.notin_(["paid", "cancelled"])
+    ).count()
     return render_template(
         "dashboard.html",
         open_orders=open_orders,
@@ -424,7 +592,11 @@ def customer_menu():
                 if menu_item_id > 0 and quantity > 0:
                     qty_map[menu_item_id] = qty_map.get(menu_item_id, 0) + quantity
             item_ids = list(qty_map.keys())
-            menu_items = MenuItem.query.filter(MenuItem.id.in_(item_ids), MenuItem.available.is_(True)).all() if item_ids else []
+            menu_items = MenuItem.query.filter(
+                MenuItem.id.in_(item_ids),
+                MenuItem.available.is_(True),
+                MenuItem.is_deleted.is_(False),
+            ).all() if item_ids else []
             item_map = {m.id: m for m in menu_items}
             for menu_item_id, quantity in qty_map.items():
                 if menu_item_id in item_map:
@@ -458,7 +630,7 @@ def customer_menu():
 
     category_id = request.args.get("category_id", type=int)
     item_type = (request.args.get("item_type") or "").strip()
-    menu_query = _apply_menu_category_filter(MenuItem.query.filter_by(available=True), category_id)
+    menu_query = _apply_menu_category_filter(MenuItem.query.filter_by(available=True, is_deleted=False), category_id)
     if item_type:
         menu_query = menu_query.filter(MenuItem.item_type == item_type)
     menu_items = (
@@ -466,9 +638,14 @@ def customer_menu():
         .order_by(MenuItem.name.asc())
         .all()
     )
+    all_category_rows = MenuCategory.query.order_by(MenuCategory.name.asc()).all()
+    all_category_name_by_id = {c.id: c.name for c in all_category_rows}
+    menu_items = [item for item in menu_items if _is_public_menu_item(item, all_category_name_by_id)]
     categories = _visible_categories_for_available_menu()
     category_name_by_id = {c.id: c.name for c in categories}
-    item_category_names_map = {item.id: _get_item_category_names(item, category_name_by_id) for item in menu_items}
+    item_category_names_map = {
+        item.id: _get_item_category_names(item, category_name_by_id, include_protected=False) for item in menu_items
+    }
     item_types = [
         row[0]
         for row in db.session.query(MenuItem.item_type)
@@ -535,7 +712,19 @@ def profile():
             profile.marital_status = request.form.get("marital_status", "").strip() or None
             profile.phone = request.form.get("phone", "").strip() or None
             profile.alternate_contact = request.form.get("alternate_contact", "").strip() or None
+            profile.emergency_contact = request.form.get("emergency_contact", "").strip() or None
             profile.address = request.form.get("address", "").strip() or None
+            if can_admin_view:
+                profile.joining_date = date.fromisoformat(request.form["joining_date"]) if request.form.get("joining_date") else profile.joining_date
+                profile.salary_type = request.form.get("salary_type", "").strip() or None
+                salary_amount_raw = request.form.get("salary_amount", "").strip()
+                if salary_amount_raw:
+                    try:
+                        profile.salary_amount = float(salary_amount_raw)
+                    except ValueError:
+                        flash("Salary amount must be a valid number.", "error")
+                        return redirect(url_for("main.profile", section="personal", user_id=user.id if can_admin_view else None))
+                profile.probation_end_date = date.fromisoformat(request.form["probation_end_date"]) if request.form.get("probation_end_date") else None
             db.session.commit()
             flash("Personal information updated.", "success")
             return redirect(url_for("main.profile", section="personal", user_id=user.id if can_admin_view else None))
@@ -577,6 +766,8 @@ def profile():
                 return redirect(url_for("main.profile"))
             selected_date = date.fromisoformat(request.form["attendance_date"]) if request.form.get("attendance_date") else date.today()
             status = request.form.get("status", "present_all_day")
+            if status not in dict(ATTENDANCE_STATUS_OPTIONS):
+                status = "present_all_day"
             notes = request.form.get("notes", "").strip() or None
             row = StaffAttendance.query.filter_by(user_id=user.id, attendance_date=selected_date).first()
             if not row:
@@ -584,6 +775,7 @@ def profile():
                 db.session.add(row)
             row.status = status
             row.notes = notes
+            row.manager_override = bool(can_admin_view and current_user.id != user.id)
             db.session.commit()
             flash("Attendance status saved.", "success")
             return redirect(url_for("main.profile", section="attendance", user_id=user.id if can_admin_view else None))
@@ -597,6 +789,7 @@ def profile():
                 row = StaffAttendance(user_id=user.id, attendance_date=today, status="present_all_day")
                 db.session.add(row)
             row.check_in_at = datetime.now()
+            row.manager_override = False
             db.session.commit()
             flash("Check-in recorded.", "success")
             return redirect(url_for("main.profile", section="attendance"))
@@ -616,6 +809,33 @@ def profile():
             flash("Check-out recorded.", "success")
             return redirect(url_for("main.profile", section="attendance"))
 
+        if action == "leave_request":
+            if current_user.id != user.id:
+                return redirect(url_for("main.profile"))
+            start_date = date.fromisoformat(request.form["start_date"])
+            end_date = date.fromisoformat(request.form["end_date"])
+            if end_date < start_date:
+                flash("Leave end date cannot be before start date.", "error")
+                return redirect(url_for("main.profile", section="attendance"))
+            notice_warning = _leave_notice_message(start_date, end_date)
+            db.session.add(
+                StaffLeaveRequest(
+                    user_id=user.id,
+                    leave_type=request.form.get("leave_type", "casual").strip() or "casual",
+                    start_date=start_date,
+                    end_date=end_date,
+                    reason=request.form.get("reason", "").strip() or None,
+                    status="pending",
+                    admin_remarks=notice_warning or None,
+                )
+            )
+            db.session.commit()
+            if notice_warning:
+                flash(f"Leave request submitted. Notice warning: {notice_warning}", "error")
+            else:
+                flash("Leave request submitted.", "success")
+            return redirect(url_for("main.profile", section="attendance"))
+
         if action == "upload_document":
             if current_user.id != user.id and not can_admin_view:
                 return redirect(url_for("main.profile"))
@@ -632,6 +852,8 @@ def profile():
                     doc_number=request.form.get("doc_number", "").strip() or None,
                     file_path=file_path,
                     released_by_admin=True if current_user.role in ["admin", "manager"] else False,
+                    verification_status="verified" if current_user.role in ["admin", "manager"] else "pending",
+                    verification_note="Uploaded by admin/manager" if current_user.role in ["admin", "manager"] else None,
                 )
             )
             db.session.commit()
@@ -643,8 +865,13 @@ def profile():
                 return redirect(url_for("main.profile"))
             doc = StaffDocument.query.get_or_404(int(request.form["doc_id"]))
             doc.released_by_admin = True if request.form.get("released_by_admin") == "1" else False
+            verification_status = (request.form.get("verification_status") or "pending").strip().lower()
+            if verification_status not in ["pending", "verified", "rejected"]:
+                verification_status = "pending"
+            doc.verification_status = verification_status
+            doc.verification_note = request.form.get("verification_note", "").strip() or None
             db.session.commit()
-            flash("Document release status updated.", "success")
+            flash("Document verification status updated.", "success")
             return redirect(url_for("main.profile", section="documents", user_id=user.id))
 
         if action == "upload_salary_receipt":
@@ -655,7 +882,7 @@ def profile():
             target_user = User.query.get_or_404(target_id)
             if not receipt_file or not receipt_file.filename:
                 flash("Please select salary receipt file.", "error")
-                return redirect(url_for("main.profile", section="receipts", user_id=target_user.id))
+                return redirect(url_for("main.profile", section="salary", user_id=target_user.id))
             file_path = _save_profile_file(receipt_file, "salary_receipts", f"salary-{target_user.id}")
             db.session.add(
                 SalaryReceipt(
@@ -670,14 +897,34 @@ def profile():
             )
             db.session.commit()
             flash("Salary receipt uploaded.", "success")
-            return redirect(url_for("main.profile", section="receipts", user_id=target_user.id))
+            return redirect(url_for("main.profile", section="salary", user_id=target_user.id))
 
+    summary_month = request.args.get("month", type=int) or date.today().month
+    summary_year = request.args.get("year", type=int) or date.today().year
+    if summary_month < 1 or summary_month > 12:
+        summary_month = date.today().month
+    if summary_year < 2000 or summary_year > 2100:
+        summary_year = date.today().year
+    month_end_day = calendar.monthrange(summary_year, summary_month)[1]
+    month_start = date(summary_year, summary_month, 1)
+    month_end = date(summary_year, summary_month, month_end_day)
     attendance_logs = (
         StaffAttendance.query.filter_by(user_id=user.id)
         .order_by(StaffAttendance.attendance_date.desc())
         .limit(60)
         .all()
     )
+    month_attendance_logs = (
+        StaffAttendance.query.filter(
+            StaffAttendance.user_id == user.id,
+            StaffAttendance.attendance_date >= month_start,
+            StaffAttendance.attendance_date <= month_end,
+        )
+        .order_by(StaffAttendance.attendance_date.desc())
+        .all()
+    )
+    attendance_summary = _build_attendance_summary(month_attendance_logs)
+    salary_summary = _build_salary_summary(profile, month_attendance_logs, month_start)
     receipts = (
         CafeOrder.query.filter_by(ordered_by_user_id=user.id, status="paid")
         .order_by(CafeOrder.created_at.desc())
@@ -715,6 +962,12 @@ def profile():
     active_section = (request.args.get("section") or "personal").strip().lower()
     if active_section not in ["personal", "bank", "documents", "salary", "attendance"]:
         active_section = "personal"
+    leave_logs = (
+        StaffLeaveRequest.query.filter_by(user_id=user.id)
+        .order_by(StaffLeaveRequest.created_at.desc())
+        .limit(40)
+        .all()
+    )
     return render_template(
         "profile.html",
         profile_user=user,
@@ -728,7 +981,18 @@ def profile():
         can_admin_view=can_admin_view,
         managed_users=managed_users,
         attendance_logs=attendance_logs,
+        month_attendance_logs=month_attendance_logs,
+        attendance_summary=attendance_summary,
+        salary_summary=salary_summary,
+        leave_logs=leave_logs,
+        attendance_status_options=ATTENDANCE_STATUS_OPTIONS,
+        leave_type_options=LEAVE_TYPE_OPTIONS,
+        attendance_status_label=_attendance_status_label,
+        attendance_flags_for_row=_attendance_flags_for_row,
+        worked_hours_for_row=_worked_hours_for_row,
         active_section=active_section,
+        summary_month=summary_month,
+        summary_year=summary_year,
     )
 
 
@@ -790,6 +1054,8 @@ def table_qr_page():
     if not table:
         return render_template("table_qr.html", table=None, menu_items=[], categories=[], item_frequency={})
     categories = _visible_categories_for_available_menu()
+    all_category_rows = MenuCategory.query.order_by(MenuCategory.name.asc()).all()
+    all_category_name_by_id = {c.id: c.name for c in all_category_rows}
     category_name_by_id = {c.id: c.name for c in categories}
     frequency_subq = (
         db.session.query(
@@ -800,14 +1066,18 @@ def table_qr_page():
         .subquery()
     )
     ranked_query = (
-        MenuItem.query.filter_by(available=True).outerjoin(frequency_subq, MenuItem.id == frequency_subq.c.menu_item_id)
+        MenuItem.query.filter_by(available=True, is_deleted=False).outerjoin(frequency_subq, MenuItem.id == frequency_subq.c.menu_item_id)
         .options(joinedload(MenuItem.category), joinedload(MenuItem.subcategory))
         .add_columns(db.func.coalesce(frequency_subq.c.order_qty, 0).label("order_qty"))
         .order_by(db.desc(db.func.coalesce(frequency_subq.c.order_qty, 0)), MenuItem.name.asc())
     )
     ranked_rows = ranked_query.all()
-    menu_items = [row[0] for row in ranked_rows]
-    item_frequency = {row[0].id: int(row[1] or 0) for row in ranked_rows}
+    menu_items = [row[0] for row in ranked_rows if _is_public_menu_item(row[0], all_category_name_by_id)]
+    item_frequency = {
+        row[0].id: int(row[1] or 0)
+        for row in ranked_rows
+        if _is_public_menu_item(row[0], all_category_name_by_id)
+    }
     item_size_map = {}
     item_category_names_map = {}
     for item in menu_items:
@@ -822,7 +1092,7 @@ def table_qr_page():
             except (TypeError, ValueError, json.JSONDecodeError):
                 sizes = []
         item_size_map[item.id] = sizes
-        item_category_names_map[item.id] = _get_item_category_names(item, category_name_by_id)
+        item_category_names_map[item.id] = _get_item_category_names(item, category_name_by_id, include_protected=False)
 
     table_orders = []
     if table:
@@ -860,4 +1130,15 @@ def update_user(user_id):
 @bp.route("/users/<int:user_id>/delete", methods=["POST"])
 @roles_required("admin")
 def delete_user(user_id):
+    user = User.query.get_or_404(user_id)
+    if _is_cafe_admin(user):
+        flash("Cafe Admin cannot be deleted.", "error")
+        return redirect(url_for("cafe.staff"))
+    if user.staff_profile:
+        db.session.delete(user.staff_profile)
+    StaffAttendance.query.filter_by(user_id=user.id).delete()
+    StaffLeaveRequest.query.filter_by(user_id=user.id).delete()
+    db.session.delete(user)
+    db.session.commit()
+    flash("Staff member deleted.", "success")
     return redirect(url_for("cafe.staff"))

@@ -39,6 +39,7 @@ from .models import (
     MenuItem,
     MenuType,
     StaffAttendance,
+    StaffDocument,
     UserType,
     StaffLeaveRequest,
     StaffProfile,
@@ -67,6 +68,207 @@ STAFF_ROLES = DEFAULT_ROLE_OPTIONS
 PREP_STATION_OPTIONS = ("kitchen", "barista")
 IST_TZ = ZoneInfo("Asia/Kolkata")
 UTC_TZ = ZoneInfo("UTC")
+PROTECTED_MENU_CATEGORY_NAMES = {"other", "utility"}
+STAFF_ATTENDANCE_STATUS_OPTIONS = [
+    ("present_all_day", "Present All Day"),
+    ("first_half", "First Half"),
+    ("second_half", "Second Half"),
+    ("on_leave", "On Leave"),
+    ("sick_leave", "Sick Leave"),
+    ("weekly_off", "Weekly Off"),
+    ("late_entry", "Late Entry"),
+    ("early_exit", "Early Exit"),
+    ("missed_checkout", "Missed Checkout"),
+    ("absent", "Absent"),
+]
+
+
+def _order_local_date(order: CafeOrder | None) -> date:
+    local_dt = _ist_from_utc_naive(order.created_at if order else None)
+    return local_dt.date() if local_dt else date.today()
+
+
+def _order_channel_code(order: CafeOrder | None) -> str:
+    if order and order.is_delivery:
+        return "O"
+    return "D"
+
+
+def _format_internal_order_code(order: CafeOrder | None, seq: int | None = None) -> str:
+    if not order:
+        return "-"
+    local_day = _order_local_date(order)
+    running_seq = int(seq if seq is not None else (order.daily_sequence or order.id or 0))
+    return f"BB-{_order_channel_code(order)}-{local_day.strftime('%y%m%d')}-{running_seq:04d}"
+
+
+def _format_pickup_number(order: CafeOrder | None, compact: bool = False) -> str:
+    if not order:
+        return "-"
+    running_seq = int(order.daily_sequence or order.id or 0)
+    if compact:
+        return f"{running_seq}"
+    return f"{_order_channel_code(order)}{running_seq:03d}"
+
+
+def _normalize_single_order_code(order: CafeOrder, seq: int | None = None):
+    if not order:
+        return
+    running_seq = int(seq if seq is not None else (order.daily_sequence or 0))
+    if running_seq < 1:
+        running_seq = int(order.id or 0)
+    order.daily_sequence = running_seq
+    order.display_code = _format_internal_order_code(order, running_seq)
+
+
+def _backfill_order_codes():
+    changed = False
+    grouped: dict[date, list[CafeOrder]] = {}
+    orders = CafeOrder.query.order_by(CafeOrder.created_at.asc(), CafeOrder.id.asc()).all()
+    for order in orders:
+        grouped.setdefault(_order_local_date(order), []).append(order)
+    for _, day_orders in grouped.items():
+        for idx, order in enumerate(day_orders, start=1):
+            expected = _format_internal_order_code(order, idx)
+            if order.daily_sequence != idx or (order.display_code or "") != expected:
+                order.daily_sequence = idx
+                order.display_code = expected
+                changed = True
+    if changed:
+        db.session.commit()
+
+
+def _backfill_paid_timestamps():
+    changed = False
+    paid_orders = CafeOrder.query.filter(
+        CafeOrder.status == "paid",
+        CafeOrder.paid_at.is_(None),
+    ).all()
+    for order in paid_orders:
+        order.paid_at = order.created_at
+        changed = True
+    if changed:
+        db.session.commit()
+
+
+def _staff_attendance_pay_fraction(status: str | None) -> float:
+    if status in ["present_all_day", "weekly_off", "late_entry", "early_exit", "on_leave"]:
+        return 1.0
+    if status in ["first_half", "second_half"]:
+        return 0.5
+    return 0.0
+
+
+def _menu_form_state_from_request():
+    form = request.form
+    selected_category_ids = []
+    for value in form.getlist("category_ids"):
+        try:
+            selected_category_ids.append(int(value))
+        except (TypeError, ValueError):
+            continue
+    selected_category_ids = list(dict.fromkeys(selected_category_ids))
+    size_rows = []
+    idx = 1
+    while True:
+        size_name = form.get(f"size_name_{idx}")
+        size_price = form.get(f"size_price_{idx}")
+        if size_name is None and size_price is None:
+            break
+        size_rows.append(
+            {
+                "size": (size_name or "").strip(),
+                "price": (size_price or "").strip(),
+            }
+        )
+        idx += 1
+    if not size_rows:
+        size_rows = [{"size": "", "price": ""}, {"size": "", "price": ""}]
+    return {
+        "selected_category_ids": selected_category_ids,
+        "menu_type_id": form.get("menu_type_id", "").strip(),
+        "name": form.get("name", "").strip(),
+        "prep_station": (form.get("prep_station") or "kitchen").strip().lower(),
+        "image_url": form.get("image_url", "").strip(),
+        "short_description": form.get("short_description", "").strip(),
+        "description": form.get("description", "").strip(),
+        "calories": form.get("calories", "").strip(),
+        "price": form.get("price", "").strip(),
+        "has_size_variants": True if form.get("has_size_variants") else False,
+        "size_rows": size_rows,
+        "available": True if form.get("available") else False,
+    }
+
+
+def _default_menu_form_state():
+    return {
+        "selected_category_ids": [],
+        "menu_type_id": "",
+        "name": "",
+        "prep_station": "kitchen",
+        "image_url": "",
+        "short_description": "",
+        "description": "",
+        "calories": "",
+        "price": "",
+        "has_size_variants": False,
+        "size_rows": [{"size": "", "price": ""}, {"size": "", "price": ""}],
+        "available": True,
+    }
+
+
+def _render_menu_page(active_menu_section: str = "catalog", add_form_state: dict | None = None):
+    items = MenuItem.query.filter(MenuItem.is_deleted.is_(False)).order_by(MenuItem.name).all()
+    deleted_items = MenuItem.query.filter(MenuItem.is_deleted.is_(True)).order_by(MenuItem.updated_at.desc(), MenuItem.name.asc()).all()
+    all_categories = MenuCategory.query.order_by(MenuCategory.name).all()
+    item_category_map = {}
+    item_size_map = {}
+    for item in items + deleted_items:
+        parsed = []
+        if item.category_ids_json:
+            try:
+                raw = json.loads(item.category_ids_json)
+                if isinstance(raw, list):
+                    parsed = [int(x) for x in raw if str(x).isdigit()]
+            except (TypeError, ValueError, json.JSONDecodeError):
+                parsed = []
+        if not parsed and item.category_id:
+            parsed = [item.category_id]
+        item_category_map[item.id] = parsed
+        sizes = []
+        if item.size_pricing_json:
+            try:
+                raw_sizes = json.loads(item.size_pricing_json)
+                if isinstance(raw_sizes, list):
+                    for row in raw_sizes:
+                        if isinstance(row, dict) and row.get("size") and row.get("price") is not None:
+                            sizes.append({"size": str(row["size"]), "price": float(row["price"])})
+            except (TypeError, ValueError, json.JSONDecodeError):
+                sizes = []
+        item_size_map[item.id] = sizes
+
+    selected_category_filter = request.args.get("category_filter", type=int)
+    availability_items = _apply_category_filter(
+        MenuItem.query.filter(MenuItem.is_deleted.is_(False)).order_by(MenuItem.name.asc()),
+        selected_category_filter,
+    ).all()
+    if active_menu_section not in ["catalog", "add_item", "items", "availability", "deleted_items"]:
+        active_menu_section = "catalog"
+    return render_template(
+        "cafe/menu.html",
+        items=items,
+        deleted_items=deleted_items,
+        categories=all_categories,
+        protected_category_ids=[c.id for c in all_categories if _is_protected_menu_category(c)],
+        menu_types=MenuType.query.order_by(MenuType.name).all(),
+        prep_station_options=PREP_STATION_OPTIONS,
+        item_category_map=item_category_map,
+        item_size_map=item_size_map,
+        active_menu_section=active_menu_section,
+        availability_items=availability_items,
+        selected_category_filter=selected_category_filter,
+        add_form=add_form_state or _default_menu_form_state(),
+    )
 
 
 def _safe_float(value, default=0.0):
@@ -198,6 +400,42 @@ def _get_or_create_other_category():
     return other
 
 
+def _get_or_create_utility_category():
+    utility = MenuCategory.query.filter(db.func.lower(MenuCategory.name) == "utility").first()
+    if utility:
+        return utility
+    utility = MenuCategory(name="Utility")
+    db.session.add(utility)
+    db.session.flush()
+    return utility
+
+
+def _ensure_protected_menu_categories():
+    _get_or_create_other_category()
+    _get_or_create_utility_category()
+    db.session.flush()
+
+
+def _is_protected_menu_category(category: MenuCategory | None) -> bool:
+    return bool(category and (category.name or "").strip().lower() in PROTECTED_MENU_CATEGORY_NAMES)
+
+
+def _public_menu_category_ids(item: MenuItem, category_name_by_id: dict[int, str]) -> list[int]:
+    visible_ids: list[int] = []
+    seen: set[int] = set()
+    for cid in _menu_item_category_ids(item):
+        cname = (category_name_by_id.get(cid) or "").strip().lower()
+        if not cname or cname in PROTECTED_MENU_CATEGORY_NAMES or cid in seen:
+            continue
+        visible_ids.append(cid)
+        seen.add(cid)
+    return visible_ids
+
+
+def _is_public_menu_item(item: MenuItem, category_name_by_id: dict[int, str]) -> bool:
+    return len(_public_menu_category_ids(item, category_name_by_id)) > 0
+
+
 def _menu_item_category_ids(item: MenuItem) -> list[int]:
     parsed: list[int] = []
     if item.category_ids_json:
@@ -216,28 +454,39 @@ def _menu_item_category_ids(item: MenuItem) -> list[int]:
     return list(dict.fromkeys(parsed))
 
 
-def _get_item_category_names(item: MenuItem, category_name_by_id: dict[int, str]) -> list[str]:
+def _get_item_category_names(item: MenuItem, category_name_by_id: dict[int, str], include_protected: bool = True) -> list[str]:
     names: list[str] = []
     names_seen: set[str] = set()
     for cid in _menu_item_category_ids(item):
         cname = category_name_by_id.get(cid)
+        if not include_protected and cname and cname.strip().lower() in PROTECTED_MENU_CATEGORY_NAMES:
+            continue
         if cname and cname.lower() not in names_seen:
             names.append(cname)
             names_seen.add(cname.lower())
     return names
 
 
-def _visible_categories_for_available_menu() -> list[MenuCategory]:
-    categories = MenuCategory.query.order_by(MenuCategory.name.asc()).all()
-    available_items = MenuItem.query.filter_by(available=True).all()
+def _visible_categories_for_available_menu(include_protected: bool = False) -> list[MenuCategory]:
+    all_categories = MenuCategory.query.order_by(MenuCategory.name.asc()).all()
+    category_name_by_id = {c.id: c.name for c in all_categories}
+    categories = list(all_categories)
+    if not include_protected:
+        categories = [c for c in categories if (c.name or "").strip().lower() not in PROTECTED_MENU_CATEGORY_NAMES]
+    available_items = MenuItem.query.filter_by(available=True, is_deleted=False).all()
     used_category_ids: set[int] = set()
     for item in available_items:
-        for cid in _menu_item_category_ids(item):
+        category_ids = (
+            _menu_item_category_ids(item)
+            if include_protected
+            else _public_menu_category_ids(item, category_name_by_id)
+        )
+        for cid in category_ids:
             used_category_ids.add(cid)
     return [
         c
         for c in categories
-        if c.name.lower() != "other" or c.id in used_category_ids
+        if c.id in used_category_ids
     ]
 
 
@@ -275,11 +524,11 @@ def _build_staff_id_card(user: User, profile: StaffProfile):
 
 def _serialize_order(order: CafeOrder):
     pending_count = sum(1 for item in order.order_items if (item.approval_status or "pending") == "pending")
-    customer_order_no = f"{(order.daily_sequence or 0):02d}" if order.daily_sequence else f"{order.id:02d}"
     return {
         "id": order.id,
-        "order_code": order.display_code or str(order.id),
-        "customer_order_no": customer_order_no,
+        "order_code": order.display_code or _format_internal_order_code(order),
+        "pickup_no": _format_pickup_number(order),
+        "pickup_no_compact": _format_pickup_number(order, compact=True),
         "table_id": order.table_id,
         "table": "For Delivery" if order.is_delivery else (order.table.name if order.table else "-"),
         "status": order.status,
@@ -293,7 +542,7 @@ def _serialize_order(order: CafeOrder):
         "packaging_charge": round(order.packaging_charge or 0, 2),
         "delivery_distance_km": round(order.delivery_distance_km or 0, 2),
         "delivery_charge": round(order.delivery_charge or 0, 2),
-        "created_at": order.created_at.strftime("%Y-%m-%d %H:%M"),
+        "created_at": _format_ist(order.created_at),
         "pending_approval_count": pending_count,
         "items": [
             {
@@ -436,7 +685,11 @@ def _parse_line_items_from_request():
         merged[key] = merged.get(key, 0) + quantity
 
     item_ids = list({key[0] for key in merged.keys()})
-    items = MenuItem.query.filter(MenuItem.id.in_(item_ids), MenuItem.available.is_(True)).all()
+    items = MenuItem.query.filter(
+        MenuItem.id.in_(item_ids),
+        MenuItem.available.is_(True),
+        MenuItem.is_deleted.is_(False),
+    ).all()
     item_by_id = {item.id: item for item in items}
     line_items = []
     for (menu_item_id, is_parcel, size_label, unit_price_key), quantity in merged.items():
@@ -588,10 +841,14 @@ def create_cafe_order(
 ):
     if not line_items:
         return None
-    today = date.today()
-    today_count = CafeOrder.query.filter(db.func.date(CafeOrder.created_at) == today.isoformat()).count()
+    today = datetime.now(IST_TZ).date()
+    day_start_utc = _utc_naive_from_ist(datetime.combine(today, time.min))
+    day_end_utc = _utc_naive_from_ist(datetime.combine(today + timedelta(days=1), time.min))
+    today_count = CafeOrder.query.filter(
+        CafeOrder.created_at >= day_start_utc,
+        CafeOrder.created_at < day_end_utc,
+    ).count()
     daily_seq = today_count + 1
-    display_code = f"{today.strftime('%m-%y')}-{daily_seq:02d}"
 
     order = CafeOrder(
         table_id=table_id,
@@ -607,10 +864,11 @@ def create_cafe_order(
         delivery_lng=delivery_lng,
         delivery_map_url=delivery_map_url,
         daily_sequence=daily_seq,
-        display_code=display_code,
+        display_code="",
     )
     db.session.add(order)
     db.session.flush()
+    _normalize_single_order_code(order, daily_seq)
 
     for row in line_items:
         if len(row) == 5:
@@ -673,7 +931,9 @@ def home():
     return render_template(
         "cafe/home.html",
         tables=CafeTable.query.count(),
-        open_orders=CafeOrder.query.filter_by(status="open").count(),
+        open_orders=CafeOrder.query.filter(
+            CafeOrder.status.notin_(["paid", "cancelled"])
+        ).count(),
         low_stock=InventoryItem.query.filter(
             InventoryItem.current_amount <= InventoryItem.reorder_level
         ).count(),
@@ -877,6 +1137,7 @@ def table_qr_download(table_id):
 @bp.route("/menu", methods=["GET", "POST"])
 @roles_required("admin", "manager")
 def menu():
+    _ensure_protected_menu_categories()
     _ensure_menu_types_seeded()
     stale_count = MenuItem.query.filter(MenuItem.subcategory_id.isnot(None)).count()
     if stale_count:
@@ -885,14 +1146,32 @@ def menu():
         )
         db.session.commit()
     if request.method == "POST":
-        menu_type = MenuType.query.get(int(request.form["menu_type_id"]))
+        form_state = _menu_form_state_from_request()
+        menu_type_id_raw = request.form.get("menu_type_id", "").strip()
+        if not menu_type_id_raw.isdigit():
+            flash("Please select a valid item type.", "error")
+            return _render_menu_page("add_item", form_state)
+        menu_type = MenuType.query.get(int(menu_type_id_raw))
         if not menu_type:
             flash("Please select a valid item type.", "error")
-            return redirect(url_for("cafe.menu"))
+            return _render_menu_page("add_item", form_state)
         category_ids = _parse_category_ids_from_form()
         if not category_ids:
             flash("Please select at least one category.", "error")
-            return redirect(url_for("cafe.menu"))
+            return _render_menu_page("add_item", form_state)
+        name = request.form.get("name", "").strip()
+        if not name:
+            flash("Please enter the item name.", "error")
+            return _render_menu_page("add_item", form_state)
+        price_raw = request.form.get("price", "").strip()
+        if not price_raw:
+            flash("Please enter the item price.", "error")
+            return _render_menu_page("add_item", form_state)
+        try:
+            price = float(price_raw)
+        except ValueError:
+            flash("Please enter a valid item price.", "error")
+            return _render_menu_page("add_item", form_state)
         uploaded_image = _save_menu_image(request.files.get("image_file"))
         image_url = uploaded_image or (request.form.get("image_url", "").strip() or None)
         item = MenuItem(
@@ -900,74 +1179,30 @@ def menu():
             subcategory_id=None,
             item_type=menu_type.name,
             category_ids_json=json.dumps(category_ids),
-            name=request.form["name"].strip(),
+            name=name,
             image_url=image_url,
             short_description=request.form.get("short_description", "").strip() or None,
             description=request.form.get("description", "").strip() or None,
             calories=int(request.form["calories"]) if request.form.get("calories") else None,
-            price=float(request.form["price"]),
+            price=price,
             has_size_variants=True if request.form.get("has_size_variants") else False,
             size_pricing_json=None,
             prep_station=request.form.get("prep_station", "kitchen"),
             available=True if request.form.get("available") else False,
+            is_deleted=False,
         )
         if item.has_size_variants:
             size_pairs = _parse_size_pricing_from_form()
+            if not size_pairs:
+                flash("Please add at least one serving size with price.", "error")
+                return _render_menu_page("add_item", form_state)
             item.size_pricing_json = json.dumps(size_pairs) if size_pairs else None
         db.session.add(item)
         db.session.commit()
         flash("Menu item added.", "success")
-        return redirect(url_for("cafe.menu"))
-    items = MenuItem.query.order_by(MenuItem.name).all()
-    item_category_map = {}
-    item_size_map = {}
-    for item in items:
-        parsed = []
-        if item.category_ids_json:
-            try:
-                raw = json.loads(item.category_ids_json)
-                if isinstance(raw, list):
-                    parsed = [int(x) for x in raw if str(x).isdigit()]
-            except (TypeError, ValueError, json.JSONDecodeError):
-                parsed = []
-        if not parsed and item.category_id:
-            parsed = [item.category_id]
-        item_category_map[item.id] = parsed
-        sizes = []
-        if item.size_pricing_json:
-            try:
-                raw_sizes = json.loads(item.size_pricing_json)
-                if isinstance(raw_sizes, list):
-                    for row in raw_sizes:
-                        if isinstance(row, dict) and row.get("size") and row.get("price") is not None:
-                            sizes.append({"size": str(row["size"]), "price": float(row["price"])})
-            except (TypeError, ValueError, json.JSONDecodeError):
-                sizes = []
-        item_size_map[item.id] = sizes
-    selected_category_filter = request.args.get("category_filter", type=int)
-    availability_items = _apply_category_filter(
-        MenuItem.query.order_by(MenuItem.name.asc()), selected_category_filter
-    ).all()
+        return redirect(url_for("cafe.menu", section="items"))
     active_menu_section = (request.args.get("section") or "catalog").strip().lower()
-    if active_menu_section not in ["catalog", "add_item", "items", "availability"]:
-        active_menu_section = "catalog"
-    return render_template(
-        "cafe/menu.html",
-        items=items,
-        categories=MenuCategory.query.order_by(MenuCategory.name).all(),
-        other_category_id=(
-            MenuCategory.query.filter(db.func.lower(MenuCategory.name) == "other").first().id
-            if MenuCategory.query.filter(db.func.lower(MenuCategory.name) == "other").first()
-            else None
-        ),
-        menu_types=MenuType.query.order_by(MenuType.name).all(),
-        prep_station_options=PREP_STATION_OPTIONS,
-        item_category_map=item_category_map,
-        item_size_map=item_size_map,
-        active_menu_section=active_menu_section,
-        availability_items=availability_items,
-        selected_category_filter=selected_category_filter,
-    )
+    return _render_menu_page(active_menu_section)
 
 
 @bp.route("/menu/availability", methods=["POST"])
@@ -975,7 +1210,7 @@ def menu():
 def update_menu_availability():
     category_filter = request.form.get("category_filter", "").strip()
     category_filter_id = int(category_filter) if category_filter.isdigit() else None
-    scoped_items = _apply_category_filter(MenuItem.query, category_filter_id).all()
+    scoped_items = _apply_category_filter(MenuItem.query.filter(MenuItem.is_deleted.is_(False)), category_filter_id).all()
     selected_ids = {
         int(x) for x in request.form.getlist("available_item_ids") if str(x).isdigit()
     }
@@ -993,6 +1228,9 @@ def add_category():
     if not name:
         flash("Category name is required.", "error")
         return redirect(url_for("cafe.menu"))
+    if name.lower() in PROTECTED_MENU_CATEGORY_NAMES:
+        flash("This category already exists as a protected system category.", "error")
+        return redirect(url_for("cafe.menu"))
     existing = MenuCategory.query.filter(db.func.lower(MenuCategory.name) == name.lower()).first()
     if existing:
         flash("Category already exists.", "error")
@@ -1007,9 +1245,15 @@ def add_category():
 @roles_required("admin", "manager")
 def update_category(category_id):
     category = MenuCategory.query.get_or_404(category_id)
+    if _is_protected_menu_category(category):
+        flash("Protected categories cannot be renamed.", "error")
+        return redirect(url_for("cafe.menu"))
     name = request.form["name"].strip()
     if not name:
         flash("Category name is required.", "error")
+        return redirect(url_for("cafe.menu"))
+    if name.lower() in PROTECTED_MENU_CATEGORY_NAMES:
+        flash("This category name is reserved for a protected system category.", "error")
         return redirect(url_for("cafe.menu"))
     duplicate = MenuCategory.query.filter(
         db.func.lower(MenuCategory.name) == name.lower(), MenuCategory.id != category.id
@@ -1028,8 +1272,8 @@ def update_category(category_id):
 def delete_category(category_id):
     category = MenuCategory.query.get_or_404(category_id)
     other = _get_or_create_other_category()
-    if category.id == other.id:
-        flash("Other category cannot be deleted.", "error")
+    if _is_protected_menu_category(category) or category.id == other.id:
+        flash("Protected categories cannot be deleted.", "error")
         return redirect(url_for("cafe.menu"))
     linked_items = MenuItem.query.filter(
         db.or_(
@@ -1132,7 +1376,7 @@ def update_menu_item(item_id):
         menu_type = MenuType.query.get(int(menu_type_id))
         if not menu_type:
             flash("Please select a valid type.", "error")
-            return redirect(url_for("cafe.menu"))
+            return redirect(url_for("cafe.menu", section="items"))
         item.item_type = menu_type.name
 
     category_ids = _parse_category_ids_from_form()
@@ -1186,20 +1430,28 @@ def update_menu_item(item_id):
     item.available = True if request.form.get("available") else False
     db.session.commit()
     flash("Menu item updated.", "success")
-    return redirect(url_for("cafe.menu"))
+    return redirect(url_for("cafe.menu", section="items"))
 
 
 @bp.route("/menu/items/<int:item_id>/delete", methods=["POST"])
 @roles_required("admin", "manager")
 def delete_menu_item(item_id):
     item = MenuItem.query.get_or_404(item_id)
-    if CafeOrderItem.query.filter_by(menu_item_id=item.id).first():
-        flash("Menu item cannot be deleted because it is used in existing orders.", "error")
-        return redirect(url_for("cafe.menu"))
-    db.session.delete(item)
+    item.is_deleted = True
+    item.available = False
     db.session.commit()
-    flash("Menu item deleted.", "success")
-    return redirect(url_for("cafe.menu"))
+    flash("Menu item moved to Deleted Items. You can restore it later.", "success")
+    return redirect(url_for("cafe.menu", section="deleted_items"))
+
+
+@bp.route("/menu/items/<int:item_id>/restore", methods=["POST"])
+@roles_required("admin", "manager")
+def restore_menu_item(item_id):
+    item = MenuItem.query.get_or_404(item_id)
+    item.is_deleted = False
+    db.session.commit()
+    flash("Menu item restored.", "success")
+    return redirect(url_for("cafe.menu", section="deleted_items"))
 
 
 @bp.route("/orders", methods=["GET", "POST"])
@@ -1227,7 +1479,7 @@ def orders():
     if not table_id and tables:
         table_id = tables[0].id
 
-    menu_query = MenuItem.query.filter_by(available=True)
+    menu_query = MenuItem.query.filter_by(available=True, is_deleted=False)
     menu_query = _apply_category_filter(menu_query, category_id)
     if item_type:
         menu_query = menu_query.filter(MenuItem.item_type == item_type)
@@ -1260,7 +1512,7 @@ def orders():
                 sizes = []
         item_size_map[item.id] = sizes
 
-    categories = _visible_categories_for_available_menu()
+    categories = _visible_categories_for_available_menu(include_protected=True)
     category_name_by_id = {c.id: c.name for c in categories}
     item_category_names_map = {
         item.id: _get_item_category_names(item, category_name_by_id) for item in menu_items
@@ -1307,6 +1559,7 @@ def mark_order_paid(order_id):
     payment_type = request.form.get("payment_type", "").strip() or order.payment_type or "Cash"
     payment_reference = request.form.get("payment_reference", "").strip() or order.payment_reference
     order.status = "paid"
+    order.paid_at = datetime.utcnow()
     order.payment_type = payment_type
     order.payment_reference = payment_reference
     sms_message = ""
@@ -1314,7 +1567,10 @@ def mark_order_paid(order_id):
         cc = (request.form.get("country_code") or "+91").strip()
         mobile = "".join(ch for ch in (request.form.get("mobile") or "") if ch.isdigit())
         if mobile:
-            msg = f"Brownberries Cafe receipt for Order #{order.display_code or order.id}: {_receipt_link_for_order(order)}"
+            msg = (
+                f"Brownberries Cafe receipt for Order #{_format_pickup_number(order)} "
+                f"(Ref: {order.display_code or _format_internal_order_code(order)}): {_receipt_link_for_order(order)}"
+            )
             ok, sms_resp = _send_receipt_sms(cc, mobile, msg)
             sms_message = " SMS sent." if ok else f" SMS not sent: {sms_resp}"
         else:
@@ -1323,7 +1579,7 @@ def mark_order_paid(order_id):
     payload = _serialize_order(order)
     socketio.emit("order_updated", payload, namespace="/kitchen")
     socketio.emit("order_updated", payload, namespace="/table")
-    flash(f"Order #{order.id} marked as paid.{sms_message}", "success")
+    flash(f"Order #{_format_pickup_number(order)} marked as paid.{sms_message}", "success")
     next_url = request.form.get("next", "").strip() or request.args.get("next", "").strip()
     if next_url:
         return redirect(next_url)
@@ -1374,16 +1630,17 @@ def approve_order(order_id):
     socketio.emit("order_updated", payload, namespace="/kitchen")
     socketio.emit("order_updated", payload, namespace="/table")
     _emit_ops_notification(
-        f"Order #{order.id} decision updated",
+        f"Order #{_format_pickup_number(order)} decision updated",
         kind="order_decision",
         payload={
-            "order_id": order.id,
+            "order_id": order.display_code or _format_internal_order_code(order),
+            "pickup_no": _format_pickup_number(order),
             "table_id": order.table_id,
             "approved_items": approved_names,
             "rejected_items": rejected_names,
         },
     )
-    flash(f"Order #{order.id}: selected items {decision}d.", "success")
+    flash(f"Order #{_format_pickup_number(order)}: selected items {decision}d.", "success")
     return redirect(request.form.get("next") or url_for("cafe.cashier", table_id=order.table_id))
 
 
@@ -1398,8 +1655,10 @@ def clear_table_orders(table_id):
         CafeOrder.status.notin_(["paid", "cancelled"]),
     ).all()
     count = 0
+    paid_now = datetime.utcnow()
     for order in orders:
         order.status = "paid"
+        order.paid_at = paid_now
         order.payment_type = payment_type
         order.payment_reference = payment_reference or order.payment_reference
         payload = _serialize_order(order)
@@ -1421,16 +1680,19 @@ def cashier():
     if tab not in ["running", "all_orders"]:
         tab = "running"
     table_id = request.args.get("table_id", type=int)
-    sel_year = request.args.get("year", type=int) or date.today().year
-    sel_month = request.args.get("month", type=int) or date.today().month
-    sel_day = request.args.get("day", type=int) or date.today().day
+    today_ist = datetime.now(IST_TZ).date()
+    sel_year = request.args.get("year", type=int) or today_ist.year
+    sel_month = request.args.get("month", type=int) or today_ist.month
+    sel_day = request.args.get("day", type=int) or today_ist.day
     try:
         selected_date = date(sel_year, sel_month, sel_day)
     except ValueError:
-        selected_date = date.today()
+        selected_date = today_ist
         sel_year, sel_month, sel_day = selected_date.year, selected_date.month, selected_date.day
-    day_start = datetime.combine(selected_date, time.min)
-    day_end = day_start + timedelta(days=1)
+    day_start = _utc_naive_from_ist(datetime.combine(selected_date, time.min))
+    day_end = _utc_naive_from_ist(datetime.combine(selected_date + timedelta(days=1), time.min))
+    today_day_start = _utc_naive_from_ist(datetime.combine(today_ist, time.min))
+    today_day_end = _utc_naive_from_ist(datetime.combine(today_ist + timedelta(days=1), time.min))
     tables = CafeTable.query.filter_by(active=True).order_by(CafeTable.name).all()
     running_rows = (
         db.session.query(
@@ -1457,10 +1719,14 @@ def cashier():
         running_table_ids = [t.id for t in tables if running_map.get(t.id, {}).get("count", 0) > 0]
         table_id = running_table_ids[0] if running_table_ids else tables[0].id
     selected_table = CafeTable.query.get(table_id) if table_id else None
-    today = date.today().isoformat()
     total_sale_today = (
         db.session.query(db.func.coalesce(db.func.sum(CafeOrder.total_amount), 0))
-        .filter(CafeOrder.status == "paid", db.func.date(CafeOrder.updated_at) == today)
+        .filter(
+            CafeOrder.status == "paid",
+            CafeOrder.paid_at.is_not(None),
+            CafeOrder.paid_at >= today_day_start,
+            CafeOrder.paid_at < today_day_end,
+        )
         .scalar()
         or 0
     )
@@ -1498,12 +1764,14 @@ def cashier():
         all_orders_payload.append(
             {
                 "id": o.id,
-                "code": o.display_code or str(o.id),
+                "code": o.display_code or _format_internal_order_code(o),
+                "pickup_no": _format_pickup_number(o),
+                "pickup_no_compact": _format_pickup_number(o, compact=True),
                 "table": o.table.name if o.table else "-",
                 "status": o.status,
                 "payment_type": o.payment_type or "-",
                 "payment_reference": o.payment_reference or "-",
-                "created_at": o.created_at.strftime("%Y-%m-%d %H:%M"),
+                "created_at": _format_ist(o.created_at),
                 "items": [
                     {
                         "name": (oi.menu_item.name if oi.menu_item else "Item"),
@@ -1572,7 +1840,10 @@ def send_order_receipt_sms(order_id):
     if not mobile or not any(ch.isdigit() for ch in mobile):
         return jsonify({"ok": False, "message": "Valid mobile number is required."}), 400
     mobile_digits = "".join(ch for ch in mobile if ch.isdigit())
-    message = f"Brownberries Cafe receipt for Order #{order.display_code or order.id}: {_receipt_link_for_order(order)}"
+    message = (
+        f"Brownberries Cafe receipt for Order #{_format_pickup_number(order)} "
+        f"(Ref: {order.display_code or _format_internal_order_code(order)}): {_receipt_link_for_order(order)}"
+    )
     ok, msg = _send_receipt_sms(country_code, mobile_digits, message)
     if ok:
         return jsonify({"ok": True, "message": "Receipt SMS sent."})
@@ -1691,6 +1962,20 @@ def edit_pending_table_order(order_id):
     socketio.emit("order_updated", payload, namespace="/table")
     flash("Pending order updated.", "success")
     return redirect(url_for("main.table_qr_page", slug=slug))
+
+
+@bp.route("/table/call-staff", methods=["POST"])
+def call_staff_for_table():
+    slug = (request.form.get("slug") or "").strip()
+    table = CafeTable.query.filter_by(qr_slug=slug, active=True).first()
+    if not table:
+        return jsonify({"ok": False, "message": "Table not found."}), 404
+    _emit_ops_notification(
+        f"Staff requested at {table.name}",
+        kind="staff_call",
+        payload={"table_id": table.id, "table_name": table.name},
+    )
+    return jsonify({"ok": True, "message": f"Staff has been notified for {table.name}."})
 
 
 @bp.route("/kitchen")
@@ -2069,7 +2354,7 @@ def inventory():
     purchases = InventoryPurchase.query.order_by(InventoryPurchase.purchase_date.desc(), InventoryPurchase.id.desc()).limit(80).all()
     wastage_rows = InventoryWastage.query.order_by(InventoryWastage.wastage_date.desc(), InventoryWastage.id.desc()).limit(120).all()
     recipes = InventoryRecipe.query.order_by(InventoryRecipe.id.desc()).all()
-    menu_items = MenuItem.query.filter_by(available=True).order_by(MenuItem.name.asc()).all()
+    menu_items = MenuItem.query.filter_by(available=True, is_deleted=False).order_by(MenuItem.name.asc()).all()
     edit_item_id = request.args.get("edit_item_id", type=int)
     selected_item = InventoryItem.query.get(edit_item_id) if edit_item_id else (filtered_items[0] if filtered_items else None)
     edit_vendor_id = request.args.get("edit_vendor_id", type=int)
@@ -2716,7 +3001,8 @@ def _build_stats_payload(filters, use_cache=True):
         orders_payload.append(
             {
                 "id": order.id,
-                "code": order.display_code or str(order.id),
+                "code": order.display_code or _format_internal_order_code(order),
+                "pickup_no": _format_pickup_number(order),
                 "table": "For Delivery" if order.is_delivery else (order.table.name if order.table else "-"),
                 "order_type": row["order_type"],
                 "order_type_label": _order_type_label(row["order_type"]),
@@ -2810,7 +3096,7 @@ def _build_stats_payload(filters, use_cache=True):
         row["rank"] = idx
     top_items = top_by_qty[:15]
     bottom_items = sorted(item_rows, key=lambda x: (x["qty"], x["revenue"], x["name"].lower()))[:10]
-    menu_q = MenuItem.query.filter(MenuItem.available.is_(True))
+    menu_q = MenuItem.query.filter(MenuItem.available.is_(True), MenuItem.is_deleted.is_(False))
     if sales_source in ["kitchen", "barista"]:
         menu_q = menu_q.filter(MenuItem.prep_station == sales_source)
     menu_all = menu_q.all()
@@ -3160,9 +3446,11 @@ def staff():
     allowed_sections = {
         "add_new_staff",
         "active_staff",
+        "archived_staff",
         "attendance_calendar",
         "attendance_entry",
         "leave_requests",
+        "payroll_summary",
     }
     active_staff_section = (request.args.get("section") or "add_new_staff").strip().lower()
     if active_staff_section not in allowed_sections:
@@ -3209,6 +3497,11 @@ def staff():
             profile.dob = date.fromisoformat(request.form["dob"]) if request.form.get("dob") else None
             profile.marital_status = request.form.get("marital_status", "").strip() or None
             profile.gender = request.form.get("gender", "").strip() or None
+            profile.salary_type = request.form.get("salary_type", "").strip() or "monthly"
+            salary_amount_raw = request.form.get("salary_amount", "").strip()
+            profile.salary_amount = float(salary_amount_raw) if salary_amount_raw else None
+            profile.probation_end_date = date.fromisoformat(request.form["probation_end_date"]) if request.form.get("probation_end_date") else None
+            profile.emergency_contact = request.form.get("emergency_contact", "").strip() or None
             profile.archived = False
             db.session.commit()
             flash("Staff member added.", "success")
@@ -3243,7 +3536,12 @@ def staff():
             profile.gender = request.form.get("gender", "").strip() or None
             profile.phone = request.form.get("phone", "").strip() or None
             profile.alternate_contact = request.form.get("alternate_contact", "").strip() or None
+            profile.emergency_contact = request.form.get("emergency_contact", "").strip() or None
             profile.address = request.form.get("address", "").strip() or None
+            profile.salary_type = request.form.get("salary_type", "").strip() or None
+            salary_amount_raw = request.form.get("salary_amount", "").strip()
+            profile.salary_amount = float(salary_amount_raw) if salary_amount_raw else None
+            profile.probation_end_date = date.fromisoformat(request.form["probation_end_date"]) if request.form.get("probation_end_date") else None
             profile.pan_number = request.form.get("pan_number", "").strip() or None
             profile.bank_account_name = request.form.get("bank_account_name", "").strip() or None
             profile.bank_account_number = request.form.get("bank_account_number", "").strip() or None
@@ -3288,6 +3586,15 @@ def staff():
             flash("Staff member archived.", "success")
             return _staff_redirect("active_staff")
 
+        if action == "restore":
+            user = User.query.get_or_404(int(request.form["user_id"]))
+            profile = _ensure_staff_profile(user)
+            profile.archived = False
+            user.active = True
+            db.session.commit()
+            flash("Staff member restored.", "success")
+            return _staff_redirect("archived_staff")
+
         if action == "leave_decision":
             leave = StaffLeaveRequest.query.get_or_404(int(request.form["leave_id"]))
             decision = request.form.get("decision", "pending")
@@ -3303,6 +3610,8 @@ def staff():
             target_user_id = int(request.form["target_user_id"])
             attendance_date = date.fromisoformat(request.form["attendance_date"])
             status = request.form.get("status", "present_all_day").strip()
+            if status not in dict(STAFF_ATTENDANCE_STATUS_OPTIONS):
+                status = "present_all_day"
             notes = request.form.get("notes", "").strip() or None
             existing = StaffAttendance.query.filter_by(
                 user_id=target_user_id, attendance_date=attendance_date
@@ -3310,12 +3619,14 @@ def staff():
             if existing:
                 existing.status = status
                 existing.notes = notes
+                existing.manager_override = True
             else:
                 db.session.add(
                     StaffAttendance(
                         user_id=target_user_id,
                         attendance_date=attendance_date,
                         status=status,
+                        manager_override=True,
                         notes=notes,
                     )
                 )
@@ -3323,8 +3634,9 @@ def staff():
             flash("Attendance saved for selected staff member.", "success")
             return _staff_redirect("attendance_entry", attendance_user_id=target_user_id)
 
+    excluded_staff_emails = ["qr.guest@brownberries.local", "delivery.guest@brownberries.local"]
     staff_users = (
-        User.query.filter(User.role.in_(STAFF_ROLES), User.email != "qr.guest@brownberries.local")
+        User.query.filter(~User.email.in_(excluded_staff_emails))
         .order_by(User.full_name.asc())
         .all()
     )
@@ -3380,6 +3692,52 @@ def staff():
         ).all()
         selected_attendance_map = {row.attendance_date.day: row.status for row in rows}
 
+    payroll_month = request.args.get("payroll_month", type=int) or date.today().month
+    payroll_year = request.args.get("payroll_year", type=int) or date.today().year
+    if payroll_month < 1 or payroll_month > 12:
+        payroll_month = date.today().month
+    if payroll_year < 2000 or payroll_year > 2100:
+        payroll_year = date.today().year
+    payroll_days = calendar.monthrange(payroll_year, payroll_month)[1]
+    payroll_start = date(payroll_year, payroll_month, 1)
+    payroll_end = date(payroll_year, payroll_month, payroll_days)
+    payroll_rows = []
+    total_payroll_estimate = 0.0
+    today_attendance_rows = StaffAttendance.query.filter_by(attendance_date=date.today()).all()
+    doc_pending_count = StaffDocument.query.filter(
+        StaffDocument.verification_status.in_(["pending", "rejected"])
+    ).count()
+    pending_leave_count = StaffLeaveRequest.query.filter_by(status="pending").count()
+    for staff_user in staff_users:
+        profile = staff_user.staff_profile
+        month_rows = StaffAttendance.query.filter(
+            StaffAttendance.user_id == staff_user.id,
+            StaffAttendance.attendance_date >= payroll_start,
+            StaffAttendance.attendance_date <= payroll_end,
+        ).all()
+        present_days = sum(1 for row in month_rows if row.status in ["present_all_day", "late_entry", "early_exit", "weekly_off", "on_leave"])
+        half_days = sum(1 for row in month_rows if row.status in ["first_half", "second_half"])
+        sick_days = sum(1 for row in month_rows if row.status == "sick_leave")
+        unpaid_days = sum(max(0.0, 1.0 - _staff_attendance_pay_fraction(row.status)) for row in month_rows)
+        payable_days = sum(_staff_attendance_pay_fraction(row.status) for row in month_rows)
+        salary_amount = float(profile.salary_amount or 0)
+        per_day_salary = round((salary_amount / payroll_days), 2) if salary_amount else 0.0
+        estimated_pay = round(payable_days * per_day_salary, 2)
+        total_payroll_estimate += estimated_pay
+        payroll_rows.append(
+            {
+                "user": staff_user,
+                "profile": profile,
+                "present_days": present_days,
+                "half_days": half_days,
+                "sick_days": sick_days,
+                "unpaid_days": round(unpaid_days, 2),
+                "payable_days": round(payable_days, 2),
+                "per_day_salary": per_day_salary,
+                "estimated_pay": estimated_pay,
+            }
+        )
+
     return render_template(
         "cafe/staff_admin.html",
         active_profiles=active_profiles,
@@ -3396,6 +3754,14 @@ def staff():
         staff_role_options=_get_role_options(),
         user_types=UserType.query.order_by(UserType.name.asc()).all(),
         active_staff_section=active_staff_section,
+        attendance_status_options=STAFF_ATTENDANCE_STATUS_OPTIONS,
+        payroll_rows=payroll_rows,
+        payroll_month=payroll_month,
+        payroll_year=payroll_year,
+        total_payroll_estimate=round(total_payroll_estimate, 2),
+        today_attendance_count=len(today_attendance_rows),
+        document_pending_count=doc_pending_count,
+        pending_leave_count=pending_leave_count,
     )
 
 

@@ -1,78 +1,85 @@
 {% extends "base.html" %}
 {% block content %}
-<section class="panel">
-  <h2>Table Ordering</h2>
-  <form method="get" class="grid grid-4">
-    <input type="hidden" name="table_id" value="{{ selected_table_id or '' }}" />
-    <label>Category
-      <select name="category_id">
-        <option value="">All</option>
-        {% for c in categories %}
-        <option value="{{ c.id }}" {% if selected_category_id == c.id %}selected{% endif %}>{{ c.name }}</option>
+{% set selected_table_name = selected_table_id and (tables | selectattr('id', 'equalto', selected_table_id) | map(attribute='name') | first) or 'Select Table' %}
+
+<section class="panel qr-cafe-top qr-menu-header">
+  <div class="qr-head qr-order-toolbar">
+    <img src="{{ url_for('static', filename='images/cafe-logo.png') }}" class="brand-logo" alt="Brownberries Cafe" />
+    <form method="get" class="staff-table-select-form">
+      <span class="staff-table-select-text">Table</span>
+      <select name="table_id" id="staff-table-select" class="staff-table-select-input" onchange="this.form.submit()">
+        <option value="">Select Table</option>
+        {% for t in tables %}
+        <option value="{{ t.id }}" {% if selected_table_id == t.id %}selected{% endif %}>{{ t.name }}</option>
         {% endfor %}
       </select>
-    </label>
-    <label>Type
-      <select name="item_type">
-        <option value="">All</option>
-        {% for t in item_types %}
-        <option value="{{ t }}" {% if selected_item_type == t %}selected{% endif %}>{{ t }}</option>
-        {% endfor %}
-      </select>
-    </label>
-    <button type="submit">Apply Filters</button>
-  </form>
-  <input id="staff-search" class="qr-search" placeholder="Search food or drinks..." />
+      <span class="staff-table-current">Selected: {{ selected_table_name }}</span>
+    </form>
+  </div>
   <div class="qr-category-bar" id="staff-category-bar">
     <button type="button" class="qr-cat-pill active" data-cat="all">All</button>
+    <button type="button" class="qr-cat-pill" data-cat="most-loved">Most Loved</button>
     {% for c in categories %}
     <button type="button" class="qr-cat-pill" data-cat="{{ c.name|lower }}">{{ c.name }}</button>
     {% endfor %}
   </div>
-  <form method="get" class="cashier-table-grid" style="margin-top:0.7rem;">
-    <input type="hidden" name="category_id" value="{{ selected_category_id or '' }}" />
-    <input type="hidden" name="item_type" value="{{ selected_item_type or '' }}" />
-    {% for t in tables %}
-    <button
-      type="submit"
-      name="table_id"
-      value="{{ t.id }}"
-      class="cashier-table-box {% if selected_table_id == t.id %}selected{% endif %}"
-    >
-      <strong>{{ t.name }}</strong>
-      <span>Capacity: {{ t.seating_capacity }}</span>
-    </button>
-    {% endfor %}
-  </form>
+  <div class="qr-search-wrap">
+    <input id="staff-search" class="qr-search" placeholder="Search dosa, coffee, pizza..." />
+    <button type="button" class="search-clear-btn hidden" id="staff-search-clear" aria-label="Clear search">×</button>
+  </div>
 </section>
 
 <form method="post" id="staff-order-form" class="grid">
   <input type="hidden" name="table_id" id="selected-table-id-input" value="{{ selected_table_id or '' }}" />
 
-  <section class="panel">
-    <h3>Most Loved</h3>
-    <div class="item-grid">
-      {% for item in menu_items[:6] %}
+  <section class="panel qr-menu-panel">
+    <div class="section-heading">
+      <div>
+        <p class="eyebrow">Menu</p>
+        <h3>Explore Brownberries</h3>
+      </div>
+      <p class="muted section-note">The same menu logic as QR ordering, tuned for quick staff entry.</p>
+    </div>
+    <div class="item-grid qr-menu-grid" id="staff-items-grid">
+      {% for item in menu_items %}
       {% set sizes = item_size_map.get(item.id, []) %}
       {% set item_cats = item_category_names_map.get(item.id, []) %}
-      <article class="item-card staff-item-card" data-cats="{{ item_cats|map('lower')|join('|') }}" data-name="{{ item.name|lower }}" data-type="{{ (item.item_type or '')|lower }}">
+      <article
+        class="item-card staff-item-card"
+        data-cats="{{ item_cats|map('lower')|join('|') }}"
+        data-name="{{ item.name|lower }}"
+        data-short="{{ (item.short_description or item.description or '')|lower }}"
+        data-type="{{ (item.item_type or '')|lower }}"
+        data-featured="{{ '1' if loop.index <= 10 else '0' }}"
+      >
+        <div class="item-card-topline">
+          {% if loop.index <= 5 %}
+          <span class="item-tag item-tag-featured">Most Loved</span>
+          {% elif loop.index <= 10 %}
+          <span class="item-tag">Popular</span>
+          {% endif %}
+          {% if item.item_type %}
+          <span class="item-tag item-tag-muted">{{ item.item_type }}</span>
+          {% endif %}
+        </div>
         <h4 class="item-name">{{ item.name }}</h4>
         {% if item.image_url %}
         <img src="{{ item.image_url }}" alt="{{ item.name }}" class="item-image" />
         {% else %}
         <div class="item-image placeholder">No Image</div>
         {% endif %}
-        <p class="item-short">{{ item.short_description or item.description or "Freshly prepared at Brownberries Café." }}</p>
-        <p class="item-price"><strong>Price:</strong> ₹<span class="item-price-value">{{ "%.2f"|format((sizes[0].price if (item.has_size_variants and sizes) else item.price) or 0) }}</span></p>
-        <p class="item-calories">
-          Calories: {{ item.calories or "-" }}
-          <label style="margin-left:0.45rem; display:inline-flex; gap:0.2rem; align-items:center;">
-            <input type="checkbox" class="parcel-checkbox" />
-            Parcel
-          </label>
-        </p>
+        <p class="item-short">{{ item.short_description or item.description or "Freshly prepared at Brownberries Cafe." }}</p>
+        <div class="item-meta-row">
+          <p class="item-price">₹<span class="item-price-value">{{ "%.2f"|format((sizes[0].price if (item.has_size_variants and sizes) else item.price) or 0) }}</span></p>
+          <p class="item-calories">Calories: {{ item.calories or "-" }}</p>
+        </div>
+        <label class="parcel-row">
+          <input type="checkbox" class="parcel-checkbox" />
+          Parcel (+₹20 each)
+        </label>
         {% if item.has_size_variants and sizes %}
-        <label class="size-row">Serving Size
+        <label class="size-row">
+          <span>Serving Size</span>
           <select class="size-select">
             <option value="" data-price="" selected>Choose...</option>
             {% for s in sizes %}
@@ -81,89 +88,41 @@
           </select>
         </label>
         {% else %}
-        <div class="size-row muted">Serving Size: Standard</div>
+        <div class="size-row muted"><span>Serving Size</span><span>Standard</span></div>
         {% endif %}
         <div class="item-actions">
           <button type="button" class="desc-btn" data-name="{{ item.name }}" data-description="{{ item.description or 'No description available.' }}">View Description</button>
-          <div class="qty-control">
-            <button type="button" class="qty-btn" data-role="minus">-</button>
-            <input type="number" min="1" value="1" class="qty-input" />
-            <button type="button" class="qty-btn" data-role="plus">+</button>
+          <div class="quick-add-row">
+            <div class="qty-control">
+              <button type="button" class="qty-btn" data-role="minus">-</button>
+              <input type="number" min="1" value="1" class="qty-input" />
+              <button type="button" class="qty-btn" data-role="plus">+</button>
+            </div>
+            <button type="button" class="add-to-cart-btn" data-item-id="{{ item.id }}" data-item-name="{{ item.name }}" data-item-price="{{ item.price }}">Add</button>
           </div>
-          <button type="button" class="add-to-cart-btn" data-item-id="{{ item.id }}" data-item-name="{{ item.name }}" data-item-price="{{ item.price }}">Add</button>
         </div>
       </article>
       {% endfor %}
     </div>
-  </section>
-
-  <section class="panel">
-    <h3>Menu Items</h3>
-    <div class="item-grid">
-      {% for item in menu_items %}
-      {% set item_cats = item_category_names_map.get(item.id, []) %}
-      <article class="item-card staff-item-card" data-cats="{{ item_cats|map('lower')|join('|') }}" data-name="{{ item.name|lower }}" data-type="{{ (item.item_type or '')|lower }}">
-        <h4 class="item-name">{{ item.name }}</h4>
-        {% if item.image_url %}
-        <img src="{{ item.image_url }}" alt="{{ item.name }}" class="item-image" />
-        {% else %}
-        <div class="item-image placeholder">No Image</div>
-        {% endif %}
-        <p class="item-short">{{ item.short_description or item.description or "Freshly prepared at Brownberries Café." }}</p>
-        {% set sizes = item_size_map.get(item.id, []) %}
-        <p class="item-price"><strong>Price:</strong> ₹<span class="item-price-value">{{ "%.2f"|format((sizes[0].price if (item.has_size_variants and sizes) else item.price) or 0) }}</span></p>
-        <p class="item-calories">
-          Calories: {{ item.calories or "-" }}
-          <label style="margin-left:0.45rem; display:inline-flex; gap:0.2rem; align-items:center;">
-            <input type="checkbox" class="parcel-checkbox" />
-            Parcel
-          </label>
-        </p>
-        {% if item.has_size_variants and sizes %}
-        <label class="size-row">Serving Size
-          <select class="size-select">
-            <option value="" data-price="" selected>Choose...</option>
-            {% for s in sizes %}
-            <option value="{{ s.size }}" data-price="{{ s.price }}">{{ s.size }} | ₹{{ "%.2f"|format(s.price) }}</option>
-            {% endfor %}
-          </select>
-        </label>
-        {% else %}
-        <div class="size-row muted">Serving Size: Standard</div>
-        {% endif %}
-        <div class="item-actions">
-          <button
-            type="button"
-            class="desc-btn"
-            data-name="{{ item.name }}"
-            data-description="{{ item.description or 'No description available.' }}"
-          >View Description</button>
-          <div class="qty-control">
-            <button type="button" class="qty-btn" data-role="minus">-</button>
-            <input type="number" min="1" value="1" class="qty-input" />
-            <button type="button" class="qty-btn" data-role="plus">+</button>
-          </div>
-          <button
-            type="button"
-            class="add-to-cart-btn"
-            data-item-id="{{ item.id }}"
-            data-item-name="{{ item.name }}"
-            data-item-price="{{ item.price }}"
-          >Add</button>
-        </div>
-      </article>
-      {% endfor %}
+    <div id="staff-empty-results" class="empty-filter-state hidden">
+      <p>No match found. Try a different food or drink name.</p>
     </div>
   </section>
 
-  <section class="panel">
-    <h3>Cart</h3>
+  <section class="panel" id="cart-panel">
+    <div class="section-heading">
+      <div>
+        <p class="eyebrow">Review</p>
+        <h3>Your Order</h3>
+      </div>
+      <p class="muted section-note">Build the cart first, then place the order for the selected table.</p>
+    </div>
     <div id="cart-lines" class="cart-lines"></div>
-    <p><strong>Total:</strong> <span id="cart-total">0.00</span></p>
+    <p><strong>Total:</strong> ₹<span id="cart-total">0.00</span></p>
     <input type="hidden" id="cart-payload" name="cart_payload" />
     <button type="submit">Place Order</button>
   </section>
-  <section id="staff-floating-cart" class="floating-cart">View Cart • ₹<span id="staff-floating-total">0</span></section>
+  <section id="staff-floating-cart" class="floating-cart">🛒 View Cart • ₹<span id="staff-floating-total">0</span></section>
 </form>
 
 <div id="desc-modal" class="desc-modal hidden">
@@ -182,7 +141,13 @@
 <div id="cart-toast" class="cart-toast hidden"></div>
 
 <section class="panel">
-  <h3>Current Unpaid Orders for Selected Table</h3>
+  <div class="section-heading">
+    <div>
+      <p class="eyebrow">Running Orders</p>
+      <h3>Current Unpaid Orders{% if selected_table_id %} for Selected Table{% endif %}</h3>
+    </div>
+    <p class="muted section-note">Use this section to clear dues and keep cashier in sync.</p>
+  </div>
   {% if g.current_user.role in ["admin", "manager", "cashier"] and selected_table_id %}
   <form method="post" action="{{ url_for('cafe.clear_table_orders', table_id=selected_table_id) }}" class="grid grid-4" style="margin-bottom:0.6rem;">
     <label>Payment Type
@@ -259,7 +224,9 @@
   const selectedTableInput = document.getElementById("selected-table-id-input");
   const CART_STORAGE_KEY = `brownberries_staff_cart_v1:${selectedTableInput?.value || "none"}`;
   const staffSearchInput = document.getElementById("staff-search");
+  const staffSearchClear = document.getElementById("staff-search-clear");
   const staffCategoryBar = document.getElementById("staff-category-bar");
+  const staffMenuHeader = document.querySelector(".qr-menu-header");
   const staffFloatingCart = document.getElementById("staff-floating-cart");
   const staffFloatingTotal = document.getElementById("staff-floating-total");
   const descModal = document.getElementById("desc-modal");
@@ -270,7 +237,9 @@
   const imageClose = document.getElementById("image-close");
   const imageModalSrc = document.getElementById("image-modal-src");
   const cartToast = document.getElementById("cart-toast");
+  const emptyResults = document.getElementById("staff-empty-results");
   let toastTimer = null;
+  let activeStaffCat = "all";
 
   function normalizeQty(value) {
     const num = Number(value);
@@ -292,6 +261,7 @@
       cartLines.innerHTML = '<p class="muted">No items in cart.</p>';
       cartTotal.textContent = "0.00";
       cartPayloadInput.value = "";
+      if (staffFloatingTotal) staffFloatingTotal.textContent = "0";
       return;
     }
     let total = 0;
@@ -322,11 +292,13 @@
     })));
     saveCartState();
   }
+
   function saveCartState() {
     try {
       window.sessionStorage.setItem(CART_STORAGE_KEY, JSON.stringify(Object.values(cart)));
     } catch (_) {}
   }
+
   function restoreCartState() {
     try {
       const raw = window.sessionStorage.getItem(CART_STORAGE_KEY);
@@ -347,6 +319,7 @@
       });
     } catch (_) {}
   }
+
   function isSubsequence(needle, haystack) {
     let j = 0;
     for (let i = 0; i < haystack.length && j < needle.length; i += 1) {
@@ -354,17 +327,26 @@
     }
     return j === needle.length;
   }
+
   function fuzzyMatch(query, blob) {
     if (!query) return true;
-    if (blob.includes(query)) return true;
+    const terms = query.split(/\s+/).filter(Boolean);
+    if (!terms.length) return true;
     const parts = blob.split(/\s+/).filter(Boolean);
-    return parts.some((part) => isSubsequence(query, part) || part.startsWith(query.slice(0, 2)));
+    return terms.every((term) => {
+      if (blob.includes(term)) return true;
+      return parts.some((part) => {
+        const prefix = term.length === 1 ? term : term.slice(0, 2);
+        return isSubsequence(term, part) || part.startsWith(prefix);
+      });
+    });
   }
 
   document.querySelectorAll(".qty-control").forEach((wrap) => {
     const input = wrap.querySelector(".qty-input");
     const minus = wrap.querySelector('[data-role="minus"]');
     const plus = wrap.querySelector('[data-role="plus"]');
+    if (!input || !minus || !plus) return;
     minus.addEventListener("click", () => { input.value = Math.max(1, normalizeQty(input.value) - 1); });
     plus.addEventListener("click", () => { input.value = normalizeQty(input.value) + 1; });
   });
@@ -403,6 +385,7 @@
       showToast(`${name} x ${quantity} added to the cart${isParcel ? " (Parcel)" : ""}`);
     });
   });
+
   document.querySelectorAll(".size-select").forEach((selectEl) => {
     const updateCardPrice = () => {
       const card = selectEl.closest(".item-card");
@@ -463,18 +446,96 @@
     }
     renderCart();
   });
-  let activeStaffCat = "all";
+
   function applyStaffFilters() {
     const q = (staffSearchInput?.value || "").trim().toLowerCase();
+    let visibleCount = 0;
     document.querySelectorAll(".staff-item-card").forEach((card) => {
       const cats = (card.dataset.cats || "").split("|").filter(Boolean);
-      const blob = `${card.dataset.name || ""} ${card.dataset.type || ""} ${cats.join(" ")}`;
-      const catOk = activeStaffCat === "all" || cats.includes(activeStaffCat);
+      const blob = `${card.dataset.name || ""} ${card.dataset.short || ""} ${card.dataset.type || ""} ${cats.join(" ")}`;
+      const featured = (card.dataset.featured || "0") === "1";
+      const catOk = activeStaffCat === "all" ? true : (activeStaffCat === "most-loved" ? featured : cats.includes(activeStaffCat));
       const qOk = fuzzyMatch(q, blob);
-      card.style.display = (catOk && qOk) ? "" : "none";
+      const show = catOk && qOk;
+      card.style.display = show ? "" : "none";
+      if (show) visibleCount += 1;
     });
+    emptyResults?.classList.toggle("hidden", visibleCount > 0);
   }
-  staffSearchInput?.addEventListener("input", applyStaffFilters);
+
+  function syncStaffSearchClear() {
+    staffSearchClear?.classList.toggle("hidden", !(staffSearchInput?.value || "").trim());
+  }
+
+  function setupAutoCompactHeader(header) {
+    if (!header) return;
+    let lastCompact = false;
+    const sync = () => {
+      const compact = window.scrollY > 32 || document.body.classList.contains("ordering-search-active");
+      if (compact === lastCompact) return;
+      lastCompact = compact;
+      header.classList.toggle("is-compact", compact);
+    };
+    window.addEventListener("scroll", sync, { passive: true });
+    window.addEventListener("resize", sync);
+    sync();
+  }
+
+  function setupOrderingTopbarAutoHide() {
+    const topbar = document.querySelector(".topbar");
+    if (!topbar || !staffMenuHeader) return;
+    let lastHidden = false;
+    let lastY = window.scrollY;
+    const sync = () => {
+      if (document.body.classList.contains("ordering-search-active")) {
+        if (!lastHidden) {
+          lastHidden = true;
+          document.body.classList.add("ordering-nav-hidden");
+        }
+        return;
+      }
+      const y = window.scrollY;
+      const hide = y > 48 && y >= lastY;
+      if (hide !== lastHidden) {
+        lastHidden = hide;
+        document.body.classList.toggle("ordering-nav-hidden", hide);
+      }
+      lastY = Math.max(0, y);
+    };
+    window.addEventListener("scroll", sync, { passive: true });
+    window.addEventListener("resize", sync);
+    sync();
+  }
+
+  function setupSearchFocusMode() {
+    if (!staffSearchInput || !staffMenuHeader) return;
+    const activate = () => {
+      document.body.classList.add("ordering-search-active", "ordering-nav-hidden");
+      staffMenuHeader.classList.add("is-compact");
+      window.setTimeout(() => staffSearchInput.scrollIntoView({ behavior: "smooth", block: "nearest" }), 60);
+    };
+    const deactivate = () => {
+      window.setTimeout(() => {
+        document.body.classList.remove("ordering-search-active");
+        window.dispatchEvent(new Event("scroll"));
+      }, 120);
+    };
+    ["pointerdown", "mousedown", "touchstart", "click", "focus", "focusin", "input"].forEach((eventName) => {
+      staffSearchInput.addEventListener(eventName, activate, { passive: true });
+    });
+    staffSearchInput.addEventListener("blur", deactivate);
+    if (document.activeElement === staffSearchInput) activate();
+  }
+  staffSearchInput?.addEventListener("input", () => {
+    syncStaffSearchClear();
+    applyStaffFilters();
+  });
+  staffSearchClear?.addEventListener("click", () => {
+    staffSearchInput.value = "";
+    syncStaffSearchClear();
+    applyStaffFilters();
+    staffSearchInput.focus();
+  });
   staffCategoryBar?.addEventListener("click", (event) => {
     const btn = event.target.closest(".qr-cat-pill");
     if (!btn) return;
@@ -483,6 +544,7 @@
     btn.classList.add("active");
     applyStaffFilters();
   });
+
   function makeDraggable(el) {
     if (!el) return;
     let dragging = false;
@@ -507,7 +569,7 @@
     el.addEventListener("pointerup", () => { dragging = false; });
     el.addEventListener("pointercancel", () => { dragging = false; });
   }
-  staffFloatingCart?.addEventListener("click", () => document.getElementById("cart-lines")?.scrollIntoView({ behavior: "smooth", block: "start" }));
+  staffFloatingCart?.addEventListener("click", () => document.getElementById("cart-panel")?.scrollIntoView({ behavior: "smooth", block: "start" }));
   makeDraggable(staffFloatingCart);
 
   orderForm.addEventListener("submit", (event) => {
@@ -526,6 +588,11 @@
 
   restoreCartState();
   renderCart();
+  syncStaffSearchClear();
+  applyStaffFilters();
+  setupAutoCompactHeader(staffMenuHeader);
+  setupOrderingTopbarAutoHide();
+  setupSearchFocusMode();
 </script>
 <script src="{{ url_for('static', filename='js/socket.io.min.js') }}"></script>
 <script>

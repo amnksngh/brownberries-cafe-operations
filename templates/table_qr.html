@@ -1,181 +1,202 @@
 {% extends "base.html" %}
 {% block content %}
-<section class="panel qr-cafe-top">
-  {% if not table %}
+{% if not table %}
+<section class="panel qr-empty-state">
   <h2>Table Not Found</h2>
   <p>Please check the QR code slug and try again.</p>
-  {% else %}
-  <div class="qr-head">
-    <img src="{{ url_for('static', filename='images/cafe-logo.png') }}" class="brand-logo" alt="Brownberries Cafe" />
-    <div>
-      <h2>{% if is_preview %}Menu Preview{% else %}{{ table.name }}{% endif %}</h2>
-      <p class="muted">{% if is_preview %}Browse items available at Brownberries Cafe{% else %}Welcome{% endif %}</p>
-    </div>
-  </div>
-  <input id="qr-search" class="qr-search" placeholder="Search food or drinks..." />
-  <div class="qr-category-bar" id="qr-category-bar">
-    <button type="button" class="qr-cat-pill active" data-cat="all">All</button>
-    {% for c in categories %}
-    <button type="button" class="qr-cat-pill" data-cat="{{ c.name|lower }}">{{ c.name }}</button>
-    {% endfor %}
-  </div>
-  {% endif %}
 </section>
-
-{% if table %}
-<form method="post" action="{{ url_for('cafe.table_order') }}" id="qr-order-form" class="grid">
-  <input type="hidden" name="slug" value="{{ table.qr_slug }}" />
-
-  <section class="panel">
-    <h3>Best Sellers</h3>
-    <div class="item-grid" id="best-sellers-grid">
-      {% for item in menu_items[:8] %}
-      {% set item_cats = item_category_names_map.get(item.id, []) %}
-      <article class="item-card qr-item-card" data-cats="{{ item_cats|map('lower')|join('|') }}" data-name="{{ item.name|lower }}" data-sub="" data-type="{{ (item.item_type or '')|lower }}">
-        <h4 class="item-name">{{ item.name }}</h4>
-        {% if item.image_url %}
-        <img src="{{ item.image_url }}" alt="{{ item.name }}" class="item-image qr-click-image" />
-        {% else %}
-        <div class="item-image placeholder">No Image</div>
-        {% endif %}
-        <p class="item-short">{{ item.short_description or item.description or "Freshly prepared at Brownberries Café." }}</p>
-        <p class="item-calories">
-          Calories: {{ item.calories or "-" }}
-          {% if not is_preview %}
-          <label style="margin-left:0.45rem; display:inline-flex; gap:0.2rem; align-items:center;">
-            <input type="checkbox" class="parcel-checkbox" />
-            Parcel
-          </label>
-          {% endif %}
-        </p>
-        {% set sizes = item_size_map.get(item.id, []) %}
-        <p class="item-price"><strong>Price:</strong> ₹<span class="item-price-value">{{ "%.2f"|format((sizes[0].price if (item.has_size_variants and sizes) else item.price) or 0) }}</span></p>
-        {% if item.has_size_variants and sizes %}
-        <label class="size-row">Serving Size
-          <select class="size-select">
-            <option value="" data-price="" selected>Choose...</option>
-            {% for s in sizes %}
-            <option value="{{ s.size }}" data-price="{{ s.price }}">{{ s.size }} | ₹{{ "%.2f"|format(s.price) }}</option>
-            {% endfor %}
-          </select>
-        </label>
-        {% else %}
-        <div class="size-row muted">Serving Size: Standard</div>
-        {% endif %}
-        {% if not is_preview %}
-        <div class="item-actions">
-        <button type="button" class="desc-btn" data-name="{{ item.name }}" data-description="{{ item.description or 'No description available.' }}">View Description</button>
-        <div class="qty-control">
-          <button type="button" class="qty-btn" data-role="minus">-</button>
-          <input type="number" min="1" value="1" class="qty-input" />
-          <button type="button" class="qty-btn" data-role="plus">+</button>
-        </div>
-        <button type="button" class="add-to-cart-btn" data-item-id="{{ item.id }}" data-item-name="{{ item.name }}" data-item-price="{{ item.price }}">Add</button>
-        </div>
-        {% else %}
-        <button type="button" class="desc-btn" data-name="{{ item.name }}" data-description="{{ item.description or 'No description available.' }}">View Description</button>
-        {% endif %}
-      </article>
-      {% endfor %}
-    </div>
-  </section>
-
-  <section class="panel">
-    <h3>Menu</h3>
-    <div class="item-grid" id="all-items-grid">
-      {% for item in menu_items %}
-      {% set item_cats = item_category_names_map.get(item.id, []) %}
-      <article class="item-card qr-item-card" data-cats="{{ item_cats|map('lower')|join('|') }}" data-name="{{ item.name|lower }}" data-sub="" data-type="{{ (item.item_type or '')|lower }}">
-        <h4 class="item-name">{{ item.name }}</h4>
-        {% if item.image_url %}
-        <img src="{{ item.image_url }}" alt="{{ item.name }}" class="item-image qr-click-image" />
-        {% else %}
-        <div class="item-image placeholder">No Image</div>
-        {% endif %}
-        <p class="item-short">{{ item.short_description or item.description or "Freshly prepared at Brownberries Café." }}</p>
-        <p class="item-calories">
-          Calories: {{ item.calories or "-" }}
-          {% if not is_preview %}
-          <label style="margin-left:0.45rem; display:inline-flex; gap:0.2rem; align-items:center;">
-            <input type="checkbox" class="parcel-checkbox" />
-            Parcel
-          </label>
-          {% endif %}
-        </p>
-        {% set sizes = item_size_map.get(item.id, []) %}
-        <p class="item-price"><strong>Price:</strong> ₹<span class="item-price-value">{{ "%.2f"|format((sizes[0].price if (item.has_size_variants and sizes) else item.price) or 0) }}</span></p>
-        {% if item.has_size_variants and sizes %}
-        <label class="size-row">Serving Size
-          <select class="size-select">
-            <option value="" data-price="" selected>Choose...</option>
-            {% for s in sizes %}
-            <option value="{{ s.size }}" data-price="{{ s.price }}">{{ s.size }} | ₹{{ "%.2f"|format(s.price) }}</option>
-            {% endfor %}
-          </select>
-        </label>
-        {% else %}
-        <div class="size-row muted">Serving Size: Standard</div>
-        {% endif %}
-        {% if not is_preview %}
-        <div class="item-actions">
-        <button type="button" class="desc-btn" data-name="{{ item.name }}" data-description="{{ item.description or 'No description available.' }}">View Description</button>
-        <div class="qty-control">
-          <button type="button" class="qty-btn" data-role="minus">-</button>
-          <input type="number" min="1" value="1" class="qty-input" />
-          <button type="button" class="qty-btn" data-role="plus">+</button>
-        </div>
-        <button type="button" class="add-to-cart-btn" data-item-id="{{ item.id }}" data-item-name="{{ item.name }}" data-item-price="{{ item.price }}">Add</button>
-        </div>
-        {% else %}
-        <button type="button" class="desc-btn" data-name="{{ item.name }}" data-description="{{ item.description or 'No description available.' }}">View Description</button>
-        {% endif %}
-      </article>
-      {% endfor %}
-    </div>
-  </section>
-
-  {% if not is_preview %}
-  <section id="floating-cart" class="floating-cart">View Cart • <span id="floating-total">₹0</span> • <span id="floating-count">0</span> items</section>
-
-  <section class="panel" id="cart-panel">
-    <h3>Cart</h3>
-    <div id="cart-lines" class="cart-lines"></div>
-    <p><strong>Total:</strong> ₹<span id="cart-total">0.00</span></p>
-    <input type="hidden" id="cart-payload" name="cart_payload" />
-    <button type="submit">Place Order</button>
-  </section>
-  {% endif %}
-</form>
+{% else %}
+{% set special_a = menu_items[0].name if menu_items|length > 0 else "House Brew" %}
+{% set special_b = menu_items[1].name if menu_items|length > 1 else "Cold Coffee" %}
 
 {% if not is_preview %}
-<section class="panel">
-  <h3>Current Unpaid Orders for {{ table.name }}</h3>
-  <table id="table-orders-board">
-    <tr><th>Order</th><th>Status</th><th>Items</th><th>Total</th><th>Actions</th></tr>
-    {% for order in table_orders %}
-    <tr data-order-id="{{ order.id }}">
-      <td>#{{ "%02d"|format(order.daily_sequence or order.id) }}</td>
-      <td class="order-status">{{ order.status }}</td>
-      <td>{% for oi in order.order_items %}{% if (oi.approval_status or "pending") != "rejected" %}<div>{{ oi.menu_item.name }}{% if oi.size_label %} ({{ oi.size_label }}){% endif %} x {{ oi.quantity }}</div>{% endif %}{% endfor %}</td>
-      <td>{{ "%.2f"|format(order.total_amount) }}</td>
-      <td>
-        {% if order.status == "pending_approval" %}
-        <button type="button" class="edit-order-btn" data-order-id="{{ order.id }}">Edit</button>
-        <form method="post" action="{{ url_for('cafe.delete_pending_table_order', order_id=order.id) }}" class="inline">
-          <input type="hidden" name="slug" value="{{ table.qr_slug }}" />
-          <button type="submit">Delete</button>
-        </form>
-        {% else %}
-        -
-        {% endif %}
-      </td>
-    </tr>
-    {% else %}
-    <tr id="orders-empty"><td colspan="5">No unpaid orders for this table.</td></tr>
-    {% endfor %}
-  </table>
+<section class="panel qr-welcome-screen" id="qr-landing">
+  <img src="{{ url_for('static', filename='images/cafe-logo.png') }}" class="brand-logo qr-landing-logo" alt="Brownberries Cafe" />
+  <p class="qr-greeting" id="qr-greeting">Good Afternoon!</p>
+  <h2>Welcome to Brownberries Cafe</h2>
+  <div class="qr-table-pill">{{ table.name }}</div>
+  <button type="button" class="cta-order qr-start-btn" id="start-ordering-btn">Order Food</button>
+  <p class="muted qr-landing-note">Scan. Order. Relax.</p>
 </section>
 {% endif %}
+
+<div id="qr-menu-shell" class="{% if not is_preview %}hidden{% endif %}">
+  <section class="panel qr-cafe-top qr-menu-header">
+    <div class="qr-head">
+      <img src="{{ url_for('static', filename='images/cafe-logo.png') }}" class="brand-logo" alt="Brownberries Cafe" />
+      <div>
+        <h2>
+          <span class="full-label">{% if is_preview %}Brownberries Cafe Menu{% else %}{{ table.name }}{% endif %}</span>
+          <span class="compact-label">{% if is_preview %}Brownberries Cafe{% else %}{{ table.name }}{% endif %}</span>
+        </h2>
+        <p class="muted">
+          {% if is_preview %}
+          Browse what is fresh at Brownberries Cafe
+          {% else %}
+          Fresh coffee, comfort food, and easy table ordering
+          {% endif %}
+        </p>
+      </div>
+    </div>
+    <div class="special-strip">
+      <span class="special-label">Today's Special</span>
+      <div class="special-ticker">
+        <span>{{ special_a }} | Pair it with {{ special_b }} for a cozy table round</span>
+      </div>
+    </div>
+    <div class="qr-category-bar" id="qr-category-bar">
+      <button type="button" class="qr-cat-pill active" data-cat="all">All</button>
+      <button type="button" class="qr-cat-pill" data-cat="most-loved">Most Loved</button>
+      {% for c in categories %}
+      <button type="button" class="qr-cat-pill" data-cat="{{ c.name|lower }}">{{ c.name }}</button>
+      {% endfor %}
+    </div>
+    <div class="qr-search-wrap">
+      <input id="qr-search" class="qr-search" placeholder="Search dosa, coffee, pizza..." />
+      <button type="button" class="search-clear-btn hidden" id="qr-search-clear" aria-label="Clear search">×</button>
+    </div>
+  </section>
+
+  <form method="post" action="{{ url_for('cafe.table_order') }}" id="qr-order-form" class="grid">
+    <input type="hidden" name="slug" value="{{ table.qr_slug }}" />
+
+    <section class="panel qr-menu-panel">
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">Menu</p>
+          <h3>Explore Brownberries</h3>
+        </div>
+        <p class="muted section-note">Fast picks, fewer taps, and room to keep ordering.</p>
+      </div>
+      <div class="item-grid qr-menu-grid" id="all-items-grid">
+        {% for item in menu_items %}
+        {% set item_cats = item_category_names_map.get(item.id, []) %}
+        {% set sizes = item_size_map.get(item.id, []) %}
+        <article
+          class="item-card qr-item-card"
+          data-cats="{{ item_cats|map('lower')|join('|') }}"
+          data-name="{{ item.name|lower }}"
+          data-short="{{ (item.short_description or item.description or '')|lower }}"
+          data-type="{{ (item.item_type or '')|lower }}"
+          data-featured="{{ '1' if loop.index <= 10 else '0' }}"
+        >
+          <div class="item-card-topline">
+            {% if loop.index <= 5 %}
+            <span class="item-tag item-tag-featured">Most Loved</span>
+            {% elif loop.index <= 10 %}
+            <span class="item-tag">Popular</span>
+            {% endif %}
+            {% if item.item_type %}
+            <span class="item-tag item-tag-muted">{{ item.item_type }}</span>
+            {% endif %}
+          </div>
+          <h4 class="item-name">{{ item.name }}</h4>
+          {% if item.image_url %}
+          <img src="{{ item.image_url }}" alt="{{ item.name }}" class="item-image qr-click-image" />
+          {% else %}
+          <div class="item-image placeholder">No Image</div>
+          {% endif %}
+          <p class="item-short">{{ item.short_description or item.description or "Freshly prepared at Brownberries Cafe." }}</p>
+          <div class="item-meta-row">
+            <p class="item-price">₹<span class="item-price-value">{{ "%.2f"|format((sizes[0].price if (item.has_size_variants and sizes) else item.price) or 0) }}</span></p>
+            <p class="item-calories">Calories: {{ item.calories or "-" }}</p>
+          </div>
+          {% if not is_preview %}
+          <label class="parcel-row">
+            <input type="checkbox" class="parcel-checkbox" />
+            Parcel (+₹20 each)
+          </label>
+          {% endif %}
+          {% if item.has_size_variants and sizes %}
+          <label class="size-row">
+            <span>Serving Size</span>
+            <select class="size-select">
+              <option value="" data-price="" selected>Choose...</option>
+              {% for s in sizes %}
+              <option value="{{ s.size }}" data-price="{{ s.price }}">{{ s.size }} | ₹{{ "%.2f"|format(s.price) }}</option>
+              {% endfor %}
+            </select>
+          </label>
+          {% else %}
+          <div class="size-row muted"><span>Serving Size</span><span>Standard</span></div>
+          {% endif %}
+          <div class="item-actions">
+            <button type="button" class="desc-btn" data-name="{{ item.name }}" data-description="{{ item.description or 'No description available.' }}">View Description</button>
+            {% if not is_preview %}
+            <div class="quick-add-row">
+              <div class="qty-control">
+                <button type="button" class="qty-btn" data-role="minus">-</button>
+                <input type="number" min="1" value="1" class="qty-input" />
+                <button type="button" class="qty-btn" data-role="plus">+</button>
+              </div>
+              <button type="button" class="add-to-cart-btn" data-item-id="{{ item.id }}" data-item-name="{{ item.name }}" data-item-price="{{ item.price }}">Add</button>
+            </div>
+            {% endif %}
+          </div>
+        </article>
+        {% endfor %}
+      </div>
+      <div id="qr-empty-results" class="empty-filter-state hidden">
+        <p>No match found. Try a different food or drink name.</p>
+      </div>
+    </section>
+
+    {% if not is_preview %}
+    <section id="floating-cart" class="floating-cart">🛒 <span id="floating-count">0</span> Items • <span id="floating-total">₹0</span></section>
+    <button type="button" id="call-staff-btn" class="floating-assist-btn">🔔 Call Staff</button>
+
+    <section class="panel" id="cart-panel">
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">Review</p>
+          <h3>Your Order</h3>
+        </div>
+        <p class="muted section-note">Everything you add stays here while you keep browsing.</p>
+      </div>
+      <div id="cart-lines" class="cart-lines"></div>
+      <p><strong>Total:</strong> ₹<span id="cart-total">0.00</span></p>
+      <input type="hidden" id="cart-payload" name="cart_payload" />
+      <button type="submit">Place Order</button>
+    </section>
+    {% endif %}
+  </form>
+
+  {% if not is_preview %}
+  <section class="panel">
+    <div class="section-heading">
+      <div>
+        <p class="eyebrow">Tracking</p>
+        <h3>Your Live Orders</h3>
+      </div>
+      <p class="muted section-note">Pending approval orders can still be edited or deleted.</p>
+    </div>
+    <table id="table-orders-board">
+      <tr><th>Order</th><th>Status</th><th>Items</th><th>Total</th><th>Actions</th></tr>
+      {% for order in table_orders %}
+      <tr data-order-id="{{ order.id }}">
+        <td>#{{ order.daily_sequence or order.id }}</td>
+        <td class="order-status">{{ order.status }}</td>
+        <td>{% for oi in order.order_items %}{% if (oi.approval_status or "pending") != "rejected" %}<div>{{ oi.menu_item.name }}{% if oi.size_label %} ({{ oi.size_label }}){% endif %} x {{ oi.quantity }}</div>{% endif %}{% endfor %}</td>
+        <td>{{ "%.2f"|format(order.total_amount) }}</td>
+        <td>
+          {% if order.status == "pending_approval" %}
+          <button type="button" class="edit-order-btn" data-order-id="{{ order.id }}">Edit</button>
+          <form method="post" action="{{ url_for('cafe.delete_pending_table_order', order_id=order.id) }}" class="inline">
+            <input type="hidden" name="slug" value="{{ table.qr_slug }}" />
+            <button type="submit">Delete</button>
+          </form>
+          {% else %}
+          -
+          {% endif %}
+        </td>
+      </tr>
+      {% else %}
+      <tr id="orders-empty"><td colspan="5">No unpaid orders for this table.</td></tr>
+      {% endfor %}
+    </table>
+  </section>
+  {% endif %}
+</div>
 
 <div id="desc-modal" class="desc-modal hidden">
   <div class="desc-dialog">
@@ -198,6 +219,7 @@
   const tableId = {{ table.id }};
   const cart = {};
   const CART_STORAGE_KEY = `brownberries_qr_cart_v1:${tableId}`;
+  const ORDERING_STARTED_KEY = `brownberries_qr_started_v1:${tableId}`;
   const cartLines = document.getElementById("cart-lines");
   const cartPayloadInput = document.getElementById("cart-payload");
   const cartTotal = document.getElementById("cart-total");
@@ -206,6 +228,10 @@
   const floatingCart = document.getElementById("floating-cart");
   const cartPanel = document.getElementById("cart-panel");
   const orderForm = document.getElementById("qr-order-form");
+  const menuShell = document.getElementById("qr-menu-shell");
+  const landingScreen = document.getElementById("qr-landing");
+  const startOrderingBtn = document.getElementById("start-ordering-btn");
+  const callStaffBtn = document.getElementById("call-staff-btn");
   let editingOrderId = null;
   const ordersBoard = document.getElementById("table-orders-board");
   const cartToast = document.getElementById("cart-toast");
@@ -216,19 +242,46 @@
   const imageModal = document.getElementById("image-modal");
   const imageClose = document.getElementById("image-close");
   const imageModalSrc = document.getElementById("image-modal-src");
+  const searchInput = document.getElementById("qr-search");
+  const searchClearBtn = document.getElementById("qr-search-clear");
+  const categoryBar = document.getElementById("qr-category-bar");
+  const menuHeader = document.querySelector(".qr-menu-header");
+  const emptyResults = document.getElementById("qr-empty-results");
+  const greetingEl = document.getElementById("qr-greeting");
   let toastTimer = null;
+  let activeCat = "all";
 
   function normalizeQty(value) {
     const num = Number(value);
     if (!Number.isFinite(num) || num < 1) return 1;
     return Math.floor(num);
   }
+
+  function setGreeting() {
+    if (!greetingEl) return;
+    const hour = new Date().getHours();
+    let greeting = "Good Evening!";
+    if (hour < 12) greeting = "Good Morning!";
+    else if (hour < 17) greeting = "Good Afternoon!";
+    greetingEl.textContent = greeting;
+  }
+
+  function showOrdering() {
+    if (!menuShell) return;
+    landingScreen?.classList.add("hidden");
+    menuShell.classList.remove("hidden");
+    try { window.sessionStorage.setItem(ORDERING_STARTED_KEY, "1"); } catch (_) {}
+    menuShell.scrollIntoView({ behavior: "smooth", block: "start" });
+    window.setTimeout(() => window.dispatchEvent(new Event("resize")), 120);
+  }
+
   function showToast(message) {
     cartToast.textContent = message;
     cartToast.classList.remove("hidden");
     if (toastTimer) window.clearTimeout(toastTimer);
     toastTimer = window.setTimeout(() => cartToast.classList.add("hidden"), 1400);
   }
+
   function renderCart() {
     if (isPreview) return;
     const entries = Object.values(cart);
@@ -261,11 +314,13 @@
     })));
     saveCartState();
   }
+
   function saveCartState() {
     try {
       window.sessionStorage.setItem(CART_STORAGE_KEY, JSON.stringify(Object.values(cart)));
     } catch (_) {}
   }
+
   function restoreCartState() {
     try {
       const raw = window.sessionStorage.getItem(CART_STORAGE_KEY);
@@ -286,6 +341,7 @@
       });
     } catch (_) {}
   }
+
   function isSubsequence(needle, haystack) {
     let j = 0;
     for (let i = 0; i < haystack.length && j < needle.length; i += 1) {
@@ -293,42 +349,135 @@
     }
     return j === needle.length;
   }
+
   function fuzzyMatch(query, blob) {
     if (!query) return true;
-    if (blob.includes(query)) return true;
+    const terms = query.split(/\s+/).filter(Boolean);
+    if (!terms.length) return true;
     const parts = blob.split(/\s+/).filter(Boolean);
-    return parts.some((part) => isSubsequence(query, part) || part.startsWith(query.slice(0, 2)));
+    return terms.every((term) => {
+      if (blob.includes(term)) return true;
+      return parts.some((part) => {
+        const prefix = term.length === 1 ? term : term.slice(0, 2);
+        return isSubsequence(term, part) || part.startsWith(prefix);
+      });
+    });
   }
-  if (!isPreview) document.querySelectorAll(".qty-control").forEach((wrap) => {
+
+  function applyFilters() {
+    const q = (searchInput?.value || "").trim().toLowerCase();
+    let visibleCount = 0;
+    document.querySelectorAll(".qr-item-card").forEach((card) => {
+      const cats = (card.dataset.cats || "").split("|").filter(Boolean);
+      const blob = `${card.dataset.name || ""} ${card.dataset.short || ""} ${card.dataset.type || ""} ${cats.join(" ")}`;
+      const featured = (card.dataset.featured || "0") === "1";
+      const catOk = activeCat === "all" ? true : (activeCat === "most-loved" ? featured : cats.includes(activeCat));
+      const qOk = fuzzyMatch(q, blob);
+      const show = catOk && qOk;
+      card.style.display = show ? "" : "none";
+      if (show) visibleCount += 1;
+    });
+    emptyResults?.classList.toggle("hidden", visibleCount > 0);
+  }
+
+  function syncSearchClear() {
+    searchClearBtn?.classList.toggle("hidden", !(searchInput?.value || "").trim());
+  }
+
+  function setupAutoCompactHeader(header) {
+    if (!header) return;
+    let lastCompact = false;
+    const sync = () => {
+      const compact = window.scrollY > 32 || document.body.classList.contains("ordering-search-active");
+      if (compact === lastCompact) return;
+      lastCompact = compact;
+      header.classList.toggle("is-compact", compact);
+    };
+    window.addEventListener("scroll", sync, { passive: true });
+    window.addEventListener("resize", sync);
+    sync();
+  }
+
+  function setupOrderingTopbarAutoHide() {
+    const topbar = document.querySelector(".topbar");
+    if (!topbar || !menuHeader) return;
+    let lastHidden = false;
+    let lastY = window.scrollY;
+    const sync = () => {
+      if (document.body.classList.contains("ordering-search-active")) {
+        if (!lastHidden) {
+          lastHidden = true;
+          document.body.classList.add("ordering-nav-hidden");
+        }
+        return;
+      }
+      const y = window.scrollY;
+      const hide = y > 48 && y >= lastY;
+      if (hide !== lastHidden) {
+        lastHidden = hide;
+        document.body.classList.toggle("ordering-nav-hidden", hide);
+      }
+      lastY = Math.max(0, y);
+    };
+    window.addEventListener("scroll", sync, { passive: true });
+    window.addEventListener("resize", sync);
+    sync();
+  }
+
+  function setupSearchFocusMode() {
+    if (!searchInput || !menuHeader) return;
+    const activate = () => {
+      document.body.classList.add("ordering-search-active", "ordering-nav-hidden");
+      menuHeader.classList.add("is-compact");
+      window.setTimeout(() => searchInput.scrollIntoView({ behavior: "smooth", block: "nearest" }), 60);
+    };
+    const deactivate = () => {
+      window.setTimeout(() => {
+        document.body.classList.remove("ordering-search-active");
+        window.dispatchEvent(new Event("scroll"));
+      }, 120);
+    };
+    ["pointerdown", "mousedown", "touchstart", "click", "focus", "focusin", "input"].forEach((eventName) => {
+      searchInput.addEventListener(eventName, activate, { passive: true });
+    });
+    searchInput.addEventListener("blur", deactivate);
+    if (document.activeElement === searchInput) activate();
+  }
+
+  document.querySelectorAll(".qty-control").forEach((wrap) => {
     const input = wrap.querySelector(".qty-input");
     if (!input) return;
     wrap.querySelector('[data-role="minus"]')?.addEventListener("click", () => input.value = Math.max(1, normalizeQty(input.value) - 1));
     wrap.querySelector('[data-role="plus"]')?.addEventListener("click", () => input.value = normalizeQty(input.value) + 1);
   });
-  if (!isPreview) document.querySelectorAll(".add-to-cart-btn").forEach((btn) => {
-    btn.addEventListener("click", () => {
-      const card = btn.closest(".item-card");
-      const qtyInput = card.querySelector(".qty-input");
-      const quantity = normalizeQty(qtyInput.value);
-      const menu_item_id = Number(btn.dataset.itemId);
-      const name = btn.dataset.itemName;
-      const defaultPrice = Number(btn.dataset.itemPrice);
-      const selectedSize = card.querySelector(".size-select");
-      const sizeLabel = selectedSize?.value || "";
-      if (selectedSize && !sizeLabel) {
-        alert("Please choose a serving size.");
-        return;
-      }
-      const sizePrice = selectedSize ? Number(selectedSize.selectedOptions[0]?.dataset?.price || defaultPrice) : defaultPrice;
-      const isParcel = !!card.querySelector(".parcel-checkbox")?.checked;
-      const lineKey = `${menu_item_id}:${isParcel ? 1 : 0}:${sizeLabel || "default"}`;
-      if (!cart[lineKey]) cart[lineKey] = { line_key: lineKey, menu_item_id, name, price: sizePrice, quantity: 0, is_parcel: isParcel, size_label: sizeLabel || null };
-      cart[lineKey].quantity += quantity;
-      qtyInput.value = 1;
-      renderCart();
-      showToast(`${name} x ${quantity} added to the cart${isParcel ? " (Parcel)" : ""}`);
+
+  if (!isPreview) {
+    document.querySelectorAll(".add-to-cart-btn").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const card = btn.closest(".item-card");
+        const qtyInput = card.querySelector(".qty-input");
+        const quantity = normalizeQty(qtyInput.value);
+        const menu_item_id = Number(btn.dataset.itemId);
+        const name = btn.dataset.itemName;
+        const defaultPrice = Number(btn.dataset.itemPrice);
+        const selectedSize = card.querySelector(".size-select");
+        const sizeLabel = selectedSize?.value || "";
+        if (selectedSize && !sizeLabel) {
+          alert("Please choose a serving size.");
+          return;
+        }
+        const sizePrice = selectedSize ? Number(selectedSize.selectedOptions[0]?.dataset?.price || defaultPrice) : defaultPrice;
+        const isParcel = !!card.querySelector(".parcel-checkbox")?.checked;
+        const lineKey = `${menu_item_id}:${isParcel ? 1 : 0}:${sizeLabel || "default"}`;
+        if (!cart[lineKey]) cart[lineKey] = { line_key: lineKey, menu_item_id, name, price: sizePrice, quantity: 0, is_parcel: isParcel, size_label: sizeLabel || null };
+        cart[lineKey].quantity += quantity;
+        qtyInput.value = 1;
+        renderCart();
+        showToast(`${name} x ${quantity} added to the cart${isParcel ? " (Parcel)" : ""}`);
+      });
     });
-  });
+  }
+
   document.querySelectorAll(".size-select").forEach((selectEl) => {
     const updateCardPrice = () => {
       const card = selectEl.closest(".item-card");
@@ -342,22 +491,26 @@
     selectEl.addEventListener("change", updateCardPrice);
     updateCardPrice();
   });
-  if (!isPreview) cartLines?.addEventListener("click", (event) => {
-    const removeId = event.target.getAttribute("data-remove");
-    const plusId = event.target.getAttribute("data-cart-plus");
-    const minusId = event.target.getAttribute("data-cart-minus");
-    if (plusId) {
-      if (cart[plusId]) cart[plusId].quantity += 1;
-    } else if (minusId) {
-      if (cart[minusId] && cart[minusId].quantity > 1) cart[minusId].quantity -= 1;
-      else delete cart[minusId];
-    } else if (removeId) {
-      delete cart[removeId];
-    } else {
-      return;
-    }
-    renderCart();
-  });
+
+  if (!isPreview) {
+    cartLines?.addEventListener("click", (event) => {
+      const removeId = event.target.getAttribute("data-remove");
+      const plusId = event.target.getAttribute("data-cart-plus");
+      const minusId = event.target.getAttribute("data-cart-minus");
+      if (plusId) {
+        if (cart[plusId]) cart[plusId].quantity += 1;
+      } else if (minusId) {
+        if (cart[minusId] && cart[minusId].quantity > 1) cart[minusId].quantity -= 1;
+        else delete cart[minusId];
+      } else if (removeId) {
+        delete cart[removeId];
+      } else {
+        return;
+      }
+      renderCart();
+    });
+  }
+
   document.querySelectorAll(".desc-btn").forEach((btn) => {
     btn.addEventListener("click", () => {
       descTitle.textContent = btn.dataset.name || "Item Description";
@@ -365,8 +518,8 @@
       descModal.classList.remove("hidden");
     });
   });
-  descClose.addEventListener("click", () => descModal.classList.add("hidden"));
-  descModal.addEventListener("click", (event) => { if (event.target === descModal) descModal.classList.add("hidden"); });
+  descClose?.addEventListener("click", () => descModal.classList.add("hidden"));
+  descModal?.addEventListener("click", (event) => { if (event.target === descModal) descModal.classList.add("hidden"); });
   document.querySelectorAll(".qr-click-image").forEach((img) => {
     img.addEventListener("click", () => {
       if (!imageModal || !imageModalSrc) return;
@@ -379,21 +532,17 @@
     if (event.target === imageModal) imageModal.classList.add("hidden");
   });
 
-  const searchInput = document.getElementById("qr-search");
-  const categoryBar = document.getElementById("qr-category-bar");
-  let activeCat = "all";
-  function applyFilters() {
-    const q = (searchInput.value || "").trim().toLowerCase();
-    document.querySelectorAll(".qr-item-card").forEach((card) => {
-      const cats = (card.dataset.cats || "").split("|").filter(Boolean);
-      const blob = `${card.dataset.name || ""} ${card.dataset.sub || ""} ${card.dataset.type || ""} ${cats.join(" ")}`;
-      const catOk = activeCat === "all" || cats.includes(activeCat);
-      const qOk = fuzzyMatch(q, blob);
-      card.style.display = (catOk && qOk) ? "" : "none";
-    });
-  }
-  searchInput.addEventListener("input", applyFilters);
-  categoryBar.addEventListener("click", (event) => {
+  searchInput?.addEventListener("input", () => {
+    syncSearchClear();
+    applyFilters();
+  });
+  searchClearBtn?.addEventListener("click", () => {
+    searchInput.value = "";
+    syncSearchClear();
+    applyFilters();
+    searchInput.focus();
+  });
+  categoryBar?.addEventListener("click", (event) => {
     const btn = event.target.closest(".qr-cat-pill");
     if (!btn) return;
     activeCat = btn.dataset.cat || "all";
@@ -401,7 +550,11 @@
     btn.classList.add("active");
     applyFilters();
   });
-  if (!isPreview) floatingCart?.addEventListener("click", () => cartPanel.scrollIntoView({ behavior: "smooth", block: "start" }));
+
+  if (!isPreview) {
+    floatingCart?.addEventListener("click", () => cartPanel.scrollIntoView({ behavior: "smooth", block: "start" }));
+  }
+
   function makeDraggable(el) {
     if (!el) return;
     let dragging = false;
@@ -426,36 +579,42 @@
     el.addEventListener("pointerup", () => { dragging = false; });
     el.addEventListener("pointercancel", () => { dragging = false; });
   }
-  makeDraggable(floatingCart);
 
-  if (!isPreview) orderForm?.addEventListener("submit", (event) => {
-    if (Object.keys(cart).length < 1) {
-      event.preventDefault();
-      alert("Please add at least one item to cart.");
-      return;
-    }
-    if (editingOrderId) {
-      event.preventDefault();
-      const form = document.createElement("form");
-      form.method = "post";
-      form.action = `/cafe/table-order/${editingOrderId}/edit`;
-      const slugInput = document.createElement("input");
-      slugInput.type = "hidden";
-      slugInput.name = "slug";
-      slugInput.value = "{{ table.qr_slug }}";
-      const payloadInput = document.createElement("input");
-      payloadInput.type = "hidden";
-      payloadInput.name = "cart_payload";
-      payloadInput.value = cartPayloadInput.value;
-      form.appendChild(slugInput);
-      form.appendChild(payloadInput);
-      document.body.appendChild(form);
-      form.submit();
-    }
-    try { window.sessionStorage.removeItem(CART_STORAGE_KEY); } catch (_) {}
-  });
+  makeDraggable(floatingCart);
+  makeDraggable(callStaffBtn);
 
   if (!isPreview) {
+    orderForm?.addEventListener("submit", (event) => {
+      if (Object.keys(cart).length < 1) {
+        event.preventDefault();
+        alert("Please add at least one item to cart.");
+        return;
+      }
+      if (editingOrderId) {
+        event.preventDefault();
+        const form = document.createElement("form");
+        form.method = "post";
+        form.action = `/cafe/table-order/${editingOrderId}/edit`;
+        const slugInput = document.createElement("input");
+        slugInput.type = "hidden";
+        slugInput.name = "slug";
+        slugInput.value = "{{ table.qr_slug }}";
+        const payloadInput = document.createElement("input");
+        payloadInput.type = "hidden";
+        payloadInput.name = "cart_payload";
+        payloadInput.value = cartPayloadInput.value;
+        form.appendChild(slugInput);
+        form.appendChild(payloadInput);
+        document.body.appendChild(form);
+        form.submit();
+        return;
+      }
+      try {
+        window.sessionStorage.removeItem(CART_STORAGE_KEY);
+        window.sessionStorage.setItem(ORDERING_STARTED_KEY, "1");
+      } catch (_) {}
+    });
+
     document.addEventListener("click", (event) => {
       const btn = event.target.closest(".edit-order-btn");
       if (!btn) return;
@@ -463,7 +622,9 @@
       const row = document.querySelector(`tr[data-order-id="${orderId}"]`);
       if (!row) return;
       editingOrderId = orderId;
-      alert(`Editing order #${orderId}. Add updated items to cart and click Place Order.`);
+      showOrdering();
+      cartPanel?.scrollIntoView({ behavior: "smooth", block: "start" });
+      alert(`Editing order #${orderId}. Update the cart and click Place Order.`);
     });
   }
 
@@ -488,7 +649,7 @@
             <button type="submit">Delete</button>
           </form>`
       : "-";
-    const orderNo = order.customer_order_no || String(order.id).padStart(2, "0");
+    const orderNo = order.pickup_no_compact || String(order.id);
     const rowHtml = `<td>#${orderNo}</td><td class="order-status">${order.status}</td><td>${itemHtml}</td><td>${Number(order.total_amount).toFixed(2)}</td><td>${actionsHtml}</td>`;
     if (!row) {
       row = document.createElement("tr");
@@ -497,6 +658,22 @@
     }
     row.innerHTML = rowHtml;
   }
+
+  callStaffBtn?.addEventListener("click", async () => {
+    try {
+      const body = new URLSearchParams({ slug: "{{ table.qr_slug }}" });
+      const res = await fetch("{{ url_for('cafe.call_staff_for_table') }}", {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body,
+      });
+      const data = await res.json();
+      alert(data.message || "Staff has been notified.");
+    } catch (_) {
+      alert("Could not notify staff right now. Please try again.");
+    }
+  });
+
   if (!isPreview) {
     const socket = io("/table", { transports: ["polling"], upgrade: false, reconnection: true });
     socket.on("order_created", upsertOrderRow);
@@ -509,16 +686,34 @@
       }
     });
     socket.on("ops_notification", (payload) => {
-      if (!payload || payload.kind !== "order_decision") return;
-      if (Number(payload.table_id) !== Number(tableId)) return;
-      const approved = (payload.approved_items || []).length ? `Approved: ${(payload.approved_items || []).join(", ")}` : "";
-      const rejected = (payload.rejected_items || []).length ? `Rejected: ${(payload.rejected_items || []).join(", ")}` : "";
-      const msg = [approved, rejected].filter(Boolean).join("\n");
-      if (msg) alert(msg);
+      if (!payload) return;
+      if (payload.kind === "order_decision" && Number(payload.table_id) === Number(tableId)) {
+        const approved = (payload.approved_items || []).length ? `Approved: ${(payload.approved_items || []).join(", ")}` : "";
+        const rejected = (payload.rejected_items || []).length ? `Rejected: ${(payload.rejected_items || []).join(", ")}` : "";
+        const msg = [approved, rejected].filter(Boolean).join("\n");
+        if (msg) alert(msg);
+      }
     });
+  }
+
+  setGreeting();
+  if (!isPreview) {
+    const alreadyStarted = (() => {
+      try { return window.sessionStorage.getItem(ORDERING_STARTED_KEY) === "1"; } catch (_) { return false; }
+    })();
+    if (alreadyStarted || window.location.search.includes("start=1")) {
+      landingScreen?.classList.add("hidden");
+      menuShell?.classList.remove("hidden");
+    }
+  }
+  startOrderingBtn?.addEventListener("click", showOrdering);
   restoreCartState();
   renderCart();
-  }
+  syncSearchClear();
+  applyFilters();
+  setupAutoCompactHeader(menuHeader);
+  setupOrderingTopbarAutoHide();
+  setupSearchFocusMode();
 </script>
 {% endif %}
 {% endblock %}

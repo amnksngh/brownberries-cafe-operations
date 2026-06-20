@@ -47,6 +47,9 @@ ENDPOINT_PERMISSIONS = {
 def load_current_user():
     user_id = session.get("user_id")
     g.current_user = User.query.get(user_id) if user_id else None
+    if g.current_user and not g.current_user.active:
+        session.clear()
+        g.current_user = None
 
 
 def login_required(view):
@@ -64,6 +67,9 @@ def roles_required(*roles):
         @wraps(view)
         def wrapped(*args, **kwargs):
             if not g.current_user:
+                return redirect(url_for("main.login", next=request.path))
+            if not g.current_user.active:
+                session.clear()
                 return redirect(url_for("main.login", next=request.path))
             if g.current_user.role in roles:
                 return view(*args, **kwargs)

@@ -4,7 +4,9 @@
   <h2>{{ "Barista Counter Display" if station == "barista" else "Kitchen Display" }} - Live Orders</h2>
   <p class="muted">Auto-refreshing via WebSocket</p>
   <p class="muted">Connection: <strong id="socket-state">Connecting...</strong></p>
-  <button type="button" id="enable-sound-btn">Enable Sound Alerts</button>
+  <label class="sound-volume-control">Alert Volume
+    <input type="range" id="sound-volume" min="0" max="100" step="5" value="85" />
+  </label>
   <div class="notif-wrap">
     <button type="button" id="notif-bell" class="notif-bell">🔔 <span id="notif-count" class="notif-count">0</span></button>
     <div id="notif-panel" class="notif-panel hidden">
@@ -20,7 +22,8 @@
 <section id="kitchen-board" class="kitchen-grid">
   {% for order in orders %}
   <article class="k-card" data-order-id="{{ order.id }}">
-    <h3>Order #{{ order.display_code or order.id }} - {{ order.table.name }}</h3>
+    <h3>Order #{{ order.daily_sequence or order.id }} - {{ order.table.name }}</h3>
+    <p class="muted">Ref: {{ order.display_code or order.id }}</p>
     <p>Status: <strong class="status">{{ order.status }}</strong></p>
     <p>Total: {{ "%.2f"|format(order.total_amount) }}</p>
     <ul>
@@ -64,7 +67,7 @@
   });
   const station = "{{ station }}";
   const socketState = document.getElementById("socket-state");
-  const enableSoundBtn = document.getElementById("enable-sound-btn");
+  const soundVolumeInput = document.getElementById("sound-volume");
   const notifBell = document.getElementById("notif-bell");
   const notifCount = document.getElementById("notif-count");
   const notifPanel = document.getElementById("notif-panel");
@@ -73,9 +76,16 @@
   const notifs = [];
 
   let audioCtx = null;
-  let soundEnabled = false;
+  let soundEnabled = true;
+  const soundPrefKey = `kitchen_sound_enabled_v1:${station}`;
+  const soundVolumeKey = `kitchen_sound_volume_v1:${station}`;
   const notifAudio = new Audio(notifSoundUrl);
   notifAudio.preload = "auto";
+  function applyVolume() {
+    const sliderValue = Number(soundVolumeInput?.value || "85");
+    const normalized = Math.max(0, Math.min(1, sliderValue / 100));
+    notifAudio.volume = normalized;
+  }
   async function enableSound() {
     try {
       const AudioCtx = window.AudioContext || window.webkitAudioContext;
@@ -90,7 +100,8 @@
         notifAudio.currentTime = 0;
       } catch (e) {}
       soundEnabled = true;
-      if (soundEnabled && enableSoundBtn) enableSoundBtn.textContent = "Sound Alerts Enabled";
+      try { localStorage.setItem(soundPrefKey, "1"); } catch (e) {}
+      applyVolume();
     } catch (e) {}
   }
   function playChime() {
@@ -121,8 +132,11 @@
       : '<p class="muted">No new notifications.</p>';
   }
   notifBell?.addEventListener("click", () => notifPanel.classList.toggle("hidden"));
-  enableSoundBtn?.addEventListener("click", enableSound);
-  document.addEventListener("click", enableSound, { once: true });
+  ["click", "touchstart", "keydown"].forEach((eventName) => {
+    document.addEventListener(eventName, () => {
+      if (soundEnabled) enableSound();
+    }, { once: true });
+  });
   notifClear?.addEventListener("click", () => {
     notifs.splice(0, notifs.length);
     renderNotifs();
@@ -149,7 +163,8 @@
     let card = board.querySelector(`[data-order-id="${order.id}"]`);
     const listItems = stationItems.map((i) => `<li>${i.name} x ${i.qty}</li>`).join("");
     const html = `
-      <h3>Order #${order.order_code || order.id} - ${order.table}</h3>
+      <h3>Order #${order.pickup_no_compact || order.id} - ${order.table}</h3>
+      <p class="muted">Ref: ${order.order_code || order.id}</p>
       <p>Status: <strong class="status">${order.status}</strong></p>
       <p>Total: ${order.total_amount.toFixed(2)}</p>
       <ul>${listItems}</ul>
@@ -224,5 +239,18 @@
     playChime();
   });
   socket.on("order_updated", upsertOrder);
+  try {
+    soundEnabled = localStorage.getItem(soundPrefKey) === "1";
+  } catch (e) {}
+  if (!soundEnabled) soundEnabled = true;
+  try {
+    const savedVolume = localStorage.getItem(soundVolumeKey);
+    if (savedVolume && soundVolumeInput) soundVolumeInput.value = savedVolume;
+  } catch (e) {}
+  soundVolumeInput?.addEventListener("input", () => {
+    try { localStorage.setItem(soundVolumeKey, soundVolumeInput.value); } catch (e) {}
+    applyVolume();
+  });
+  applyVolume();
 </script>
 {% endblock %}

@@ -7,7 +7,12 @@ from sqlalchemy import text
 from werkzeug.security import generate_password_hash
 
 from .auth_helpers import load_current_user
-from .cafe import bp as cafe_bp
+from .cafe import (
+    _backfill_order_codes,
+    _backfill_paid_timestamps,
+    _ensure_protected_menu_categories,
+    bp as cafe_bp,
+)
 from .deploy_config import load_deployment_config
 from .extensions import db, socketio
 from .library import bp as library_bp
@@ -24,11 +29,16 @@ def _ensure_sqlite_schema_columns():
             "has_size_variants": "BOOLEAN NOT NULL DEFAULT 0",
             "size_pricing_json": "TEXT",
             "short_description": "TEXT",
+            "is_deleted": "BOOLEAN NOT NULL DEFAULT 0",
         },
         "staff_profile": {
             "dob": "DATE",
             "marital_status": "TEXT",
             "gender": "TEXT",
+            "emergency_contact": "TEXT",
+            "salary_type": "TEXT",
+            "salary_amount": "FLOAT",
+            "probation_end_date": "DATE",
             "govt_id_type": "TEXT",
             "govt_id_number": "TEXT",
             "govt_id_file_path": "TEXT",
@@ -44,12 +54,17 @@ def _ensure_sqlite_schema_columns():
         "staff_attendance": {
             "check_in_at": "DATETIME",
             "check_out_at": "DATETIME",
+            "manager_override": "BOOLEAN NOT NULL DEFAULT 0",
         },
         "user": {
             "user_type_id": "INTEGER",
         },
         "user_type": {
             "can_view_delivery_locations": "BOOLEAN NOT NULL DEFAULT 0",
+        },
+        "staff_document": {
+            "verification_status": "TEXT NOT NULL DEFAULT 'pending'",
+            "verification_note": "TEXT",
         },
         "cafe_order": {
             "is_delivery": "BOOLEAN NOT NULL DEFAULT 0",
@@ -64,6 +79,7 @@ def _ensure_sqlite_schema_columns():
             "delivery_charge": "FLOAT NOT NULL DEFAULT 0",
             "daily_sequence": "INTEGER",
             "display_code": "TEXT",
+            "paid_at": "DATETIME",
         },
         "customer": {
             "default_map_url": "TEXT",
@@ -171,6 +187,9 @@ def create_app():
     with app.app_context():
         db.create_all()
         _ensure_sqlite_schema_columns()
+        _ensure_protected_menu_categories()
+        _backfill_order_codes()
+        _backfill_paid_timestamps()
         default_inventory_categories = [
             ("Fresh Produce", "leaf", "#6cab7a"),
             ("Dairy & Refrigerated", "snowflake", "#6ea8fe"),

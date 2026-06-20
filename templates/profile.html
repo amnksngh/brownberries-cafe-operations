@@ -39,12 +39,24 @@
         <input type="hidden" name="action" value="personal" />
         <label>Full Name<input name="full_name" value="{{ profile_user.full_name }}" required /></label>
         <label>Email<input value="{{ profile_user.email }}" disabled /></label>
+        <label>Joining Date<input type="date" name="joining_date" value="{{ profile.joining_date or '' }}" {% if not can_admin_view %}disabled{% endif %} /></label>
         <label>DOB<input type="date" name="dob" value="{{ profile.dob or '' }}" /></label>
         <label>Gender<input name="gender" value="{{ profile.gender or '' }}" /></label>
         <label>Marital Status<input name="marital_status" value="{{ profile.marital_status or '' }}" /></label>
         <label>Phone<input name="phone" value="{{ profile.phone or '' }}" /></label>
         <label>Alternate Contact<input name="alternate_contact" value="{{ profile.alternate_contact or '' }}" /></label>
+        <label>Emergency Contact<input name="emergency_contact" value="{{ profile.emergency_contact or '' }}" /></label>
         <label>Address<input name="address" value="{{ profile.address or '' }}" /></label>
+        <label>Salary Type
+          <select name="salary_type" {% if not can_admin_view %}disabled{% endif %}>
+            <option value="">Select</option>
+            <option value="monthly" {% if profile.salary_type == "monthly" %}selected{% endif %}>Monthly</option>
+            <option value="daily" {% if profile.salary_type == "daily" %}selected{% endif %}>Daily</option>
+            <option value="hourly" {% if profile.salary_type == "hourly" %}selected{% endif %}>Hourly</option>
+          </select>
+        </label>
+        <label>Salary Amount<input type="number" min="0" step="0.01" name="salary_amount" value="{{ profile.salary_amount or '' }}" {% if not can_admin_view %}disabled{% endif %} /></label>
+        <label>Probation End<input type="date" name="probation_end_date" value="{{ profile.probation_end_date or '' }}" {% if not can_admin_view %}disabled{% endif %} /></label>
         <button type="submit">Save Personal Info</button>
       </form>
       <h4>Change Password</h4>
@@ -90,12 +102,18 @@
         <button type="submit">Upload Document</button>
       </form>
       <table>
-        <thead><tr><th>Type</th><th>Number</th><th>Status</th><th>Uploaded</th></tr></thead>
+        <thead><tr><th>Type</th><th>Number</th><th>Verification</th><th>Release</th><th>Uploaded</th></tr></thead>
         <tbody>
           {% for d in documents_uploaded_by_user %}
-          <tr><td>{{ d.doc_type }}</td><td>{{ d.doc_number or "-" }}</td><td>{{ "Released" if d.released_by_admin else "Pending Release" }}</td><td>{{ d.created_at.strftime("%Y-%m-%d") }}</td></tr>
+          <tr>
+            <td>{{ d.doc_type }}</td>
+            <td>{{ d.doc_number or "-" }}</td>
+            <td>{{ d.verification_status.title() }}{% if d.verification_note %}<br /><small>{{ d.verification_note }}</small>{% endif %}</td>
+            <td>{{ "Released" if d.released_by_admin else "Pending Release" }}</td>
+            <td>{{ d.created_at.strftime("%Y-%m-%d") }}</td>
+          </tr>
           {% else %}
-          <tr><td colspan="4">No uploaded documents yet.</td></tr>
+          <tr><td colspan="5">No uploaded documents yet.</td></tr>
           {% endfor %}
         </tbody>
       </table>
@@ -123,28 +141,35 @@
     <section class="panel">
       <h3>Admin/Manager Release Controls</h3>
       <table>
-        <thead><tr><th>Type</th><th>Number</th><th>Uploaded By</th><th>Release</th></tr></thead>
+        <thead><tr><th>Type</th><th>Number</th><th>Uploaded By</th><th>Verification</th><th>Release</th></tr></thead>
         <tbody>
           {% for d in documents_for_admin %}
           <tr>
             <td>{{ d.doc_type }}</td>
             <td>{{ d.doc_number or "-" }}</td>
             <td>{{ d.uploaded_by.full_name if d.uploaded_by else "-" }}</td>
+            <td>{{ d.verification_status.title() }}{% if d.verification_note %}<br /><small>{{ d.verification_note }}</small>{% endif %}</td>
             <td>
               <form method="post" class="inline">
                 <input type="hidden" name="action" value="release_document" />
                 <input type="hidden" name="doc_id" value="{{ d.id }}" />
+                <select name="verification_status">
+                  <option value="pending" {% if d.verification_status == "pending" %}selected{% endif %}>Pending</option>
+                  <option value="verified" {% if d.verification_status == "verified" %}selected{% endif %}>Verified</option>
+                  <option value="rejected" {% if d.verification_status == "rejected" %}selected{% endif %}>Rejected</option>
+                </select>
                 <select name="released_by_admin">
                   <option value="1" {% if d.released_by_admin %}selected{% endif %}>Released</option>
                   <option value="0" {% if not d.released_by_admin %}selected{% endif %}>Hold</option>
                 </select>
+                <input name="verification_note" value="{{ d.verification_note or '' }}" placeholder="Reason / note" />
                 <button type="submit">Save</button>
               </form>
               <a class="button-link inline" href="{{ url_for('main.profile_document', doc_type='staff_doc', doc_id=d.id) }}">Download</a>
             </td>
           </tr>
           {% else %}
-          <tr><td colspan="4">No documents for this user.</td></tr>
+          <tr><td colspan="5">No documents for this user.</td></tr>
           {% endfor %}
         </tbody>
       </table>
@@ -155,6 +180,12 @@
     {% if active_section == "salary" %}
     <section class="panel">
       <h3>Salary Receipts</h3>
+      <div class="grid grid-4">
+        <div class="flash success"><strong>Salary Type:</strong> {{ salary_summary.salary_type|title }}</div>
+        <div class="flash success"><strong>Monthly Salary:</strong> ₹{{ "%.2f"|format(salary_summary.salary_amount or 0) }}</div>
+        <div class="flash success"><strong>Per Day:</strong> ₹{{ "%.2f"|format(salary_summary.per_day_salary or 0) }}</div>
+        <div class="flash success"><strong>Estimated Pay:</strong> ₹{{ "%.2f"|format(salary_summary.estimated_pay or 0) }}</div>
+      </div>
       {% if can_admin_view %}
       <form method="post" enctype="multipart/form-data" class="grid grid-4">
         <input type="hidden" name="action" value="upload_salary_receipt" />
@@ -198,16 +229,33 @@
     {% if active_section == "attendance" %}
     <section class="panel">
       <h3>Attendance</h3>
+      <form method="get" class="grid grid-4" style="margin-bottom:0.8rem;">
+        <input type="hidden" name="section" value="attendance" />
+        {% if can_admin_view %}<input type="hidden" name="user_id" value="{{ profile_user.id }}" />{% endif %}
+        <label>Month
+          <select name="month">{% for m in range(1, 13) %}<option value="{{ m }}" {% if summary_month == m %}selected{% endif %}>{{ "%02d"|format(m) }}</option>{% endfor %}</select>
+        </label>
+        <label>Year<input type="number" min="2000" max="2100" name="year" value="{{ summary_year }}" /></label>
+        <button type="submit">Load Summary</button>
+      </form>
+      <div class="grid grid-4" style="margin-bottom:0.8rem;">
+        <div class="flash success"><strong>Present:</strong> {{ attendance_summary.present_days }}</div>
+        <div class="flash success"><strong>Half Days:</strong> {{ attendance_summary.half_days }}</div>
+        <div class="flash success"><strong>Late Marks:</strong> {{ attendance_summary.late_marks }}</div>
+        <div class="flash success"><strong>Worked Hours:</strong> {{ "%.2f"|format(attendance_summary.worked_hours or 0) }}</div>
+        <div class="flash success"><strong>Leave:</strong> {{ attendance_summary.leave_days }}</div>
+        <div class="flash success"><strong>Sick Leave:</strong> {{ attendance_summary.sick_days }}</div>
+        <div class="flash success"><strong>Weekly Off:</strong> {{ attendance_summary.weekly_off_days }}</div>
+        <div class="flash success"><strong>Missed Checkout:</strong> {{ attendance_summary.missed_checkouts }}</div>
+      </div>
       <form method="post" class="grid grid-4">
         <input type="hidden" name="action" value="attendance_status" />
         <label>Date<input type="date" name="attendance_date" required /></label>
         <label>Status
           <select name="status">
-            <option value="present_all_day">Present All Day</option>
-            <option value="first_half">First Half</option>
-            <option value="second_half">Second Half</option>
-            <option value="absent">Absent</option>
-            <option value="on_leave">On Leave</option>
+            {% for value, label in attendance_status_options %}
+            <option value="{{ value }}">{{ label }}</option>
+            {% endfor %}
           </select>
         </label>
         <label>Notes<input name="notes" /></label>
@@ -221,19 +269,53 @@
         <input type="hidden" name="action" value="check_out" />
         <button type="submit">Check-Out Now</button>
       </form>
+      {% if profile_user.id == g.current_user.id %}
+      <form method="post" class="grid grid-4" style="margin-top:0.8rem;">
+        <input type="hidden" name="action" value="leave_request" />
+        <label>Leave Type
+          <select name="leave_type">
+            {% for value, label in leave_type_options %}
+            <option value="{{ value }}">{{ label }}</option>
+            {% endfor %}
+          </select>
+        </label>
+        <label>Start Date<input type="date" name="start_date" required /></label>
+        <label>End Date<input type="date" name="end_date" required /></label>
+        <label>Reason<input name="reason" /></label>
+        <button type="submit">Submit Leave Request</button>
+      </form>
+      {% endif %}
+      <h4>Leave Requests</h4>
       <table>
-        <thead><tr><th>Date</th><th>Status</th><th>Check-In</th><th>Check-Out</th><th>Notes</th></tr></thead>
+        <thead><tr><th>Type</th><th>Dates</th><th>Status</th><th>Remarks</th></tr></thead>
+        <tbody>
+          {% for leave in leave_logs %}
+          <tr>
+            <td>{{ leave.leave_type|title }}</td>
+            <td>{{ leave.start_date }} to {{ leave.end_date }}</td>
+            <td>{{ leave.status|title }}</td>
+            <td>{{ leave.admin_remarks or "-" }}</td>
+          </tr>
+          {% else %}
+          <tr><td colspan="4">No leave requests yet.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      <table>
+        <thead><tr><th>Date</th><th>Status</th><th>Check-In</th><th>Check-Out</th><th>Worked Hrs</th><th>Flags</th><th>Notes</th></tr></thead>
         <tbody>
           {% for a in attendance_logs %}
           <tr>
             <td>{{ a.attendance_date }}</td>
-            <td>{{ a.status.replace("_", " ").title() if a.status else "-" }}</td>
+            <td>{{ attendance_status_label(a.status) }}</td>
             <td>{{ a.check_in_at.strftime("%H:%M:%S") if a.check_in_at else "-" }}</td>
             <td>{{ a.check_out_at.strftime("%H:%M:%S") if a.check_out_at else "-" }}</td>
+            <td>{{ "%.2f"|format(worked_hours_for_row(a) or 0) }}</td>
+            <td>{% set flags = attendance_flags_for_row(a) %}{{ flags|join(", ") if flags else "-" }}</td>
             <td>{{ a.notes or "-" }}</td>
           </tr>
           {% else %}
-          <tr><td colspan="5">No attendance records yet.</td></tr>
+          <tr><td colspan="7">No attendance records yet.</td></tr>
           {% endfor %}
         </tbody>
       </table>

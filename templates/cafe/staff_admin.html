@@ -3,6 +3,12 @@
 <section class="panel">
   <h2>Staff Management</h2>
   <p class="muted">Admins and managers can manage staff, attendance, and leaves from this workspace.</p>
+  <div class="grid grid-4">
+    <div class="flash success"><strong>Active Staff:</strong> {{ active_profiles|length }}</div>
+    <div class="flash success"><strong>Attendance Today:</strong> {{ today_attendance_count }}</div>
+    <div class="flash success"><strong>Pending Leave Requests:</strong> {{ pending_leave_count }}</div>
+    <div class="flash success"><strong>Docs Need Review:</strong> {{ document_pending_count }}</div>
+  </div>
   {% if g.current_user.role == "admin" %}
   <p><a class="button-link" href="{{ url_for('cafe.user_types') }}">Manage Roles</a></p>
   {% endif %}
@@ -12,9 +18,11 @@
   <aside class="library-sidebar panel">
     <a href="{{ url_for('cafe.staff', section='add_new_staff') }}" class="{% if active_staff_section == 'add_new_staff' %}active{% endif %}">Add New Staff</a>
     <a href="{{ url_for('cafe.staff', section='active_staff') }}" class="{% if active_staff_section == 'active_staff' %}active{% endif %}">Active Staff</a>
+    <a href="{{ url_for('cafe.staff', section='archived_staff') }}" class="{% if active_staff_section == 'archived_staff' %}active{% endif %}">Archived Staff</a>
     <a href="{{ url_for('cafe.staff', section='attendance_calendar', attendance_user_id=attendance_user_id, attendance_month=attendance_month, attendance_year=attendance_year) }}" class="{% if active_staff_section == 'attendance_calendar' %}active{% endif %}">Attendance Calendar</a>
     <a href="{{ url_for('cafe.staff', section='attendance_entry', attendance_user_id=attendance_user_id, attendance_month=attendance_month, attendance_year=attendance_year) }}" class="{% if active_staff_section == 'attendance_entry' %}active{% endif %}">Attendance Entry</a>
     <a href="{{ url_for('cafe.staff', section='leave_requests') }}" class="{% if active_staff_section == 'leave_requests' %}active{% endif %}">Leave Requests</a>
+    <a href="{{ url_for('cafe.staff', section='payroll_summary', payroll_month=payroll_month, payroll_year=payroll_year) }}" class="{% if active_staff_section == 'payroll_summary' %}active{% endif %}">Payroll Summary</a>
   </aside>
 
   <div class="library-content">
@@ -62,7 +70,9 @@
                 Joined: {{ s.joining_date or "-" }}<br />
                 DOB: {{ s.dob or "-" }}<br />
                 {{ s.gender or "-" }}, {{ s.marital_status or "-" }}<br />
-                Govt ID: {{ s.govt_id_type or "-" }} / {{ s.govt_id_number or "-" }}
+                Govt ID: {{ s.govt_id_type or "-" }} / {{ s.govt_id_number or "-" }}<br />
+                Emergency: {{ s.emergency_contact or "-" }}<br />
+                Salary: {{ (s.salary_type or "monthly")|title }}{% if s.salary_amount %} - ₹{{ "%.2f"|format(s.salary_amount) }}{% endif %}
               </td>
               <td>
                 {% set mark = attendance_today.get(s.user_id) %}
@@ -93,7 +103,17 @@
                   <label>Gender<input name="gender" value="{{ s.gender or '' }}" /></label>
                   <label>Phone<input name="phone" value="{{ s.phone or '' }}" /></label>
                   <label>Alt Contact<input name="alternate_contact" value="{{ s.alternate_contact or '' }}" /></label>
+                  <label>Emergency Contact<input name="emergency_contact" value="{{ s.emergency_contact or '' }}" /></label>
                   <label>Address<input name="address" value="{{ s.address or '' }}" /></label>
+                  <label>Salary Type
+                    <select name="salary_type">
+                      <option value="monthly" {% if s.salary_type == "monthly" %}selected{% endif %}>Monthly</option>
+                      <option value="daily" {% if s.salary_type == "daily" %}selected{% endif %}>Daily</option>
+                      <option value="hourly" {% if s.salary_type == "hourly" %}selected{% endif %}>Hourly</option>
+                    </select>
+                  </label>
+                  <label>Salary Amount<input type="number" min="0" step="0.01" name="salary_amount" value="{{ s.salary_amount or '' }}" /></label>
+                  <label>Probation End<input type="date" name="probation_end_date" value="{{ s.probation_end_date or '' }}" /></label>
                   <label>PAN<input name="pan_number" value="{{ s.pan_number or '' }}" /></label>
                   <label>Govt ID Type<input name="govt_id_type" value="{{ s.govt_id_type or '' }}" /></label>
                   <label>Govt ID Number<input name="govt_id_number" value="{{ s.govt_id_number or '' }}" /></label>
@@ -131,6 +151,65 @@
             </tr>
             {% else %}
             <tr><td colspan="5">No staff found.</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </section>
+    {% endif %}
+
+    {% if active_staff_section == "archived_staff" %}
+    <section class="panel">
+      <h3>Archived Staff</h3>
+      <div style="overflow:auto">
+        <table>
+          <thead>
+            <tr>
+              <th>Profile</th><th>Archived Status</th><th>Documents</th><th>Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for s in archived_profiles %}
+            {% set is_cafe_admin = (s.user.email == "admin@brownberries.local") or (s.user.role == "admin" and s.user.full_name|lower == "cafe admin") %}
+            <tr>
+              <td>
+                <strong>{{ s.user.full_name }}</strong><br />
+                {{ s.user.email }}<br />
+                {{ s.user.role.replace('_', ' ').title() }}<br />
+                Joined: {{ s.joining_date or "-" }}<br />
+                DOB: {{ s.dob or "-" }}<br />
+                {{ s.gender or "-" }}, {{ s.marital_status or "-" }}<br />
+                Govt ID: {{ s.govt_id_type or "-" }} / {{ s.govt_id_number or "-" }}
+              </td>
+              <td>
+                Login: {{ "Disabled" if not s.user.active else "Active" }}<br />
+                Archived: {{ "Yes" if s.archived else "No" }}
+              </td>
+              <td>
+                <p><a class="button-link" href="{{ url_for('cafe.download_staff_id_card', user_id=s.user_id) }}">Download Staff ID</a></p>
+                {% if s.govt_id_file_path %}
+                <p><a class="button-link" href="{{ url_for('cafe.download_staff_govt_id', user_id=s.user_id) }}">Download Govt ID</a></p>
+                {% endif %}
+              </td>
+              <td>
+                <form method="post" class="inline">
+                  <input type="hidden" name="action" value="restore" />
+                  <input type="hidden" name="user_id" value="{{ s.user_id }}" />
+                  <button type="submit">Restore</button>
+                </form>
+                {% if is_cafe_admin %}
+                <button type="button" disabled>Admin Protected</button>
+                {% else %}
+                <form method="post" class="inline">
+                  <input type="hidden" name="action" value="delete" />
+                  <input type="hidden" name="user_id" value="{{ s.user_id }}" />
+                  <button type="submit">Delete</button>
+                </form>
+                {% endif %}
+              </td>
+            </tr>
+            {% else %}
+            <tr><td colspan="4">No archived staff found.</td></tr>
             {% endfor %}
           </tbody>
         </table>
@@ -191,11 +270,9 @@
         <label>Date<input type="date" name="attendance_date" required /></label>
         <label>Status
           <select name="status">
-            <option value="present_all_day">Present All Day</option>
-            <option value="first_half">First Half</option>
-            <option value="second_half">Second Half</option>
-            <option value="absent">Absent</option>
-            <option value="on_leave">On Leave</option>
+            {% for value, label in attendance_status_options %}
+            <option value="{{ value }}">{{ label }}</option>
+            {% endfor %}
           </select>
         </label>
         <label>Notes<input name="notes" /></label>
@@ -236,6 +313,43 @@
             </tr>
             {% else %}
             <tr><td colspan="6">No leave requests yet.</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </section>
+    {% endif %}
+
+    {% if active_staff_section == "payroll_summary" %}
+    <section class="panel">
+      <h3>Payroll Summary</h3>
+      <form method="get" class="grid grid-4">
+        <input type="hidden" name="section" value="payroll_summary" />
+        <label>Month
+          <select name="payroll_month">{% for m in range(1,13) %}<option value="{{ m }}" {% if payroll_month == m %}selected{% endif %}>{{ "%02d"|format(m) }}</option>{% endfor %}</select>
+        </label>
+        <label>Year<input type="number" min="2000" max="2100" name="payroll_year" value="{{ payroll_year }}" /></label>
+        <button type="submit">Load Summary</button>
+      </form>
+      <p><strong>Total Estimated Payroll:</strong> ₹{{ "%.2f"|format(total_payroll_estimate or 0) }}</p>
+      <div style="overflow:auto">
+        <table>
+          <thead><tr><th>Staff</th><th>Salary</th><th>Present</th><th>Half Days</th><th>Sick</th><th>Unpaid</th><th>Payable Days</th><th>Per Day</th><th>Estimated Pay</th></tr></thead>
+          <tbody>
+            {% for row in payroll_rows %}
+            <tr>
+              <td>{{ row.user.full_name }}<br /><small>{{ row.user.role.replace('_', ' ').title() }}</small></td>
+              <td>{{ (row.profile.salary_type or "monthly")|title }}{% if row.profile.salary_amount %}<br />₹{{ "%.2f"|format(row.profile.salary_amount) }}{% else %}<br />-{% endif %}</td>
+              <td>{{ row.present_days }}</td>
+              <td>{{ row.half_days }}</td>
+              <td>{{ row.sick_days }}</td>
+              <td>{{ row.unpaid_days }}</td>
+              <td>{{ row.payable_days }}</td>
+              <td>₹{{ "%.2f"|format(row.per_day_salary or 0) }}</td>
+              <td>₹{{ "%.2f"|format(row.estimated_pay or 0) }}</td>
+            </tr>
+            {% else %}
+            <tr><td colspan="9">No payroll data available.</td></tr>
             {% endfor %}
           </tbody>
         </table>

@@ -1,38 +1,36 @@
 {% extends "base.html" %}
 {% block content %}
 <section class="panel">
-  <div class="split-head">
+  <div class="split-head cashier-header-row">
     <h2>Cashier Desk</h2>
-    <h3>Total Sale: ₹{{ "%.2f"|format(total_sale_today or 0) }}</h3>
-  </div>
-  <div class="split-head" style="margin-bottom:0.5rem;">
-    <div>
-      <button type="button" id="cashier-lock-now">Lock Screen</button>
-      <button type="button" id="cashier-change-pin">Set/Change PIN</button>
+    <div class="cashier-header-actions">
+      <h3>Total Sale: ₹{{ "%.2f"|format(total_sale_today or 0) }}</h3>
+      <div class="notif-wrap">
+        <button type="button" id="notif-bell" class="notif-bell">🔔 <span id="notif-count" class="notif-count">0</span></button>
+        <div id="notif-panel" class="notif-panel hidden">
+          <div class="split-head"><strong>Notifications</strong><button type="button" id="notif-clear">Clear All</button></div>
+          <div id="notif-list" class="grid"></div>
+        </div>
+      </div>
     </div>
-    <label>Auto Lock
-      <select id="cashier-auto-lock-mins">
-        <option value="5">5 min</option>
-        <option value="10" selected>10 min</option>
-        <option value="15">15 min</option>
-        <option value="30">30 min</option>
-        <option value="60">60 min</option>
+  </div>
+  <div class="cashier-toolbar-row">
+    <label class="cashier-mode-select">
+      <span>Orders View</span>
+      <select id="cashier-tab-select">
+        <option
+          value="{{ url_for('cafe.cashier', tab='running', table_id=selected_table.id if selected_table else None) }}"
+          {% if tab == 'running' %}selected{% endif %}
+        >Running Orders</option>
+        <option
+          value="{{ url_for('cafe.cashier', tab='all_orders', year=sel_year, month=sel_month, day=sel_day) }}"
+          {% if tab == 'all_orders' %}selected{% endif %}
+        >All Orders</option>
       </select>
     </label>
-  </div>
-  <p class="muted">Collect payment, mark orders paid, and clear table for next customers.</p>
-  <p class="muted">Connection: <strong id="socket-state">Connecting...</strong></p>
-  <div class="qr-category-bar">
-    <a class="qr-cat-pill {% if tab == 'running' %}active{% endif %}" href="{{ url_for('cafe.cashier', tab='running', table_id=selected_table.id if selected_table else None) }}">Running Orders</a>
-    <a class="qr-cat-pill {% if tab == 'all_orders' %}active{% endif %}" href="{{ url_for('cafe.cashier', tab='all_orders', year=sel_year, month=sel_month, day=sel_day) }}">All Orders</a>
-  </div>
-  <button type="button" id="enable-sound-btn">Enable Sound Alerts</button>
-  <div class="notif-wrap">
-    <button type="button" id="notif-bell" class="notif-bell">🔔 <span id="notif-count" class="notif-count">0</span></button>
-    <div id="notif-panel" class="notif-panel hidden">
-      <div class="split-head"><strong>Notifications</strong><button type="button" id="notif-clear">Clear All</button></div>
-      <div id="notif-list" class="grid"></div>
-    </div>
+    <label class="sound-volume-control">Alert Volume
+      <input type="range" id="sound-volume" min="0" max="100" step="5" value="85" />
+    </label>
   </div>
   {% if tab == "running" %}
   <div class="cashier-table-grid">
@@ -51,19 +49,6 @@
   {% endif %}
 </section>
 
-<div id="cashier-lock-overlay" style="display:none;position:fixed;inset:0;background:rgba(12,10,8,0.88);z-index:9999;align-items:center;justify-content:center;">
-  <div style="background:#fff;padding:1rem;max-width:360px;width:92%;border-radius:8px;">
-    <h3 style="margin-top:0;">Cashier Screen Locked</h3>
-    <p class="muted">Enter your cashier PIN to unlock.</p>
-    <label>PIN <input id="cashier-unlock-pin" type="password" inputmode="numeric" autocomplete="off" /></label>
-    <div class="split-head" style="margin-top:0.8rem;">
-      <button type="button" id="cashier-unlock-btn">Unlock</button>
-      <button type="button" id="cashier-logout-btn">Logout</button>
-    </div>
-    <p id="cashier-lock-error" style="color:#b42318;min-height:1.2rem;margin:0.4rem 0 0;"></p>
-  </div>
-</div>
-
 {% if tab == "running" and selected_table %}
 <section class="panel">
   <h3>{{ selected_table.name }} - Unpaid Orders</h3>
@@ -76,12 +61,12 @@
       <tbody>
         {% for order in unpaid_orders %}
         <tr>
-          <td>#{{ order.display_code or order.id }}</td>
+          <td>#{{ order.daily_sequence or order.id }}<br /><small>{{ order.display_code or order.id }}</small></td>
           <td>{{ order.status }}</td>
           <td>
             {% for oi in order.order_items %}
             {% if (oi.approval_status or "pending") != "rejected" %}
-            <div>{{ oi.menu_item.name }}{% if oi.size_label %} ({{ oi.size_label }}){% endif %} x {{ oi.quantity }}</div>
+            <div>{{ oi.menu_item.name }}{% if oi.size_label %} ({{ oi.size_label }}){% endif %}{% if oi.is_parcel %} (Parcel){% endif %} x {{ oi.quantity }}</div>
             {% endif %}
             {% endfor %}
           </td>
@@ -95,7 +80,7 @@
               <div class="grid">
                 <strong>Pending Queue</strong>
                 {% for oi in pending_items %}
-                <label><input type="checkbox" name="pending_item_ids" value="{{ oi.id }}" checked class="pending-item-checkbox" /> {{ oi.menu_item.name }}{% if oi.size_label %} ({{ oi.size_label }}){% endif %} x {{ oi.quantity }}</label>
+                <label><input type="checkbox" name="pending_item_ids" value="{{ oi.id }}" checked class="pending-item-checkbox" /> {{ oi.menu_item.name }}{% if oi.size_label %} ({{ oi.size_label }}){% endif %}{% if oi.is_parcel %} (Parcel){% endif %} x {{ oi.quantity }}</label>
                 {% endfor %}
               </div>
               <div class="grid grid-2">
@@ -139,7 +124,7 @@
                 <input type="hidden" name="keep_{{ oi.id }}" value="0" />
                 <label>
                   <input type="checkbox" name="keep_{{ oi.id }}" value="1" checked />
-                  {{ oi.menu_item.name }}{% if oi.size_label %} ({{ oi.size_label }}){% endif %}
+                  {{ oi.menu_item.name }}{% if oi.size_label %} ({{ oi.size_label }}){% endif %}{% if oi.is_parcel %} (Parcel){% endif %}
                 </label>
                 <label>Qty <input type="number" min="1" name="qty_{{ oi.id }}" value="{{ oi.quantity }}" /></label>
                 <label><input type="checkbox" name="is_parcel_{{ oi.id }}" {% if oi.is_parcel %}checked{% endif %} /> Parcel</label>
@@ -207,7 +192,7 @@
     <tr><th>Order</th><th>Table</th><th>Status</th><th>Total</th><th>Created</th><th>Action</th></tr>
     {% for o in all_orders %}
     <tr>
-      <td>#{{ o.display_code or o.id }}</td>
+      <td>#{{ o.daily_sequence or o.id }}<br /><small>{{ o.display_code or o.id }}</small></td>
       <td>{{ o.table.name if o.table else "-" }}</td>
       <td>{{ o.status }}</td>
       <td>₹{{ "%.2f"|format(o.total_amount) }}</td>
@@ -254,108 +239,9 @@
   const activeTab = "{{ tab }}";
   const allOrdersPayload = {{ all_orders_payload|tojson }};
   const sendReceiptSmsUrlTemplate = "{{ url_for('cafe.send_order_receipt_sms', order_id=0) }}";
-  const socketState = document.getElementById("socket-state");
-  const enableSoundBtn = document.getElementById("enable-sound-btn");
+  const cashierTabSelect = document.getElementById("cashier-tab-select");
+  const soundVolumeInput = document.getElementById("sound-volume");
   let cashierReloadTimer = null;
-  const lockOverlay = document.getElementById("cashier-lock-overlay");
-  const unlockPinInput = document.getElementById("cashier-unlock-pin");
-  const unlockBtn = document.getElementById("cashier-unlock-btn");
-  const lockError = document.getElementById("cashier-lock-error");
-  const lockNowBtn = document.getElementById("cashier-lock-now");
-  const changePinBtn = document.getElementById("cashier-change-pin");
-  const autoLockSelect = document.getElementById("cashier-auto-lock-mins");
-  const logoutBtn = document.getElementById("cashier-logout-btn");
-  const pinStorageKey = `cashier_pin_${cashierUserId}`;
-  const lockMinsKey = `cashier_lock_mins_${cashierUserId}`;
-  let lastActivityAt = Date.now();
-  let isLocked = false;
-  let autoLockMinutes = Number(localStorage.getItem(lockMinsKey) || "10");
-  if (!Number.isFinite(autoLockMinutes) || autoLockMinutes < 1) autoLockMinutes = 10;
-  if (autoLockSelect) autoLockSelect.value = String(autoLockMinutes);
-
-  function getCashierPin() {
-    return localStorage.getItem(pinStorageKey) || "";
-  }
-  function setCashierPin(pin) {
-    localStorage.setItem(pinStorageKey, pin);
-  }
-  function openLock() {
-    isLocked = true;
-    lockOverlay.style.display = "flex";
-    lockError.textContent = "";
-    unlockPinInput.value = "";
-    setTimeout(() => unlockPinInput.focus(), 40);
-  }
-  function closeLock() {
-    isLocked = false;
-    lockOverlay.style.display = "none";
-    lockError.textContent = "";
-    lastActivityAt = Date.now();
-  }
-  function ensurePinConfigured() {
-    if (getCashierPin()) return true;
-    const pin = prompt("Set your cashier PIN (4-8 digits):", "");
-    if (!pin) return false;
-    if (!/^\d{4,8}$/.test(pin.trim())) {
-      alert("PIN must be 4 to 8 digits.");
-      return false;
-    }
-    setCashierPin(pin.trim());
-    return true;
-  }
-  function handleUnlock() {
-    const expected = getCashierPin();
-    if (!expected) {
-      lockError.textContent = "No PIN set. Use Set/Change PIN.";
-      return;
-    }
-    if (unlockPinInput.value.trim() !== expected) {
-      lockError.textContent = "Invalid PIN.";
-      return;
-    }
-    closeLock();
-  }
-  function setOrChangePin() {
-    const current = getCashierPin();
-    if (current) {
-      const oldPin = prompt("Enter current PIN:", "");
-      if ((oldPin || "").trim() !== current) {
-        alert("Current PIN is incorrect.");
-        return;
-      }
-    }
-    const newPin = prompt("Enter new PIN (4-8 digits):", "");
-    if (!newPin) return;
-    if (!/^\d{4,8}$/.test(newPin.trim())) {
-      alert("PIN must be 4 to 8 digits.");
-      return;
-    }
-    setCashierPin(newPin.trim());
-    alert("PIN updated.");
-  }
-  function recordActivity() {
-    if (!isLocked) lastActivityAt = Date.now();
-  }
-  function evaluateAutoLock() {
-    if (isLocked) return;
-    const maxIdleMs = autoLockMinutes * 60 * 1000;
-    if (Date.now() - lastActivityAt >= maxIdleMs) {
-      if (ensurePinConfigured()) openLock();
-      else lastActivityAt = Date.now();
-    }
-  }
-  lockNowBtn?.addEventListener("click", () => { if (ensurePinConfigured()) openLock(); });
-  changePinBtn?.addEventListener("click", setOrChangePin);
-  unlockBtn?.addEventListener("click", handleUnlock);
-  unlockPinInput?.addEventListener("keydown", (e) => { if (e.key === "Enter") handleUnlock(); });
-  logoutBtn?.addEventListener("click", () => { window.location.href = "{{ url_for('main.logout') }}"; });
-  autoLockSelect?.addEventListener("change", () => {
-    autoLockMinutes = Number(autoLockSelect.value || "10");
-    localStorage.setItem(lockMinsKey, String(autoLockMinutes));
-    recordActivity();
-  });
-  ["click", "keydown", "mousemove", "touchstart"].forEach((ev) => window.addEventListener(ev, recordActivity, { passive: true }));
-  window.setInterval(evaluateAutoLock, 5000);
 
   function cashierScheduleReload(payload) {
     if (activeTab !== "running") return;
@@ -376,10 +262,12 @@
     if (!order || !odBody) return;
     const itemsHtml = (order.items || []).map((it) => {
       const size = it.size_label ? ` (${it.size_label})` : "";
-      return `<div>${it.name}${size} x ${it.qty} — ₹${(it.unit_price * it.qty).toFixed(2)}</div>`;
+      const parcel = it.is_parcel ? " (Parcel)" : "";
+      return `<div>${it.name}${size}${parcel} x ${it.qty} — ₹${(it.unit_price * it.qty).toFixed(2)}</div>`;
     }).join("");
-    odTitle.textContent = `Order #${order.code}`;
+    odTitle.textContent = `Order #${order.pickup_no || order.id}`;
     odBody.innerHTML = `
+      <div><strong>Internal Ref:</strong> ${order.code}</div>
       <div><strong>Table:</strong> ${order.table}</div>
       <div><strong>Status:</strong> ${order.status}</div>
       <div><strong>Payment:</strong> ${order.payment_type}</div>
@@ -437,9 +325,16 @@
       });
   });
   let audioCtx = null;
-  let soundEnabled = false;
+  let soundEnabled = true;
+  const soundPrefKey = `cashier_sound_enabled_v1:${cashierUserId || "default"}`;
+  const soundVolumeKey = `cashier_sound_volume_v1:${cashierUserId || "default"}`;
   const notifAudio = new Audio(notifSoundUrl);
   notifAudio.preload = "auto";
+  function applyVolume() {
+    const sliderValue = Number(soundVolumeInput?.value || "85");
+    const normalized = Math.max(0, Math.min(1, sliderValue / 100));
+    notifAudio.volume = normalized;
+  }
   async function enableSound() {
     try {
       const AudioCtx = window.AudioContext || window.webkitAudioContext;
@@ -454,7 +349,8 @@
         notifAudio.currentTime = 0;
       } catch (e) {}
       soundEnabled = true;
-      if (soundEnabled && enableSoundBtn) enableSoundBtn.textContent = "Sound Alerts Enabled";
+      try { localStorage.setItem(soundPrefKey, "1"); } catch (e) {}
+      applyVolume();
     } catch (e) {}
   }
   function playChime() {
@@ -505,24 +401,20 @@
     } catch (e) {}
   }
   notifBell?.addEventListener("click", () => notifPanel.classList.toggle("hidden"));
-  enableSoundBtn?.addEventListener("click", enableSound);
-  document.addEventListener("click", enableSound, { once: true });
+  cashierTabSelect?.addEventListener("change", () => {
+    const nextUrl = cashierTabSelect.value;
+    if (nextUrl) window.location.href = nextUrl;
+  });
+  ["click", "touchstart", "keydown"].forEach((eventName) => {
+    document.addEventListener(eventName, () => {
+      if (soundEnabled) enableSound();
+    }, { once: true });
+  });
   notifClear?.addEventListener("click", () => {
     notifs.splice(0, notifs.length);
     renderNotifs();
     saveNotifs();
   });
-  cashierSocket.on("connect", () => {
-    if (socketState) socketState.textContent = "Connected";
-  });
-  cashierSocket.on("disconnect", () => {
-    if (socketState) socketState.textContent = "Disconnected";
-  });
-  cashierSocket.on("connect_error", (err) => {
-    const msg = (err && (err.message || err.description)) ? `Connection Error: ${err.message || err.description}` : "Connection Error";
-    if (socketState) socketState.textContent = msg;
-  });
-
   cashierSocket.on("order_created", (payload) => {
     notifs.unshift({
       id: payload.id,
@@ -562,6 +454,19 @@
     playChime();
   });
   cashierSocket.on("order_updated", cashierScheduleReload);
+  try {
+    soundEnabled = localStorage.getItem(soundPrefKey) === "1";
+  } catch (e) {}
+  if (!soundEnabled) soundEnabled = true;
+  try {
+    const savedVolume = localStorage.getItem(soundVolumeKey);
+    if (savedVolume && soundVolumeInput) soundVolumeInput.value = savedVolume;
+  } catch (e) {}
+  soundVolumeInput?.addEventListener("input", () => {
+    try { localStorage.setItem(soundVolumeKey, soundVolumeInput.value); } catch (e) {}
+    applyVolume();
+  });
+  applyVolume();
   loadNotifs();
   renderNotifs();
 

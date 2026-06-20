@@ -11,6 +11,7 @@
     <a href="{{ url_for('cafe.menu', section='add_item') }}" class="{% if active_menu_section == 'add_item' %}active{% endif %}">Add Menu Item</a>
     <a href="{{ url_for('cafe.menu', section='items') }}" class="{% if active_menu_section == 'items' %}active{% endif %}">Menu Items</a>
     <a href="{{ url_for('cafe.menu', section='availability') }}" class="{% if active_menu_section == 'availability' %}active{% endif %}">Items Availability</a>
+    <a href="{{ url_for('cafe.menu', section='deleted_items') }}" class="{% if active_menu_section == 'deleted_items' %}active{% endif %}">Deleted Items</a>
   </aside>
 
   <div class="library-content">
@@ -26,13 +27,17 @@
         {% for c in categories %}
         <tr>
           <td>
+            {% if c.id in protected_category_ids %}
+            <strong>{{ c.name }}</strong>
+            {% else %}
             <form method="post" action="{{ url_for('cafe.update_category', category_id=c.id) }}" class="inline">
               <input name="name" value="{{ c.name }}" required />
               <button type="submit">Save</button>
             </form>
+            {% endif %}
           </td>
           <td>
-            {% if other_category_id and c.id == other_category_id %}
+            {% if c.id in protected_category_ids %}
             <span class="muted">Protected</span>
             {% else %}
             <form method="post" action="{{ url_for('cafe.delete_category', category_id=c.id) }}" class="inline">
@@ -80,38 +85,38 @@
           <legend>Categories (Select one or more)</legend>
           <div class="grid grid-4">
             {% for c in categories %}
-            <label><input type="checkbox" name="category_ids" value="{{ c.id }}" /> {{ c.name }}</label>
+            <label><input type="checkbox" name="category_ids" value="{{ c.id }}" {% if c.id in add_form.selected_category_ids %}checked{% endif %} /> {{ c.name }}</label>
             {% endfor %}
           </div>
         </fieldset>
         <label>Type
           <select name="menu_type_id" required>
-            {% for t in menu_types %}<option value="{{ t.id }}">{{ t.name }}</option>{% endfor %}
+            {% for t in menu_types %}<option value="{{ t.id }}" {% if add_form.menu_type_id == (t.id|string) %}selected{% endif %}>{{ t.name }}</option>{% endfor %}
           </select>
         </label>
-        <label>Name <input name="name" required /></label>
+        <label>Name <input name="name" value="{{ add_form.name }}" required /></label>
         <label>Prep Station
           <select name="prep_station" required>
-            {% for st in prep_station_options %}<option value="{{ st }}">{{ st|title }}</option>{% endfor %}
+            {% for st in prep_station_options %}<option value="{{ st }}" {% if add_form.prep_station == st %}selected{% endif %}>{{ st|title }}</option>{% endfor %}
           </select>
         </label>
-        <label>Image URL <input name="image_url" /></label>
+        <label>Image URL <input name="image_url" value="{{ add_form.image_url }}" /></label>
         <label>Upload Image <input name="image_file" type="file" accept="image/*" /></label>
-        <label>Short Description <input name="short_description" maxlength="140" placeholder="One-line card text" /></label>
-        <label>Description <input name="description" /></label>
-        <label>Calories <input name="calories" type="number" min="0" /></label>
-        <label>Price <input name="price" type="number" min="0" step="0.01" required /></label>
-        <label><input type="checkbox" name="has_size_variants" id="has_size_variants_new" /> Item has multiple serving sizes</label>
-        <div id="size_pricing_new" class="full hidden">
-          <div class="grid grid-4 size-rows" data-next-index="3">
-            <label>Size 1 <input name="size_name_1" placeholder="Regular" /></label>
-            <label>Price 1 <input name="size_price_1" type="number" step="0.01" min="0" /></label>
-            <label>Size 2 <input name="size_name_2" placeholder="Large" /></label>
-            <label>Price 2 <input name="size_price_2" type="number" step="0.01" min="0" /></label>
+        <label>Short Description <input name="short_description" maxlength="140" placeholder="One-line card text" value="{{ add_form.short_description }}" /></label>
+        <label>Description <input name="description" value="{{ add_form.description }}" /></label>
+        <label>Calories <input name="calories" type="number" min="0" value="{{ add_form.calories }}" /></label>
+        <label>Price <input name="price" type="number" min="0" step="0.01" value="{{ add_form.price }}" required /></label>
+        <label><input type="checkbox" name="has_size_variants" id="has_size_variants_new" {% if add_form.has_size_variants %}checked{% endif %} /> Item has multiple serving sizes</label>
+        <div id="size_pricing_new" class="full {% if not add_form.has_size_variants %}hidden{% endif %}">
+          <div class="grid grid-4 size-rows" data-next-index="{{ add_form.size_rows|length + 1 }}">
+            {% for s in add_form.size_rows %}
+            <label>Size {{ loop.index }} <input name="size_name_{{ loop.index }}" placeholder="Regular" value="{{ s.size }}" /></label>
+            <label>Price {{ loop.index }} <input name="size_price_{{ loop.index }}" type="number" step="0.01" min="0" value="{{ s.price }}" /></label>
+            {% endfor %}
           </div>
           <button type="button" class="add-size-row-btn" style="margin-top:0.5rem;">Add 1 Serving Size</button>
         </div>
-        <label><input type="checkbox" name="available" checked /> Available</label>
+        <label><input type="checkbox" name="available" {% if add_form.available %}checked{% endif %} /> Available</label>
         <button type="submit">Add Item</button>
       </form>
     </section>
@@ -185,11 +190,35 @@
                 <button type="submit">Save</button>
               </form>
             </details>
-            <form method="post" action="{{ url_for('cafe.delete_menu_item', item_id=item.id) }}" class="inline">
+            <form method="post" action="{{ url_for('cafe.delete_menu_item', item_id=item.id) }}" class="inline confirm-delete-form" data-confirm-message="Are you sure you want to move '{{ item.name }}' to Deleted Items?">
               <button type="submit">Delete</button>
             </form>
           </td>
         </tr>
+        {% endfor %}
+      </table>
+    </section>
+    {% endif %}
+
+    {% if active_menu_section == 'deleted_items' %}
+    <section class="panel">
+      <h3>Deleted Items</h3>
+      <table>
+        <tr><th>Item</th><th>Category</th><th>Type</th><th>Actions</th></tr>
+        {% for item in deleted_items %}
+        {% set selected_cats = item_category_map.get(item.id, []) %}
+        <tr>
+          <td>{{ item.name }}</td>
+          <td>{% for c in categories if c.id in selected_cats %}{{ c.name }}{% if not loop.last %}, {% endif %}{% endfor %}</td>
+          <td>{{ item.item_type }}</td>
+          <td>
+            <form method="post" action="{{ url_for('cafe.restore_menu_item', item_id=item.id) }}" class="inline">
+              <button type="submit">Restore</button>
+            </form>
+          </td>
+        </tr>
+        {% else %}
+        <tr><td colspan="4">No deleted items.</td></tr>
         {% endfor %}
       </table>
     </section>
@@ -305,5 +334,13 @@
   });
   document.getElementById("menu-preview-close")?.addEventListener("click", () => previewModal.classList.add("hidden"));
   previewModal?.addEventListener("click", (e) => { if (e.target === previewModal) previewModal.classList.add("hidden"); });
+  document.querySelectorAll(".confirm-delete-form").forEach((form) => {
+    form.addEventListener("submit", (event) => {
+      const message = form.dataset.confirmMessage || "Are you sure?";
+      if (!window.confirm(message)) {
+        event.preventDefault();
+      }
+    });
+  });
 </script>
 {% endblock %}

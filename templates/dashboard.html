@@ -1,5 +1,6 @@
 {% extends "base.html" %}
 {% block content %}
+{% set open_orders_href = url_for('cafe.cashier', tab='running') if (g.current_user.role in ['admin', 'manager', 'cashier'] or (g.current_user.user_type and g.current_user.user_type.can_manage_cashier)) else url_for('cafe.orders') %}
 <section class="hero-band" style="background-image:url('{{ url_for('static', filename='images/cafe-interior-1.jpeg') }}')">
   <div class="hero-overlay">
     <h2>Brownberries Operations Hub</h2>
@@ -7,9 +8,24 @@
   </div>
 </section>
 <section class="stats">
-  <article class="metric"><h3>Open Cafe Orders</h3><p>{{ open_orders }}</p></article>
-  <article class="metric"><h3>Active Library Issues</h3><p>{{ active_loans }}</p></article>
-  <article class="metric"><h3>Due Tomorrow</h3><p>{{ due_tomorrow }}</p></article>
+  <article class="metric">
+    <a href="{{ open_orders_href }}" style="display:block;color:inherit;text-decoration:none;">
+      <h3>Open Cafe Orders</h3>
+      <p>{{ open_orders }}</p>
+    </a>
+  </article>
+  <article class="metric">
+    <a href="{{ url_for('library.loans', status='issued') }}" style="display:block;color:inherit;text-decoration:none;">
+      <h3>Active Library Issues</h3>
+      <p>{{ active_loans }}</p>
+    </a>
+  </article>
+  <article class="metric">
+    <a href="{{ url_for('library.loans', status='due_tomorrow') }}" style="display:block;color:inherit;text-decoration:none;">
+      <h3>Due Tomorrow</h3>
+      <p>{{ due_tomorrow }}</p>
+    </a>
+  </article>
 </section>
 <section class="panel">
   <h2>Quick Access</h2>
