@@ -13,7 +13,7 @@ from zoneinfo import ZoneInfo
 
 import qrcode
 from PIL import Image, ImageDraw, ImageFont
-from flask import Blueprint, Response, current_app, flash, g, jsonify, redirect, render_template, request, url_for
+from flask import Blueprint, Response, current_app, flash, g, jsonify, redirect, render_template, request, session, url_for
 from openpyxl import Workbook
 from sqlalchemy.orm import joinedload
 from werkzeug.security import check_password_hash, generate_password_hash
@@ -1900,7 +1900,7 @@ def table_order():
     if not order:
         flash("Please add at least one menu item in cart.", "error")
         return redirect(url_for("main.table_qr_page", slug=slug))
-    flash("Order request sent for approval.", "success")
+    session["qr_success_toast"] = "Order placed successfully"
     return redirect(url_for("main.table_qr_page", slug=slug))
 
 

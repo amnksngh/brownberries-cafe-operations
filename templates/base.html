@@ -56,5 +56,235 @@
       {% endwith %}
       {% block content %}{% endblock %}
     </main>
+    {% if g.current_user and (g.current_user.role == "cashier" or (g.current_user.user_type and g.current_user.user_type.can_manage_cashier)) %}
+    <script src="{{ url_for('static', filename='js/socket.io.min.js') }}"></script>
+    <script>
+      window.__bbGlobalNotifierInstalled = true;
+      (() => {
+        const notifSoundUrl = "{{ url_for('static', filename='sounds/notification.wav') }}";
+        const cashierUserId = {{ g.current_user.id if g.current_user else 0 }};
+        const soundVolumeKey = `cashier_sound_volume_v1:${cashierUserId || "default"}`;
+        const notifAudio = new Audio(notifSoundUrl);
+        notifAudio.preload = "auto";
+        let audioCtx = null;
+        let soundReady = false;
+        let announcementBusy = false;
+        const queueStorageKey = `bb_global_notifier_queue_v1:${cashierUserId || "default"}`;
+        const announcementQueue = [];
+        const idleActions = [];
+        const afterCurrentActions = [];
+        const recentAnnouncementKeys = new Map();
+        let currentAnnouncementStartedAt = 0;
+        let currentAnnouncementMinDurationMs = 0;
+
+        function saveQueue() {
+          try {
+            localStorage.setItem(queueStorageKey, JSON.stringify(announcementQueue.slice(0, 50)));
+          } catch (_) {}
+        }
+
+        function loadQueue() {
+          try {
+            const raw = localStorage.getItem(queueStorageKey);
+            if (!raw) return;
+            const arr = JSON.parse(raw);
+            if (!Array.isArray(arr)) return;
+            announcementQueue.splice(0, announcementQueue.length, ...arr.filter((x) => x && typeof x.text === "string").slice(0, 50));
+          } catch (_) {}
+        }
+
+        function getVolume() {
+          try {
+            const raw = localStorage.getItem(soundVolumeKey);
+            const sliderValue = Number(raw || "85");
+            return Math.max(0, Math.min(1, sliderValue / 100));
+          } catch (_) {
+            return 0.85;
+          }
+        }
+
+        function applyVolume() {
+          notifAudio.volume = getVolume();
+        }
+
+        function runIdleActions() {
+          while (idleActions.length) {
+            const action = idleActions.shift();
+            try {
+              action?.();
+            } catch (_) {}
+          }
+        }
+
+        async function enableSound() {
+          try {
+            const AudioCtx = window.AudioContext || window.webkitAudioContext;
+            if (AudioCtx) {
+              if (!audioCtx) audioCtx = new AudioCtx();
+              if (audioCtx.state === "suspended") await audioCtx.resume();
+            }
+            applyVolume();
+            soundReady = true;
+          } catch (_) {}
+        }
+
+        function speakText(text, done) {
+          if (!("speechSynthesis" in window) || !window.SpeechSynthesisUtterance) {
+            window.setTimeout(done, 1300);
+            return;
+          }
+          const utter = new SpeechSynthesisUtterance(text);
+          utter.rate = 1;
+          utter.pitch = 1;
+          utter.volume = Math.max(0.45, getVolume());
+          utter.onend = () => done();
+          utter.onerror = () => done();
+          try {
+            window.speechSynthesis.cancel();
+            window.speechSynthesis.speak(utter);
+          } catch (_) {
+            window.setTimeout(done, 1300);
+          }
+        }
+
+        function processAnnouncementQueue() {
+          if (announcementBusy || announcementQueue.length < 1) {
+            if (!announcementBusy && announcementQueue.length < 1) runIdleActions();
+            return;
+          }
+          announcementBusy = true;
+          const next = announcementQueue.shift();
+          saveQueue();
+          applyVolume();
+          try {
+            notifAudio.pause();
+            notifAudio.currentTime = 0;
+            notifAudio.play().catch(() => {});
+          } catch (_) {}
+          window.setTimeout(() => {
+            currentAnnouncementStartedAt = Date.now();
+            currentAnnouncementMinDurationMs = Math.max(3200, Math.min(6500, 1900 + (String(next.text || "").length * 80)));
+            speakText(next.text, () => {
+              const elapsed = Date.now() - currentAnnouncementStartedAt;
+              const remaining = Math.max(0, currentAnnouncementMinDurationMs - elapsed);
+              window.setTimeout(() => {
+                announcementBusy = false;
+                currentAnnouncementStartedAt = 0;
+                currentAnnouncementMinDurationMs = 0;
+                while (afterCurrentActions.length) {
+                  const action = afterCurrentActions.shift();
+                  try {
+                    action?.();
+                  } catch (_) {}
+                }
+                processAnnouncementQueue();
+              }, remaining);
+            });
+          }, 850);
+        }
+
+        function enqueueAnnouncement(text, key = "") {
+          if (!text) return;
+          const now = Date.now();
+          if (key) {
+            const lastSeen = recentAnnouncementKeys.get(key) || 0;
+            if (now - lastSeen < 8000) return;
+            recentAnnouncementKeys.set(key, now);
+          }
+          announcementQueue.push({ text, key, createdAt: now });
+          saveQueue();
+          processAnnouncementQueue();
+        }
+
+        function requestActionWhenIdle(action) {
+          if (!announcementBusy && announcementQueue.length < 1) {
+            action?.();
+            return;
+          }
+          idleActions.push(action);
+        }
+
+        function requestActionAfterCurrent(action) {
+          if (!announcementBusy && announcementQueue.length < 1) {
+            action?.();
+            return;
+          }
+          if (!announcementBusy && announcementQueue.length > 0) {
+            processAnnouncementQueue();
+          }
+          afterCurrentActions.push(action);
+        }
+
+        function normalizeTableAnnouncementName(raw) {
+          const value = String(raw || "").trim();
+          if (!value) return "A table";
+          const match = value.match(/^t(\d{1,3})$/i);
+          if (match) return `Table ${match[1].padStart(2, "0")}`;
+          return value;
+        }
+
+        function normalizeTableAnnouncementSpeech(raw) {
+          const value = String(raw || "").trim();
+          if (!value) return "A table";
+          const match = value.match(/^t(\d{1,3})$/i);
+          if (!match) return value;
+          const digits = match[1].padStart(2, "0").split("");
+          const spokenDigits = digits.map((digit) => {
+            switch (digit) {
+              case "0": return "zero";
+              case "1": return "one";
+              case "2": return "two";
+              case "3": return "three";
+              case "4": return "four";
+              case "5": return "five";
+              case "6": return "six";
+              case "7": return "seven";
+              case "8": return "eight";
+              case "9": return "nine";
+              default: return digit;
+            }
+          });
+          return `Table ${spokenDigits.join(" ")}`;
+        }
+
+        window.__bbGlobalNotifier = {
+          enqueueAnnouncement,
+          requestActionWhenIdle,
+          requestActionAfterCurrent,
+          normalizeTableAnnouncementName,
+          normalizeTableAnnouncementSpeech,
+          isBusy: () => announcementBusy || announcementQueue.length > 0,
+        };
+
+        ["click", "touchstart", "keydown"].forEach((eventName) => {
+          document.addEventListener(eventName, () => {
+            enableSound();
+          }, { once: true });
+        });
+
+        const socket = io("/table", {
+          transports: ["polling"],
+          upgrade: false,
+          reconnection: true,
+          reconnectionAttempts: 50,
+          reconnectionDelay: 800,
+        });
+
+        socket.on("order_created", (payload) => {
+          const tableName = normalizeTableAnnouncementSpeech(payload?.table || payload?.table_name || "A table");
+          enqueueAnnouncement(`${tableName} has placed a new order.`, `order:${payload?.id || tableName}`);
+        });
+
+        socket.on("ops_notification", (payload) => {
+          if (!payload || payload.kind !== "staff_call") return;
+          const tableName = normalizeTableAnnouncementSpeech(payload.table_name || payload.table_id || "A table");
+          enqueueAnnouncement(`${tableName} is calling for staff.`, `staff_call:${payload.table_id || tableName}`);
+        });
+
+        loadQueue();
+        processAnnouncementQueue();
+      })();
+    </script>
+    {% endif %}
   </body>
 </html>

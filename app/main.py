@@ -1102,6 +1102,7 @@ def table_qr_page():
             .order_by(CafeOrder.created_at.desc())
             .all()
         )
+    qr_success_toast = session.pop("qr_success_toast", None)
     return render_template(
         "table_qr.html",
         table=table,
@@ -1112,6 +1113,7 @@ def table_qr_page():
         item_frequency=item_frequency,
         item_size_map=item_size_map,
         item_category_names_map=item_category_names_map,
+        qr_success_toast=qr_success_toast,
     )
 
 

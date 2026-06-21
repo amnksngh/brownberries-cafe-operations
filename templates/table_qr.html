@@ -6,9 +6,6 @@
   <p>Please check the QR code slug and try again.</p>
 </section>
 {% else %}
-{% set special_a = menu_items[0].name if menu_items|length > 0 else "House Brew" %}
-{% set special_b = menu_items[1].name if menu_items|length > 1 else "Cold Coffee" %}
-
 {% if not is_preview %}
 <section class="panel qr-welcome-screen" id="qr-landing">
   <img src="{{ url_for('static', filename='images/cafe-logo.png') }}" class="brand-logo qr-landing-logo" alt="Brownberries Cafe" />
@@ -36,12 +33,6 @@
           Fresh coffee, comfort food, and easy table ordering
           {% endif %}
         </p>
-      </div>
-    </div>
-    <div class="special-strip">
-      <span class="special-label">Today's Special</span>
-      <div class="special-ticker">
-        <span>{{ special_a }} | Pair it with {{ special_b }} for a cozy table round</span>
       </div>
     </div>
     <div class="qr-category-bar" id="qr-category-bar">
@@ -82,9 +73,9 @@
         >
           <div class="item-card-topline">
             {% if loop.index <= 5 %}
-            <span class="item-tag item-tag-featured">Most Loved</span>
+            <span class="item-tag item-tag-featured">♥ Most Loved</span>
             {% elif loop.index <= 10 %}
-            <span class="item-tag">Popular</span>
+            <span class="item-tag">🔥 Popular</span>
             {% endif %}
             {% if item.item_type %}
             <span class="item-tag item-tag-muted">{{ item.item_type }}</span>
@@ -142,27 +133,57 @@
     </section>
 
     {% if not is_preview %}
-    <section id="floating-cart" class="floating-cart">🛒 <span id="floating-count">0</span> Items • <span id="floating-total">₹0</span></section>
+    <div id="floating-cart" class="qr-bottom-cart-bar hidden" aria-hidden="true">
+      <button type="button" id="floating-cart-action" class="qr-bottom-cart-half qr-bottom-cart-main">
+        <span class="qr-bottom-cart-label">Cart</span>
+        <span>(</span>
+        <span id="floating-summary">0 Items</span>
+        <span class="qr-bottom-cart-divider">|</span>
+        <span id="floating-total">₹0</span>
+        <span>)</span>
+      </button>
+      <button type="button" id="floating-orders-action" class="qr-bottom-cart-half qr-bottom-cart-orders hidden">
+        <span class="qr-bottom-cart-orders-label">Orders</span>
+      </button>
+    </div>
     <button type="button" id="call-staff-btn" class="floating-assist-btn">🔔 Call Staff</button>
 
-    <section class="panel" id="cart-panel">
+    <div id="cart-sheet-backdrop" class="cart-sheet-backdrop hidden"></div>
+    <section id="cart-sheet" class="cart-sheet hidden" aria-hidden="true">
+      <div class="cart-sheet-handle"><span id="cart-sheet-cue" aria-hidden="true">▼ ▼ ▼</span></div>
       <div class="section-heading">
         <div>
-          <p class="eyebrow">Review</p>
+          <p class="eyebrow">Cart</p>
           <h3>Your Order</h3>
         </div>
-        <p class="muted section-note">Everything you add stays here while you keep browsing.</p>
+        <button type="button" id="cart-sheet-close">Close</button>
       </div>
       <div id="cart-lines" class="cart-lines"></div>
-      <p><strong>Total:</strong> ₹<span id="cart-total">0.00</span></p>
-      <input type="hidden" id="cart-payload" name="cart_payload" />
-      <button type="submit">Place Order</button>
+      <div class="cart-sheet-footer">
+        <p><strong>Total:</strong> ₹<span id="cart-total">0.00</span></p>
+        <input type="hidden" id="cart-payload" name="cart_payload" />
+        <div class="cart-sheet-actions">
+          <button type="submit" id="cart-place-order-btn">Place Order</button>
+          <button type="button" id="cart-continue-btn">Add More Items</button>
+        </div>
+      </div>
+    </section>
+    <section id="orders-sheet" class="cart-sheet hidden" aria-hidden="true">
+      <div class="cart-sheet-handle"><span id="orders-sheet-cue" aria-hidden="true">▼ ▼ ▼</span></div>
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">Orders</p>
+          <h3>Your Ordered Items</h3>
+        </div>
+        <button type="button" id="orders-sheet-close">Close</button>
+      </div>
+      <div id="orders-sheet-lines" class="cart-lines"></div>
     </section>
     {% endif %}
   </form>
 
   {% if not is_preview %}
-  <section class="panel">
+  <section class="panel" id="live-orders-section">
     <div class="section-heading">
       <div>
         <p class="eyebrow">Tracking</p>
@@ -176,7 +197,7 @@
       <tr data-order-id="{{ order.id }}">
         <td>#{{ order.daily_sequence or order.id }}</td>
         <td class="order-status">{{ order.status }}</td>
-        <td>{% for oi in order.order_items %}{% if (oi.approval_status or "pending") != "rejected" %}<div>{{ oi.menu_item.name }}{% if oi.size_label %} ({{ oi.size_label }}){% endif %} x {{ oi.quantity }}</div>{% endif %}{% endfor %}</td>
+        <td>{% for oi in order.order_items %}{% if (oi.approval_status or "pending") != "rejected" %}<div class="tracked-item-line"><span>{{ oi.menu_item.name }}{% if oi.size_label %} ({{ oi.size_label }}){% endif %} x {{ oi.quantity }}</span><span class="tracked-item-status tracked-item-status-{{ oi.approval_status or 'pending' }}">{{ 'Pending Approval' if (oi.approval_status or 'pending') == 'pending' else order.status|replace('_', ' ')|title }}</span></div>{% endif %}{% endfor %}</td>
         <td>{{ "%.2f"|format(order.total_amount) }}</td>
         <td>
           {% if order.status == "pending_approval" %}
@@ -212,10 +233,18 @@
   </div>
 </div>
 <div id="cart-toast" class="cart-toast hidden"></div>
+<div id="celebration-toast" class="celebration-toast hidden" aria-live="polite">
+  <div class="celebration-burst" aria-hidden="true">✨</div>
+  <div class="celebration-copy">
+    <strong>Order Placed</strong>
+    <span id="celebration-message">Your order is on its way for approval.</span>
+  </div>
+</div>
 
 <script src="{{ url_for('static', filename='js/socket.io.min.js') }}"></script>
 <script>
   const isPreview = {{ "true" if is_preview else "false" }};
+  const initialQrSuccessToast = {{ qr_success_toast|tojson if qr_success_toast else "null" }};
   const tableId = {{ table.id }};
   const cart = {};
   const CART_STORAGE_KEY = `brownberries_qr_cart_v1:${tableId}`;
@@ -223,10 +252,20 @@
   const cartLines = document.getElementById("cart-lines");
   const cartPayloadInput = document.getElementById("cart-payload");
   const cartTotal = document.getElementById("cart-total");
+  const floatingSummary = document.getElementById("floating-summary");
   const floatingTotal = document.getElementById("floating-total");
-  const floatingCount = document.getElementById("floating-count");
   const floatingCart = document.getElementById("floating-cart");
-  const cartPanel = document.getElementById("cart-panel");
+  const floatingCartAction = document.getElementById("floating-cart-action");
+  const floatingOrdersAction = document.getElementById("floating-orders-action");
+  const cartSheet = document.getElementById("cart-sheet");
+  const cartSheetBackdrop = document.getElementById("cart-sheet-backdrop");
+  const cartSheetClose = document.getElementById("cart-sheet-close");
+  const cartSheetCue = document.getElementById("cart-sheet-cue");
+  const cartContinueBtn = document.getElementById("cart-continue-btn");
+  const ordersSheet = document.getElementById("orders-sheet");
+  const ordersSheetClose = document.getElementById("orders-sheet-close");
+  const ordersSheetLines = document.getElementById("orders-sheet-lines");
+  const ordersSheetCue = document.getElementById("orders-sheet-cue");
   const orderForm = document.getElementById("qr-order-form");
   const menuShell = document.getElementById("qr-menu-shell");
   const landingScreen = document.getElementById("qr-landing");
@@ -234,7 +273,10 @@
   const callStaffBtn = document.getElementById("call-staff-btn");
   let editingOrderId = null;
   const ordersBoard = document.getElementById("table-orders-board");
+  const liveOrdersSection = document.getElementById("live-orders-section");
   const cartToast = document.getElementById("cart-toast");
+  const celebrationToast = document.getElementById("celebration-toast");
+  const celebrationMessage = document.getElementById("celebration-message");
   const descModal = document.getElementById("desc-modal");
   const descTitle = document.getElementById("desc-title");
   const descBody = document.getElementById("desc-body");
@@ -249,7 +291,145 @@
   const emptyResults = document.getElementById("qr-empty-results");
   const greetingEl = document.getElementById("qr-greeting");
   let toastTimer = null;
+  let celebrationTimer = null;
   let activeCat = "all";
+  let cartPulseTimer = null;
+  let activeBottomSheet = null;
+  const liveOrders = new Map();
+
+  {% for order in table_orders %}
+  liveOrders.set({{ order.id }}, {
+    id: {{ order.id }},
+    pickup_no_compact: {{ (order.daily_sequence or order.id)|string|tojson }},
+    status: {{ order.status|tojson }},
+    total_amount: {{ (order.total_amount or 0)|float }},
+    items: [
+      {% for oi in order.order_items if (oi.approval_status or "pending") != "rejected" %}
+      {
+        name: {{ (oi.menu_item.name if oi.menu_item else "-")|tojson }},
+        qty: {{ oi.quantity or 0 }},
+        size_label: {{ oi.size_label|tojson }},
+        approval_status: {{ (oi.approval_status or "pending")|tojson }}
+      }{{ "," if not loop.last }}
+      {% endfor %}
+    ]
+  });
+  {% endfor %}
+
+  function hasCartItems() {
+    return Object.keys(cart).length > 0;
+  }
+
+  function getLiveOrderCount() {
+    if (!ordersBoard) return 0;
+    return ordersBoard.querySelectorAll("tr[data-order-id]").length;
+  }
+
+  function syncBottomBarMode() {
+    if (!floatingCart || !floatingCartAction || !floatingOrdersAction) return;
+    const hasOrders = getLiveOrderCount() > 0;
+    floatingCart.classList.toggle("split-mode", hasOrders);
+    floatingCart.classList.toggle("single-mode", !hasOrders);
+    floatingOrdersAction.classList.toggle("hidden", !hasOrders);
+  }
+
+  function setSheetCueState(kind) {
+    if (cartSheetCue) cartSheetCue.textContent = "▼ ▼ ▼";
+    if (ordersSheetCue) ordersSheetCue.textContent = "▼ ▼ ▼";
+    cartSheetCue?.classList.add("cue-down");
+    cartSheetCue?.classList.remove("cue-up");
+    ordersSheetCue?.classList.add("cue-down");
+    ordersSheetCue?.classList.remove("cue-up");
+  }
+
+  function syncFloatingCartVisibility() {
+    if (!floatingCart) return;
+    const sheetOpen = cartSheet && !cartSheet.classList.contains("hidden");
+    const ordersSheetOpen = ordersSheet && !ordersSheet.classList.contains("hidden");
+    const shouldShow = (hasCartItems() || getLiveOrderCount() > 0) && !sheetOpen && !ordersSheetOpen;
+    floatingCart.classList.toggle("hidden", !shouldShow);
+    floatingCart.setAttribute("aria-hidden", shouldShow ? "false" : "true");
+    syncBottomBarMode();
+    setSheetCueState(activeBottomSheet);
+  }
+
+  function pulseFloatingCart() {
+    if (!floatingCart) return;
+    floatingCart.classList.remove("pulse");
+    void floatingCart.offsetWidth;
+    floatingCart.classList.add("pulse");
+    if (cartPulseTimer) window.clearTimeout(cartPulseTimer);
+    cartPulseTimer = window.setTimeout(() => {
+      floatingCart.classList.remove("pulse");
+    }, 1800);
+  }
+
+  function openBottomSheet(kind) {
+    if (isPreview || !cartSheetBackdrop) return;
+    const wantsCart = kind === "cart";
+    const wantsOrders = kind === "orders";
+    if (wantsCart && (!cartSheet || !hasCartItems())) return;
+    if (wantsOrders && (!ordersSheet || getLiveOrderCount() < 1)) return;
+    activeBottomSheet = kind;
+    cartSheet?.classList.toggle("hidden", !wantsCart);
+    cartSheet?.setAttribute("aria-hidden", wantsCart ? "false" : "true");
+    ordersSheet?.classList.toggle("hidden", !wantsOrders);
+    ordersSheet?.setAttribute("aria-hidden", wantsOrders ? "false" : "true");
+    if (wantsOrders) renderOrdersSheet();
+    cartSheetBackdrop.classList.remove("hidden");
+    document.body.classList.add("cart-sheet-open");
+    syncFloatingCartVisibility();
+  }
+
+  function openCartSheet() {
+    openBottomSheet("cart");
+  }
+
+  function openOrdersSheet() {
+    openBottomSheet("orders");
+  }
+
+  function closeBottomSheet() {
+    if (!cartSheetBackdrop) return;
+    cartSheet?.classList.add("hidden");
+    ordersSheet?.classList.add("hidden");
+    cartSheetBackdrop.classList.add("hidden");
+    cartSheet?.setAttribute("aria-hidden", "true");
+    ordersSheet?.setAttribute("aria-hidden", "true");
+    document.body.classList.remove("cart-sheet-open");
+    activeBottomSheet = null;
+    syncFloatingCartVisibility();
+  }
+
+  function closeCartSheet() {
+    closeBottomSheet();
+  }
+
+  function scrollToLiveOrders() {
+    if (!liveOrdersSection) return;
+    liveOrdersSection.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+
+  function formatOrderStatusLabel(orderStatus, approvalStatus) {
+    if ((approvalStatus || "pending") === "pending") return "Pending Approval";
+    return String(orderStatus || "open").replaceAll("_", " ");
+  }
+
+  function renderOrdersSheet() {
+    if (!ordersSheetLines) return;
+    const orders = Array.from(liveOrders.values());
+    if (orders.length < 1) {
+      ordersSheetLines.innerHTML = '<p class="muted">No live orders for this table yet.</p>';
+      return;
+    }
+    ordersSheetLines.innerHTML = orders.map((order) => {
+      const lines = (order.items || []).filter((item) => (item.approval_status || "pending") !== "rejected").map((item) => {
+        const label = formatOrderStatusLabel(order.status, item.approval_status);
+        return `<div class="tracked-item-line"><span>${item.name}${item.size_label ? ` (${item.size_label})` : ""} x ${item.qty}</span><span class="tracked-item-status tracked-item-status-${item.approval_status || "pending"}">${label}</span></div>`;
+      }).join("");
+      return `<article class="orders-sheet-card"><div class="orders-sheet-head"><strong>Order #${order.pickup_no_compact || order.id}</strong><span>₹${Number(order.total_amount || 0).toFixed(2)}</span></div><div class="orders-sheet-body">${lines || '<p class="muted">No active items in this order.</p>'}</div></article>`;
+    }).join("");
+  }
 
   function normalizeQty(value) {
     const num = Number(value);
@@ -282,6 +462,48 @@
     toastTimer = window.setTimeout(() => cartToast.classList.add("hidden"), 1400);
   }
 
+  function showCelebrationToast(message) {
+    if (!celebrationToast || !celebrationMessage) return;
+    celebrationMessage.textContent = message || "Your order is on its way for approval.";
+    celebrationToast.classList.remove("hidden");
+    celebrationToast.classList.add("show");
+    if (celebrationTimer) window.clearTimeout(celebrationTimer);
+    celebrationTimer = window.setTimeout(() => {
+      celebrationToast.classList.remove("show");
+      window.setTimeout(() => celebrationToast.classList.add("hidden"), 260);
+    }, 2200);
+  }
+
+  function updateMobileFixedBottomOffset() {
+    const vv = window.visualViewport;
+    let offset = 0;
+    if (vv) {
+      offset = Math.max(0, window.innerHeight - vv.height - vv.offsetTop);
+    }
+    document.documentElement.style.setProperty("--mobile-fixed-bottom-offset", `${offset}px`);
+  }
+
+  function openSheetFromTap(kind, event) {
+    if (event) {
+      event.preventDefault();
+      event.stopPropagation();
+    }
+    if (document.activeElement && typeof document.activeElement.blur === "function") {
+      document.activeElement.blur();
+    }
+    if (kind === "orders") openOrdersSheet();
+    else openCartSheet();
+  }
+
+  function bindPrimaryTap(el, handler) {
+    if (!el) return;
+    if (window.PointerEvent) {
+      el.addEventListener("pointerup", handler);
+    } else {
+      el.addEventListener("click", handler);
+    }
+  }
+
   function renderCart() {
     if (isPreview) return;
     const entries = Object.values(cart);
@@ -289,22 +511,25 @@
     if (entries.length === 0) {
       cartLines.innerHTML = '<p class="muted">No items in cart.</p>';
       cartTotal.textContent = "0.00";
+      if (floatingSummary) floatingSummary.textContent = "0 Items";
       floatingTotal.textContent = "₹0";
-      floatingCount.textContent = "0";
+      closeCartSheet();
       cartPayloadInput.value = "";
+      syncFloatingCartVisibility();
       return;
     }
     let total = 0;
-    cartLines.innerHTML = entries.map((line) => {
+    const cartMarkup = entries.map((line) => {
       const base = line.price * line.quantity;
       const pkg = line.is_parcel ? line.quantity * 20 : 0;
       total += base + pkg;
       const sizeText = line.size_label ? ` (${line.size_label})` : "";
       return `<div class="cart-line"><span>${line.name}${sizeText}</span><span class="qty-control"><button type="button" data-cart-minus="${line.line_key}">-</button><strong>${line.quantity}</strong><button type="button" data-cart-plus="${line.line_key}">+</button></span><span>${base.toFixed(2)}${line.is_parcel ? ` + ${pkg.toFixed(2)} Pkg` : ""}</span><button type="button" data-remove="${line.line_key}">Remove</button></div>`;
     }).join("");
+    cartLines.innerHTML = cartMarkup;
     cartTotal.textContent = total.toFixed(2);
+    if (floatingSummary) floatingSummary.textContent = `${totalItems} Item${totalItems === 1 ? "" : "s"}`;
     floatingTotal.textContent = `₹${total.toFixed(0)}`;
-    floatingCount.textContent = String(totalItems);
     cartPayloadInput.value = JSON.stringify(entries.map((line) => ({
       menu_item_id: line.menu_item_id,
       quantity: line.quantity,
@@ -313,6 +538,7 @@
       unit_price: line.price
     })));
     saveCartState();
+    syncFloatingCartVisibility();
   }
 
   function saveCartState() {
@@ -388,7 +614,9 @@
     if (!header) return;
     let lastCompact = false;
     const sync = () => {
-      const compact = window.scrollY > 32 || document.body.classList.contains("ordering-search-active");
+      const y = window.scrollY;
+      const compact = document.body.classList.contains("ordering-search-active")
+        || (lastCompact ? y > 10 : y > 42);
       if (compact === lastCompact) return;
       lastCompact = compact;
       header.classList.toggle("is-compact", compact);
@@ -402,7 +630,6 @@
     const topbar = document.querySelector(".topbar");
     if (!topbar || !menuHeader) return;
     let lastHidden = false;
-    let lastY = window.scrollY;
     const sync = () => {
       if (document.body.classList.contains("ordering-search-active")) {
         if (!lastHidden) {
@@ -412,12 +639,11 @@
         return;
       }
       const y = window.scrollY;
-      const hide = y > 48 && y >= lastY;
+      const hide = lastHidden ? y > 12 : y > 56;
       if (hide !== lastHidden) {
         lastHidden = hide;
         document.body.classList.toggle("ordering-nav-hidden", hide);
       }
-      lastY = Math.max(0, y);
     };
     window.addEventListener("scroll", sync, { passive: true });
     window.addEventListener("resize", sync);
@@ -473,6 +699,7 @@
         cart[lineKey].quantity += quantity;
         qtyInput.value = 1;
         renderCart();
+        pulseFloatingCart();
         showToast(`${name} x ${quantity} added to the cart${isParcel ? " (Parcel)" : ""}`);
       });
     });
@@ -552,7 +779,37 @@
   });
 
   if (!isPreview) {
-    floatingCart?.addEventListener("click", () => cartPanel.scrollIntoView({ behavior: "smooth", block: "start" }));
+    bindPrimaryTap(floatingCartAction, (event) => openSheetFromTap("cart", event));
+    bindPrimaryTap(floatingOrdersAction, (event) => openSheetFromTap("orders", event));
+    cartSheetClose?.addEventListener("click", closeBottomSheet);
+    ordersSheetClose?.addEventListener("click", closeBottomSheet);
+    cartContinueBtn?.addEventListener("click", closeBottomSheet);
+    cartSheetBackdrop?.addEventListener("click", closeBottomSheet);
+  }
+
+  function attachVerticalSwipe(el, { onSwipeUp, onSwipeDown, allowDownSwipe = null }) {
+    if (!el) return;
+    let startY = null;
+    let startX = null;
+    el.addEventListener("touchstart", (event) => {
+      const touch = event.changedTouches?.[0];
+      if (!touch) return;
+      startY = touch.clientY;
+      startX = touch.clientX;
+    }, { passive: true });
+    el.addEventListener("touchend", (event) => {
+      const touch = event.changedTouches?.[0];
+      if (!touch || startY == null || startX == null) return;
+      const deltaY = startY - touch.clientY;
+      const deltaX = Math.abs(startX - touch.clientX);
+      startY = null;
+      startX = null;
+      if (deltaX > 60) return;
+      if (deltaY > 40) onSwipeUp?.();
+      else if (deltaY < -40) {
+        if (!allowDownSwipe || allowDownSwipe()) onSwipeDown?.();
+      }
+    }, { passive: true });
   }
 
   function makeDraggable(el) {
@@ -580,7 +837,6 @@
     el.addEventListener("pointercancel", () => { dragging = false; });
   }
 
-  makeDraggable(floatingCart);
   makeDraggable(callStaffBtn);
 
   if (!isPreview) {
@@ -609,6 +865,7 @@
         form.submit();
         return;
       }
+      closeBottomSheet();
       try {
         window.sessionStorage.removeItem(CART_STORAGE_KEY);
         window.sessionStorage.setItem(ORDERING_STARTED_KEY, "1");
@@ -623,7 +880,7 @@
       if (!row) return;
       editingOrderId = orderId;
       showOrdering();
-      cartPanel?.scrollIntoView({ behavior: "smooth", block: "start" });
+      openCartSheet();
       alert(`Editing order #${orderId}. Update the cart and click Place Order.`);
     });
   }
@@ -636,11 +893,19 @@
     if (empty) empty.remove();
     if (["paid", "cancelled"].includes(order.status)) {
       if (row) row.remove();
+      liveOrders.delete(order.id);
+      renderOrdersSheet();
+      syncFloatingCartVisibility();
+      syncBottomBarMode();
       return;
     }
     const itemHtml = order.items
       .filter((i) => (i.approval_status || "pending") !== "rejected")
-      .map((i) => `<div>${i.name}${i.size_label ? ` (${i.size_label})` : ""} x ${i.qty}</div>`)
+      .map((i) => {
+        const approval = i.approval_status || "pending";
+        const itemStatus = approval === "pending" ? "Pending Approval" : String(order.status || "open").replaceAll("_", " ");
+        return `<div class="tracked-item-line"><span>${i.name}${i.size_label ? ` (${i.size_label})` : ""} x ${i.qty}</span><span class="tracked-item-status tracked-item-status-${approval}">${itemStatus}</span></div>`;
+      })
       .join("");
     const actionsHtml = order.status === "pending_approval"
       ? `<button type="button" class="edit-order-btn" data-order-id="${order.id}">Edit</button>
@@ -657,6 +922,10 @@
       ordersBoard.appendChild(row);
     }
     row.innerHTML = rowHtml;
+    liveOrders.set(order.id, order);
+    renderOrdersSheet();
+    syncFloatingCartVisibility();
+    syncBottomBarMode();
   }
 
   callStaffBtn?.addEventListener("click", async () => {
@@ -707,13 +976,29 @@
     }
   }
   startOrderingBtn?.addEventListener("click", showOrdering);
+  attachVerticalSwipe(cartSheet, {
+    onSwipeDown: closeBottomSheet,
+    allowDownSwipe: () => (cartSheet?.scrollTop || 0) <= 4,
+  });
+  attachVerticalSwipe(ordersSheet, {
+    onSwipeDown: closeBottomSheet,
+    allowDownSwipe: () => (ordersSheet?.scrollTop || 0) <= 4,
+  });
   restoreCartState();
   renderCart();
+  syncBottomBarMode();
   syncSearchClear();
   applyFilters();
   setupAutoCompactHeader(menuHeader);
   setupOrderingTopbarAutoHide();
   setupSearchFocusMode();
+  updateMobileFixedBottomOffset();
+  window.addEventListener("resize", updateMobileFixedBottomOffset);
+  window.visualViewport?.addEventListener("resize", updateMobileFixedBottomOffset);
+  window.visualViewport?.addEventListener("scroll", updateMobileFixedBottomOffset);
+  if (initialQrSuccessToast) {
+    showCelebrationToast(initialQrSuccessToast);
+  }
 </script>
 {% endif %}
 {% endblock %}

@@ -56,6 +56,16 @@
         data-type="{{ (item.item_type or '')|lower }}"
         data-featured="{{ '1' if loop.index <= 10 else '0' }}"
       >
+        <div class="item-card-topline">
+          {% if loop.index <= 5 %}
+          <span class="item-tag item-tag-featured">♥ Most Loved</span>
+          {% elif loop.index <= 10 %}
+          <span class="item-tag">🔥 Popular</span>
+          {% endif %}
+          {% if item.item_type %}
+          <span class="item-tag item-tag-muted">{{ item.item_type }}</span>
+          {% endif %}
+        </div>
         <h4 class="item-name">{{ item.name }}</h4>
         {% if item.image_url %}<img src="{{ item.image_url }}" class="item-image qr-click-image" alt="{{ item.name }}">{% else %}<div class="item-image placeholder">No Image</div>{% endif %}
         <p class="item-short">{{ item.short_description or item.description or "Freshly prepared at Brownberries Café." }}</p>

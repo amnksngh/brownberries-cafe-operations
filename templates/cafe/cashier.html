@@ -4,7 +4,7 @@
   <div class="split-head cashier-header-row">
     <h2>Cashier Desk</h2>
     <div class="cashier-header-actions">
-      <h3>Total Sale: ₹{{ "%.2f"|format(total_sale_today or 0) }}</h3>
+      <h3 id="cashier-total-sale">Total Sale: ₹{{ "%.2f"|format(total_sale_today or 0) }}</h3>
       <div class="notif-wrap">
         <button type="button" id="notif-bell" class="notif-bell">🔔 <span id="notif-count" class="notif-count">0</span></button>
         <div id="notif-panel" class="notif-panel hidden">
@@ -33,7 +33,7 @@
     </label>
   </div>
   {% if tab == "running" %}
-  <div class="cashier-table-grid">
+  <div id="cashier-table-grid" class="cashier-table-grid">
     {% for t in tables %}
     {% set running = running_map.get(t.id, {"count": 0, "total": 0}) %}
     <a
@@ -49,6 +49,7 @@
   {% endif %}
 </section>
 
+<div id="cashier-selected-sections">
 {% if tab == "running" and selected_table %}
 <section class="panel">
   <h3>{{ selected_table.name }} - Unpaid Orders</h3>
@@ -160,6 +161,7 @@
   </form>
 </section>
 {% endif %}
+</div>
 {% if tab == "all_orders" %}
 <section class="panel">
   <h3>All Orders by Date</h3>
@@ -225,6 +227,7 @@
   </div>
 </div>
 <script src="{{ url_for('static', filename='js/socket.io.min.js') }}"></script>
+<script id="cashier-all-orders-payload" type="application/json">{{ all_orders_payload|tojson }}</script>
 <script>
   const cashierUserId = {{ g.current_user.id if g.current_user else 0 }};
   const notifSoundUrl = "{{ url_for('static', filename='sounds/notification.wav') }}";
@@ -237,18 +240,15 @@
   });
   const selectedTableId = {{ selected_table.id if selected_table else 0 }};
   const activeTab = "{{ tab }}";
-  const allOrdersPayload = {{ all_orders_payload|tojson }};
+  let allOrdersPayload = [];
   const sendReceiptSmsUrlTemplate = "{{ url_for('cafe.send_order_receipt_sms', order_id=0) }}";
   const cashierTabSelect = document.getElementById("cashier-tab-select");
   const soundVolumeInput = document.getElementById("sound-volume");
-  let cashierReloadTimer = null;
-
-  function cashierScheduleReload(payload) {
-    if (activeTab !== "running") return;
-    if (!payload || !payload.table_id) return;
-    if (cashierReloadTimer) return;
-    cashierReloadTimer = setTimeout(() => window.location.reload(), 300);
-  }
+  const globalNotifier = window.__bbGlobalNotifier || null;
+  let cashierRefreshTimer = null;
+  let cashierRefreshQueued = false;
+  let cashierRefreshInFlight = false;
+  let cashierRefreshPending = false;
 
   const orderModal = document.getElementById("order-detail-modal");
   const odTitle = document.getElementById("od-title");
@@ -280,16 +280,106 @@
       <div><strong>Total:</strong> ₹${Number(order.total_amount || 0).toFixed(2)}</div>
     `;
   }
-  document.querySelectorAll(".open-order-modal").forEach((btn) => {
-    btn.addEventListener("click", () => {
-      const orderId = Number(btn.dataset.orderId || 0);
-      const order = allOrdersPayload.find((x) => Number(x.id) === orderId);
-      if (!order) return;
-      activeOrderForSms = order;
-      renderOrderDetails(order);
-      orderModal?.classList.remove("hidden");
+  function hydrateAllOrdersPayload(root = document) {
+    const payloadNode = root.getElementById ? root.getElementById("cashier-all-orders-payload") : null;
+    if (!payloadNode) return;
+    try {
+      allOrdersPayload = JSON.parse(payloadNode.textContent || "[]");
+    } catch (e) {
+      allOrdersPayload = [];
+    }
+  }
+
+  function bindOrderModalButtons(root = document) {
+    root.querySelectorAll(".open-order-modal").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const orderId = Number(btn.dataset.orderId || 0);
+        const order = allOrdersPayload.find((x) => Number(x.id) === orderId);
+        if (!order) return;
+        activeOrderForSms = order;
+        renderOrderDetails(order);
+        orderModal?.classList.remove("hidden");
+      });
     });
-  });
+  }
+
+  function bindDecisionForms(root = document) {
+    root.querySelectorAll("form[action*='/orders/'][action$='/approve']").forEach((form) => {
+      const checkboxes = [...form.querySelectorAll(".pending-item-checkbox")];
+      const buttons = [...form.querySelectorAll(".decision-btn")];
+      const sync = () => {
+        const anyChecked = checkboxes.some((cb) => cb.checked);
+        buttons.forEach((btn) => btn.disabled = !anyChecked);
+      };
+      checkboxes.forEach((cb) => cb.addEventListener("change", sync));
+      sync();
+    });
+  }
+
+  function bindCashierDynamicHandlers(root = document) {
+    bindOrderModalButtons(root);
+    bindDecisionForms(root);
+  }
+
+  function refreshCashierRunningView() {
+    if (activeTab !== "running") return;
+    if (cashierRefreshInFlight) {
+      cashierRefreshPending = true;
+      return;
+    }
+    cashierRefreshInFlight = true;
+    fetch(window.location.href, {
+      headers: {
+        "X-Requested-With": "XMLHttpRequest",
+        "Cache-Control": "no-cache",
+      },
+      credentials: "same-origin",
+    })
+      .then((resp) => {
+        if (!resp.ok) throw new Error(`Refresh failed with ${resp.status}`);
+        return resp.text();
+      })
+      .then((html) => {
+        const doc = new DOMParser().parseFromString(html, "text/html");
+        const nextTotalSale = doc.getElementById("cashier-total-sale");
+        const nextTableGrid = doc.getElementById("cashier-table-grid");
+        const nextSelectedSections = doc.getElementById("cashier-selected-sections");
+        const nextPayload = doc.getElementById("cashier-all-orders-payload");
+
+        if (nextTotalSale) {
+          const currentTotalSale = document.getElementById("cashier-total-sale");
+          if (currentTotalSale) currentTotalSale.innerHTML = nextTotalSale.innerHTML;
+        }
+        if (nextTableGrid) {
+          const currentTableGrid = document.getElementById("cashier-table-grid");
+          if (currentTableGrid) currentTableGrid.innerHTML = nextTableGrid.innerHTML;
+        }
+        if (nextSelectedSections) {
+          const currentSelectedSections = document.getElementById("cashier-selected-sections");
+          if (currentSelectedSections) currentSelectedSections.innerHTML = nextSelectedSections.innerHTML;
+        }
+        if (nextPayload) {
+          const currentPayload = document.getElementById("cashier-all-orders-payload");
+          if (currentPayload) currentPayload.textContent = nextPayload.textContent || "[]";
+        }
+        hydrateAllOrdersPayload(document);
+        bindCashierDynamicHandlers(document);
+      })
+      .catch((error) => {
+        console.error("Cashier live refresh failed:", error);
+      })
+      .finally(() => {
+        cashierRefreshInFlight = false;
+        cashierRefreshQueued = false;
+        if (cashierRefreshPending) {
+          cashierRefreshPending = false;
+          window.setTimeout(refreshCashierRunningView, 120);
+        }
+      });
+  }
+
+  hydrateAllOrdersPayload(document);
+  bindCashierDynamicHandlers(document);
   odClose?.addEventListener("click", () => orderModal?.classList.add("hidden"));
   orderModal?.addEventListener("click", (event) => {
     if (event.target === orderModal) orderModal.classList.add("hidden");
@@ -326,6 +416,9 @@
   });
   let audioCtx = null;
   let soundEnabled = true;
+  const useGlobalAudio = !!window.__bbGlobalNotifierInstalled;
+  let announcementBusy = false;
+  const announcementQueue = [];
   const soundPrefKey = `cashier_sound_enabled_v1:${cashierUserId || "default"}`;
   const soundVolumeKey = `cashier_sound_volume_v1:${cashierUserId || "default"}`;
   const notifAudio = new Audio(notifSoundUrl);
@@ -354,12 +447,50 @@
     } catch (e) {}
   }
   function playChime() {
-    if (!soundEnabled) return;
+    if (useGlobalAudio || !soundEnabled) return;
     try {
       notifAudio.pause();
       notifAudio.currentTime = 0;
       notifAudio.play().catch(() => {});
     } catch (e) {}
+  }
+
+  function speakText(text, done) {
+    if (useGlobalAudio || !("speechSynthesis" in window) || !window.SpeechSynthesisUtterance) {
+      window.setTimeout(done, 1300);
+      return;
+    }
+    const utter = new SpeechSynthesisUtterance(text);
+    utter.rate = 1;
+    utter.pitch = 1;
+    utter.volume = Math.max(0.45, notifAudio.volume || 0.85);
+    utter.onend = () => done();
+    utter.onerror = () => done();
+    try {
+      window.speechSynthesis.cancel();
+      window.speechSynthesis.speak(utter);
+    } catch (_) {
+      window.setTimeout(done, 1300);
+    }
+  }
+
+  function processAnnouncementQueue() {
+    if (useGlobalAudio || announcementBusy || announcementQueue.length < 1) return;
+    announcementBusy = true;
+    const next = announcementQueue.shift();
+    playChime();
+    window.setTimeout(() => {
+      speakText(next, () => {
+        announcementBusy = false;
+        processAnnouncementQueue();
+      });
+    }, 850);
+  }
+
+  function enqueueAnnouncement(text) {
+    if (!text || useGlobalAudio) return;
+    announcementQueue.push(text);
+    processAnnouncementQueue();
   }
   const notifBell = document.getElementById("notif-bell");
   const notifCount = document.getElementById("notif-count");
@@ -371,6 +502,50 @@
   function summarizeItems(items) {
     if (!Array.isArray(items) || items.length < 1) return "-";
     return items.map((it) => `${it.name}${it.size_label ? ` (${it.size_label})` : ""} x ${it.qty}`).join(", ");
+  }
+  function normalizeTableAnnouncementName(raw) {
+    if (globalNotifier?.normalizeTableAnnouncementName) {
+      return globalNotifier.normalizeTableAnnouncementName(raw);
+    }
+    const value = String(raw || "").trim();
+    if (!value) return "A table";
+    const match = value.match(/^t(\d{1,3})$/i);
+    if (match) return `Table ${match[1].padStart(2, "0")}`;
+    return value;
+  }
+
+  function normalizeTableAnnouncementSpeech(raw) {
+    if (globalNotifier?.normalizeTableAnnouncementSpeech) {
+      return globalNotifier.normalizeTableAnnouncementSpeech(raw);
+    }
+    return normalizeTableAnnouncementName(raw);
+  }
+
+  function scheduleCashierRefresh(afterCurrent = false, delayMs = 220) {
+    if (activeTab !== "running") return;
+    if (cashierRefreshQueued) return;
+    if (cashierRefreshTimer) {
+      clearTimeout(cashierRefreshTimer);
+      cashierRefreshTimer = null;
+    }
+    if (
+      useGlobalAudio &&
+      globalNotifier?.requestActionAfterCurrent &&
+      (afterCurrent || globalNotifier?.isBusy?.())
+    ) {
+      cashierRefreshQueued = true;
+      globalNotifier.requestActionAfterCurrent(() => refreshCashierRunningView());
+      return;
+    }
+    cashierRefreshTimer = setTimeout(() => {
+      cashierRefreshTimer = null;
+      refreshCashierRunningView();
+    }, delayMs);
+  }
+
+  function requestCashierRefresh(payload) {
+    if (!payload || !payload.table_id) return;
+    scheduleCashierRefresh(false, 120);
   }
   function toNotifLine(n) {
     if (n && n.kind === "booking") {
@@ -426,8 +601,14 @@
     if (notifs.length > 30) notifs.pop();
     renderNotifs();
     saveNotifs();
-    playChime();
-    cashierScheduleReload(payload);
+    const announcement = `${normalizeTableAnnouncementSpeech(payload.table || "-")} has placed a new order.`;
+    if (useGlobalAudio && globalNotifier?.enqueueAnnouncement) {
+      globalNotifier.enqueueAnnouncement(announcement, `order:${payload.id || payload.table || "-"}`);
+      requestCashierRefresh(payload);
+    } else {
+      enqueueAnnouncement(announcement);
+      scheduleCashierRefresh(false, 120);
+    }
   });
   cashierSocket.on("ops_notification", (payload) => {
     notifs.unshift({
@@ -440,6 +621,9 @@
     if (notifs.length > 30) notifs.pop();
     renderNotifs();
     saveNotifs();
+    if (payload?.kind === "staff_call") {
+      enqueueAnnouncement(`${normalizeTableAnnouncementName(payload.table_name || payload.table_id || "-")} is calling for staff.`);
+    }
   });
   cashierSocket.on("booking_created", (payload) => {
     notifs.unshift({
@@ -451,9 +635,12 @@
     if (notifs.length > 30) notifs.pop();
     renderNotifs();
     saveNotifs();
-    playChime();
+    enqueueAnnouncement(`Booking received for ${payload.customer_name || "a guest"}.`);
   });
-  cashierSocket.on("order_updated", cashierScheduleReload);
+  cashierSocket.on("order_updated", (payload) => {
+    if (!payload || !payload.table_id) return;
+    scheduleCashierRefresh(false, 120);
+  });
   try {
     soundEnabled = localStorage.getItem(soundPrefKey) === "1";
   } catch (e) {}
@@ -469,16 +656,6 @@
   applyVolume();
   loadNotifs();
   renderNotifs();
-
-  document.querySelectorAll("form[action*='/orders/'][action$='/approve']").forEach((form) => {
-    const checkboxes = [...form.querySelectorAll(".pending-item-checkbox")];
-    const buttons = [...form.querySelectorAll(".decision-btn")];
-    const sync = () => {
-      const anyChecked = checkboxes.some((cb) => cb.checked);
-      buttons.forEach((btn) => btn.disabled = !anyChecked);
-    };
-    checkboxes.forEach((cb) => cb.addEventListener("change", sync));
-    sync();
-  });
+  bindDecisionForms();
 </script>
 {% endblock %}
