@@ -1,59 +1,118 @@
 {% extends "base.html" %}
 {% block content %}
-<section class="panel">
-  <h2>{{ "Barista Counter Display" if station == "barista" else "Kitchen Display" }} - Live Orders</h2>
-  <p class="muted">Auto-refreshing via WebSocket</p>
-  <p class="muted">Connection: <strong id="socket-state">Connecting...</strong></p>
-  <label class="sound-volume-control">Alert Volume
-    <input type="range" id="sound-volume" min="0" max="100" step="5" value="85" />
-  </label>
-  <div class="notif-wrap">
-    <button type="button" id="notif-bell" class="notif-bell">🔔 <span id="notif-count" class="notif-count">0</span></button>
-    <div id="notif-panel" class="notif-panel hidden">
-      <div class="split-head"><strong>Notifications</strong><button type="button" id="notif-clear">Clear All</button></div>
-      <div id="notif-list" class="grid"></div>
+{% set display_title = "Barista Counter Display" if station == "barista" else "Kitchen Display" %}
+<section class="panel kds-shell">
+  <div class="kds-header">
+    <div>
+      <h2>{{ display_title }}</h2>
+      <p class="muted">Live queue with built-in SOP support for fast execution.</p>
+    </div>
+    <div class="kds-header-actions">
+      <div class="kds-station-switch">
+        <a class="button-link {% if station == 'kitchen' %}active{% endif %}" href="{{ url_for('cafe.kitchen_display', station='kitchen') }}">Kitchen</a>
+        <a class="button-link {% if station == 'barista' %}active{% endif %}" href="{{ url_for('cafe.kitchen_display', station='barista') }}">Barista Counter</a>
+      </div>
+      <label class="sound-volume-control">Alert Volume
+        <input type="range" id="sound-volume" min="0" max="100" step="5" value="85" />
+      </label>
+      <div class="notif-wrap">
+        <button type="button" id="notif-bell" class="notif-bell">🔔 <span id="notif-count" class="notif-count">0</span></button>
+        <div id="notif-panel" class="notif-panel hidden">
+          <div class="split-head"><strong>Notifications</strong><button type="button" id="notif-clear">Clear All</button></div>
+          <div id="notif-list" class="grid"></div>
+        </div>
+      </div>
     </div>
   </div>
-  <p>
-    <a class="button-link" href="{{ url_for('cafe.kitchen_display', station='kitchen') }}">Kitchen</a>
-    <a class="button-link" href="{{ url_for('cafe.kitchen_display', station='barista') }}">Barista Counter</a>
-  </p>
+
+  <div class="kds-metrics">
+    <article class="kds-metric-card">
+      <span>Current Time</span>
+      <strong id="kds-current-time">--:--</strong>
+    </article>
+    <article class="kds-metric-card">
+      <span>Active Orders</span>
+      <strong id="kds-active-orders">{{ active_orders }}</strong>
+    </article>
+    <article class="kds-metric-card">
+      <span>Avg Ticket Time</span>
+      <strong id="kds-avg-ticket">{{ avg_ticket_minutes }} min</strong>
+    </article>
+    <article class="kds-metric-card">
+      <span>Training Mode</span>
+      <label class="kds-training-toggle">
+        <input type="checkbox" id="kds-training-mode" />
+        <span id="kds-training-label">Off</span>
+      </label>
+    </article>
+  </div>
 </section>
-<section id="kitchen-board" class="kitchen-grid">
-  {% for order in orders %}
-  <article class="k-card" data-order-id="{{ order.id }}">
-    <h3>Order #{{ order.daily_sequence or order.id }} - {{ order.table.name }}</h3>
-    <p class="muted">Ref: {{ order.display_code or order.id }}</p>
-    <p>Status: <strong class="status">{{ order.status }}</strong></p>
-    <p>Total: {{ "%.2f"|format(order.total_amount) }}</p>
-    <ul>
-      {% for oi in order.order_items %}
-      {% if oi.menu_item and oi.menu_item.prep_station == station and (oi.approval_status or 'pending') == 'approved' %}
-      <li>{{ oi.menu_item.name }} x {{ oi.quantity }}</li>
-      {% endif %}
-      {% endfor %}
-    </ul>
-    <div class="k-actions">
-      <form method="post" action="{{ url_for('cafe.update_order_status', order_id=order.id) }}" class="inline">
-        <input type="hidden" name="status" value="preparing" />
-        <button type="submit">Preparing</button>
-      </form>
-      <form method="post" action="{{ url_for('cafe.update_order_status', order_id=order.id) }}" class="inline">
-        <input type="hidden" name="status" value="ready" />
-        <button type="submit">Ready</button>
-      </form>
-      <form method="post" action="{{ url_for('cafe.update_order_status', order_id=order.id) }}" class="inline">
-        <input type="hidden" name="status" value="served" />
-        <button type="submit">Served</button>
-      </form>
-      <form method="post" action="{{ url_for('cafe.update_order_status', order_id=order.id) }}" class="inline">
-        <input type="hidden" name="status" value="cancelled" />
-        <button type="submit">Cancel</button>
-      </form>
+
+<section class="kds-layout">
+  <div class="panel kds-board-panel">
+    <div class="kds-board-head">
+      <div>
+        <h3>{{ "New Drinks Queue" if station == "barista" else "Active Order Tickets" }}</h3>
+        <p class="muted">Tap an item to open its SOP without leaving the queue.</p>
+      </div>
+      <div class="kds-board-state">
+        <span class="kds-live-dot"></span>
+        <span id="socket-state">Connecting...</span>
+      </div>
     </div>
-  </article>
-  {% endfor %}
+    <div id="kitchen-board" class="kitchen-grid"></div>
+  </div>
+
+  <aside class="panel kds-sop-panel">
+    <div class="kds-sop-head">
+      <div>
+        <h3>SOP Panel</h3>
+        <p class="muted">Recipe help stays visible beside the active queue.</p>
+      </div>
+      <button type="button" id="kds-reset-sop" class="button-link">Show Library</button>
+    </div>
+
+    <label class="kds-sop-search">
+      <span>SOP Search</span>
+      <input type="search" id="kds-sop-search" placeholder="Search menu item..." />
+    </label>
+
+    <div id="kds-sop-empty" class="kds-sop-empty">
+      <strong>Select an item to view SOP</strong>
+      <p class="muted">You can also search the SOP library below for quick reference.</p>
+    </div>
+
+    <div id="kds-sop-content" class="kds-sop-content hidden">
+      <div class="kds-sop-title-row">
+        <div>
+          <h3 id="kds-sop-title">Menu Item</h3>
+          <p id="kds-sop-subtitle" class="muted">Size and service notes</p>
+        </div>
+        <div id="kds-sop-prep" class="kds-sop-prep-badge">Prep: --</div>
+      </div>
+      <div id="kds-sop-photo-wrap" class="kds-sop-photo-wrap hidden">
+        <img id="kds-sop-photo" src="" alt="SOP reference" class="kds-sop-photo" />
+      </div>
+      <div id="kds-sop-alerts" class="kds-sop-alerts hidden"></div>
+      <div id="kds-sop-sections" class="kds-sop-sections"></div>
+      <div id="kds-training-wrap" class="kds-training-wrap hidden">
+        <h4>Training Notes</h4>
+        <ul id="kds-training-list"></ul>
+      </div>
+    </div>
+
+    <div class="kds-library-section">
+      <div class="split-head">
+        <strong>SOP Library</strong>
+        <span class="muted" id="kds-library-count">{{ sop_library|length }} items</span>
+      </div>
+      <div id="kds-sop-library" class="kds-sop-library"></div>
+    </div>
+  </aside>
 </section>
+
+<script id="kds-order-cards-payload" type="application/json">{{ order_cards|tojson }}</script>
+<script id="kds-sop-library-payload" type="application/json">{{ sop_library|tojson }}</script>
 <script src="{{ url_for('static', filename='js/socket.io.min.js') }}"></script>
 <script>
   const notifSoundUrl = "{{ url_for('static', filename='sounds/notification.wav') }}";
@@ -66,6 +125,8 @@
     reconnectionDelay: 800,
   });
   const station = "{{ station }}";
+  const displayLabel = station === "barista" ? "Brewing" : "Preparing";
+  const currentPageUrl = {{ url_for('cafe.kitchen_display', station=station)|tojson }};
   const socketState = document.getElementById("socket-state");
   const soundVolumeInput = document.getElementById("sound-volume");
   const notifBell = document.getElementById("notif-bell");
@@ -73,21 +134,76 @@
   const notifPanel = document.getElementById("notif-panel");
   const notifList = document.getElementById("notif-list");
   const notifClear = document.getElementById("notif-clear");
+  const trainingToggle = document.getElementById("kds-training-mode");
+  const trainingLabel = document.getElementById("kds-training-label");
+  const currentTimeEl = document.getElementById("kds-current-time");
+  const activeOrdersEl = document.getElementById("kds-active-orders");
+  const avgTicketEl = document.getElementById("kds-avg-ticket");
+  const sopSearchInput = document.getElementById("kds-sop-search");
+  const sopResetBtn = document.getElementById("kds-reset-sop");
+  const sopEmpty = document.getElementById("kds-sop-empty");
+  const sopContent = document.getElementById("kds-sop-content");
+  const sopTitle = document.getElementById("kds-sop-title");
+  const sopSubtitle = document.getElementById("kds-sop-subtitle");
+  const sopPrep = document.getElementById("kds-sop-prep");
+  const sopPhotoWrap = document.getElementById("kds-sop-photo-wrap");
+  const sopPhoto = document.getElementById("kds-sop-photo");
+  const sopAlerts = document.getElementById("kds-sop-alerts");
+  const sopSections = document.getElementById("kds-sop-sections");
+  const sopLibrary = document.getElementById("kds-sop-library");
+  const sopLibraryCount = document.getElementById("kds-library-count");
+  const trainingWrap = document.getElementById("kds-training-wrap");
+  const trainingList = document.getElementById("kds-training-list");
+  const trainingModeKey = `kds_training_mode_v1:${station}`;
   const notifs = [];
   let announcementBusy = false;
   const announcementQueue = [];
-
   let audioCtx = null;
   let soundEnabled = true;
+  let orderCards = [];
+  let sopLibraryItems = [];
+  let selectedSopKey = "";
+  let boardRefreshInFlight = false;
+  let boardRefreshPending = false;
+
   const soundPrefKey = `kitchen_sound_enabled_v1:${station}`;
   const soundVolumeKey = `kitchen_sound_volume_v1:${station}`;
   const notifAudio = new Audio(notifSoundUrl);
   notifAudio.preload = "auto";
+
+  function escapeHtml(value) {
+    return String(value || "")
+      .replaceAll("&", "&amp;")
+      .replaceAll("<", "&lt;")
+      .replaceAll(">", "&gt;")
+      .replaceAll('"', "&quot;")
+      .replaceAll("'", "&#39;");
+  }
+
+  function loadJsonScript(id, fallback = []) {
+    const node = document.getElementById(id);
+    if (!node) return fallback;
+    try {
+      return JSON.parse(node.textContent || JSON.stringify(fallback));
+    } catch (err) {
+      return fallback;
+    }
+  }
+
+  function normalizeTableAnnouncementName(raw) {
+    const value = String(raw || "").trim();
+    if (!value) return "A table";
+    const match = value.match(/^t(\d{1,3})$/i);
+    if (match) return `Table ${match[1].padStart(2, "0")}`;
+    return value;
+  }
+
   function applyVolume() {
     const sliderValue = Number(soundVolumeInput?.value || "85");
     const normalized = Math.max(0, Math.min(1, sliderValue / 100));
     notifAudio.volume = normalized;
   }
+
   async function enableSound() {
     try {
       const AudioCtx = window.AudioContext || window.webkitAudioContext;
@@ -106,6 +222,7 @@
       applyVolume();
     } catch (e) {}
   }
+
   function playChime() {
     if (!soundEnabled) return;
     try {
@@ -114,6 +231,7 @@
       notifAudio.play().catch(() => {});
     } catch (e) {}
   }
+
   function speakText(text, done) {
     if (!("speechSynthesis" in window) || !window.SpeechSynthesisUtterance) {
       window.setTimeout(done, 1300);
@@ -132,6 +250,7 @@
       window.setTimeout(done, 1300);
     }
   }
+
   function processAnnouncementQueue() {
     if (announcementBusy || announcementQueue.length < 1) return;
     announcementBusy = true;
@@ -144,22 +263,18 @@
       });
     }, 850);
   }
+
   function enqueueAnnouncement(text) {
     if (!text) return;
     announcementQueue.push(text);
     processAnnouncementQueue();
   }
+
   function summarizeItems(items) {
     if (!Array.isArray(items) || items.length < 1) return "-";
     return items.map((it) => `${it.name}${it.size_label ? ` (${it.size_label})` : ""} x ${it.qty}`).join(", ");
   }
-  function normalizeTableAnnouncementName(raw) {
-    const value = String(raw || "").trim();
-    if (!value) return "A table";
-    const match = value.match(/^t(\d{1,3})$/i);
-    if (match) return `Table ${match[1].padStart(2, "0")}`;
-    return value;
-  }
+
   function toNotifLine(n) {
     if (n && n.kind === "booking") {
       return `Booking | ${n.table} | ${n.created_at}`;
@@ -169,12 +284,275 @@
     const itemsList = n.items_list || summarizeItems(n.items || []);
     return `Order ${orderId} | Table ${tableId} | ${itemsList}`;
   }
+
   function renderNotifs() {
     notifCount.textContent = String(notifs.length);
     notifList.innerHTML = notifs.length
-      ? notifs.map((n) => `<div class="flash success">${toNotifLine(n)}</div>`).join("")
+      ? notifs.map((n) => `<div class="flash success">${escapeHtml(toNotifLine(n))}</div>`).join("")
       : '<p class="muted">No new notifications.</p>';
   }
+
+  function statusLabel(status) {
+    if (status === "preparing") return displayLabel;
+    if (status === "ready") return "Ready";
+    if (status === "served") return "Served";
+    if (status === "cancelled") return "Cancelled";
+    return "Pending";
+  }
+
+  function statusClass(status) {
+    if (status === "ready") return "ready";
+    if (status === "served") return "served";
+    if (status === "cancelled") return "cancelled";
+    if (status === "preparing") return "preparing";
+    return "pending";
+  }
+
+  function minutesSince(isoString) {
+    if (!isoString) return 0;
+    const ts = new Date(isoString).getTime();
+    if (!Number.isFinite(ts)) return 0;
+    return Math.max(0, Math.floor((Date.now() - ts) / 60000));
+  }
+
+  function buildSopKey(orderId, itemId, sizeLabel) {
+    return `${orderId || "library"}:${itemId || ""}:${sizeLabel || ""}`;
+  }
+
+  function renderBoard() {
+    activeOrdersEl.textContent = String(orderCards.length);
+    if (!orderCards.length) {
+      avgTicketEl.textContent = "0 min";
+      board.innerHTML = `
+        <article class="k-card k-card-empty">
+          <h3>No active ${station === "barista" ? "drink" : "kitchen"} tickets</h3>
+          <p class="muted">Fresh orders will appear here automatically.</p>
+        </article>`;
+      return;
+    }
+
+    const avgMinutes = orderCards.reduce((sum, card) => sum + minutesSince(card.created_at_iso), 0) / orderCards.length;
+    avgTicketEl.textContent = `${avgMinutes.toFixed(1)} min`;
+    board.innerHTML = orderCards.map((card) => {
+      const elapsed = minutesSince(card.created_at_iso);
+      const delayed = card.expected_minutes > 0 && elapsed > card.expected_minutes;
+      const itemRows = (card.items || []).map((item) => {
+        const sopKey = buildSopKey(card.id, item.id, item.size_label || "");
+        return `
+          <button type="button" class="kds-item-row ${selectedSopKey === sopKey ? "active" : ""}" data-order-id="${card.id}" data-item-id="${item.id}">
+            <div class="kds-item-main">
+              <strong>${escapeHtml(item.name)}</strong>
+              <span>${item.size_label ? escapeHtml(item.size_label) : "Standard"} • x ${Number(item.qty || 0)}</span>
+            </div>
+            <div class="kds-item-side">
+              ${item.is_parcel ? '<span class="kds-mini-badge">Parcel</span>' : ""}
+              <span class="kds-sop-quick">📖 SOP</span>
+            </div>
+          </button>`;
+      }).join("");
+      return `
+        <article class="k-card ${delayed ? "delayed" : ""}" data-order-id="${card.id}">
+          <div class="kds-ticket-head">
+            <div>
+              <h3>Order #${escapeHtml(card.pickup_no || card.pickup_no_compact || card.id)}</h3>
+              <p class="muted">${escapeHtml(card.table_name)} • ${escapeHtml(card.created_at || "-")}</p>
+            </div>
+            <div class="kds-ticket-meta">
+              <span class="kds-status-badge ${statusClass(card.status)}">${statusLabel(card.status)}</span>
+              <span class="kds-ticket-timer ${delayed ? "delayed" : ""}">
+                ${elapsed} min${card.expected_minutes > 0 ? ` / ${card.expected_minutes} min` : ""}
+              </span>
+            </div>
+          </div>
+          <p class="muted kds-ticket-ref">Ref: ${escapeHtml(card.display_code || card.id)}</p>
+          <div class="kds-item-list">${itemRows}</div>
+          <div class="k-actions kds-actions">
+            <form method="post" action="/cafe/orders/${card.id}/status" class="inline">
+              <input type="hidden" name="next" value="${escapeHtml(currentPageUrl)}" />
+              <input type="hidden" name="status" value="preparing" />
+              <button type="submit">${displayLabel}</button>
+            </form>
+            <form method="post" action="/cafe/orders/${card.id}/status" class="inline">
+              <input type="hidden" name="next" value="${escapeHtml(currentPageUrl)}" />
+              <input type="hidden" name="status" value="ready" />
+              <button type="submit">Ready</button>
+            </form>
+            <form method="post" action="/cafe/orders/${card.id}/status" class="inline">
+              <input type="hidden" name="next" value="${escapeHtml(currentPageUrl)}" />
+              <input type="hidden" name="status" value="served" />
+              <button type="submit">Served</button>
+            </form>
+            <form method="post" action="/cafe/orders/${card.id}/status" class="inline">
+              <input type="hidden" name="next" value="${escapeHtml(currentPageUrl)}" />
+              <input type="hidden" name="status" value="cancelled" />
+              <button type="submit" class="danger">Cancel</button>
+            </form>
+          </div>
+        </article>`;
+    }).join("");
+
+    board.querySelectorAll(".kds-item-row").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const orderId = Number(btn.dataset.orderId || 0);
+        const itemId = Number(btn.dataset.itemId || 0);
+        const card = orderCards.find((row) => Number(row.id) === orderId);
+        const item = card?.items?.find((row) => Number(row.id) === itemId);
+        if (!item) return;
+        selectedSopKey = buildSopKey(orderId, itemId, item.size_label || "");
+        openSop({
+          name: item.name,
+          sizeLabel: item.size_label || "",
+          sop: item.sop || {},
+          source: card?.table_name || "",
+        });
+        renderBoard();
+      });
+    });
+  }
+
+  function renderSopLibrary() {
+    const query = String(sopSearchInput?.value || "").trim().toLowerCase();
+    const filtered = sopLibraryItems.filter((item) => {
+      if (!query) return true;
+      const sizeNames = (item.sizes || []).map((size) => size.size || "").join(" ").toLowerCase();
+      const allergyText = ((item.sop && item.sop.allergy_alerts) || []).join(" ").toLowerCase();
+      return `${item.name} ${sizeNames} ${allergyText}`.toLowerCase().includes(query);
+    });
+    sopLibraryCount.textContent = `${filtered.length} item${filtered.length === 1 ? "" : "s"}`;
+    sopLibrary.innerHTML = filtered.length
+      ? filtered.map((item) => `
+          <button type="button" class="kds-library-item" data-menu-item-id="${item.menu_item_id}">
+            <strong>${escapeHtml(item.name)}</strong>
+            <span>${(item.sizes || []).length ? `${item.sizes.length} size option(s)` : "Standard SOP"}</span>
+          </button>`).join("")
+      : '<p class="muted">No SOP matches your search.</p>';
+    sopLibrary.querySelectorAll(".kds-library-item").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const menuItemId = Number(btn.dataset.menuItemId || 0);
+        const item = sopLibraryItems.find((row) => Number(row.menu_item_id) === menuItemId);
+        if (!item) return;
+        selectedSopKey = buildSopKey("library", item.menu_item_id, "");
+        openSop({
+          name: item.name,
+          sizeLabel: "",
+          sop: item.sop || {},
+          source: station === "barista" ? "Barista SOP Library" : "Kitchen SOP Library",
+        });
+        renderBoard();
+      });
+    });
+  }
+
+  function renderSection(title, lines, icon = "") {
+    if (!Array.isArray(lines) || !lines.length) return "";
+    return `
+      <section class="kds-sop-section">
+        <h4>${icon ? `${icon} ` : ""}${escapeHtml(title)}</h4>
+        <ul>${lines.map((line) => `<li>${escapeHtml(line)}</li>`).join("")}</ul>
+      </section>`;
+  }
+
+  function openSop(payload) {
+    const sop = payload?.sop || {};
+    sopEmpty.classList.add("hidden");
+    sopContent.classList.remove("hidden");
+    sopTitle.textContent = payload?.name || "Menu Item";
+    const subtitleParts = [];
+    if (payload?.sizeLabel) subtitleParts.push(payload.sizeLabel);
+    if (payload?.source) subtitleParts.push(payload.source);
+    if (sop.size_note) subtitleParts.push(sop.size_note);
+    sopSubtitle.textContent = subtitleParts.join(" • ") || "Standard SOP";
+    sopPrep.textContent = `Prep: ${sop.prep_time_minutes ? `${sop.prep_time_minutes} min` : "--"}`;
+
+    if (sop.photo_url) {
+      sopPhoto.src = sop.photo_url;
+      sopPhotoWrap.classList.remove("hidden");
+    } else {
+      sopPhoto.src = "";
+      sopPhotoWrap.classList.add("hidden");
+    }
+
+    if (Array.isArray(sop.allergy_alerts) && sop.allergy_alerts.length) {
+      sopAlerts.classList.remove("hidden");
+      sopAlerts.innerHTML = sop.allergy_alerts.map((line) => `<span class="kds-alert-chip">⚠ ${escapeHtml(line)}</span>`).join("");
+    } else {
+      sopAlerts.classList.add("hidden");
+      sopAlerts.innerHTML = "";
+    }
+
+    const ingredientLines = [];
+    if (Array.isArray(sop.ingredients)) {
+      sop.ingredients.forEach((ing) => {
+        ingredientLines.push(`${ing.name} - ${ing.qty} ${ing.unit || ""}`.trim());
+      });
+    }
+    const ingredientSectionLines = ingredientLines.concat(Array.isArray(sop.ingredients_note) ? sop.ingredients_note : []);
+    const sections = [
+      renderSection("Ingredients", ingredientSectionLines, "🥣"),
+      renderSection("Preparation", sop.preparation_steps, "👨‍🍳"),
+      renderSection("Plating", sop.plating_notes, "🍽"),
+      renderSection("Quality Check", sop.quality_checks, "✓"),
+    ].filter(Boolean);
+    sopSections.innerHTML = sections.join("") || '<p class="muted">No SOP details saved yet for this item.</p>';
+
+    const trainingMode = !!trainingToggle?.checked;
+    if (trainingMode && Array.isArray(sop.training_notes) && sop.training_notes.length) {
+      trainingWrap.classList.remove("hidden");
+      trainingList.innerHTML = sop.training_notes.map((line) => `<li>${escapeHtml(line)}</li>`).join("");
+    } else {
+      trainingWrap.classList.add("hidden");
+      trainingList.innerHTML = "";
+    }
+  }
+
+  function resetSopPanel() {
+    selectedSopKey = "";
+    sopContent.classList.add("hidden");
+    sopEmpty.classList.remove("hidden");
+    renderBoard();
+  }
+
+  function refreshCurrentTime() {
+    const now = new Date();
+    currentTimeEl.textContent = now.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    renderBoard();
+  }
+
+  async function refreshBoardData() {
+    if (boardRefreshInFlight) {
+      boardRefreshPending = true;
+      return;
+    }
+    boardRefreshInFlight = true;
+    try {
+      const resp = await fetch(currentPageUrl, {
+        headers: { "X-Requested-With": "XMLHttpRequest", "Cache-Control": "no-cache" },
+        credentials: "same-origin",
+      });
+      if (!resp.ok) throw new Error(`Refresh failed with ${resp.status}`);
+      const html = await resp.text();
+      const doc = new DOMParser().parseFromString(html, "text/html");
+      const nextOrders = doc.getElementById("kds-order-cards-payload");
+      const nextLibrary = doc.getElementById("kds-sop-library-payload");
+      if (nextOrders) {
+        try { orderCards = JSON.parse(nextOrders.textContent || "[]"); } catch (e) { orderCards = []; }
+      }
+      if (nextLibrary) {
+        try { sopLibraryItems = JSON.parse(nextLibrary.textContent || "[]"); } catch (e) { sopLibraryItems = []; }
+      }
+      renderBoard();
+      renderSopLibrary();
+    } catch (error) {
+      console.error("KDS refresh failed", error);
+    } finally {
+      boardRefreshInFlight = false;
+      if (boardRefreshPending) {
+        boardRefreshPending = false;
+        window.setTimeout(refreshBoardData, 120);
+      }
+    }
+  }
+
   notifBell?.addEventListener("click", () => notifPanel.classList.toggle("hidden"));
   ["click", "touchstart", "keydown"].forEach((eventName) => {
     document.addEventListener(eventName, () => {
@@ -185,71 +563,42 @@
     notifs.splice(0, notifs.length);
     renderNotifs();
   });
+  soundVolumeInput?.addEventListener("input", () => {
+    try { localStorage.setItem(soundVolumeKey, soundVolumeInput.value); } catch (e) {}
+    applyVolume();
+  });
+  sopSearchInput?.addEventListener("input", renderSopLibrary);
+  sopResetBtn?.addEventListener("click", resetSopPanel);
+  trainingToggle?.addEventListener("change", () => {
+    try { localStorage.setItem(trainingModeKey, trainingToggle.checked ? "1" : "0"); } catch (e) {}
+    trainingLabel.textContent = trainingToggle.checked ? "On" : "Off";
+    if (!sopContent.classList.contains("hidden")) {
+      const matchingOrder = orderCards.flatMap((card) => card.items.map((item) => ({ card, item }))).find(({ card, item }) => buildSopKey(card.id, item.id, item.size_label || "") === selectedSopKey);
+      if (matchingOrder) {
+        openSop({
+          name: matchingOrder.item.name,
+          sizeLabel: matchingOrder.item.size_label || "",
+          sop: matchingOrder.item.sop || {},
+          source: matchingOrder.card.table_name || "",
+        });
+      }
+    }
+  });
 
   socket.on("connect", () => {
-    if (socketState) socketState.textContent = "Connected";
+    if (socketState) socketState.textContent = "Live";
   });
   socket.on("disconnect", () => {
-    if (socketState) socketState.textContent = "Disconnected";
+    if (socketState) socketState.textContent = "Reconnecting...";
   });
-  socket.on("connect_error", (err) => {
-    const msg = (err && (err.message || err.description)) ? `Connection Error: ${err.message || err.description}` : "Connection Error";
-    if (socketState) socketState.textContent = msg;
+  socket.on("connect_error", () => {
+    if (socketState) socketState.textContent = "Connection Error";
   });
-
-  function upsertOrder(order) {
-    const stationItems = order.items.filter((i) => i.prep_station === station && (i.approval_status || "pending") === "approved");
-    if (stationItems.length < 1) {
-      const existing = board.querySelector(`[data-order-id="${order.id}"]`);
-      if (existing) existing.remove();
-      return;
-    }
-    let card = board.querySelector(`[data-order-id="${order.id}"]`);
-    const listItems = stationItems.map((i) => `<li>${i.name} x ${i.qty}</li>`).join("");
-    const html = `
-      <h3>Order #${order.pickup_no_compact || order.id} - ${order.table}</h3>
-      <p class="muted">Ref: ${order.order_code || order.id}</p>
-      <p>Status: <strong class="status">${order.status}</strong></p>
-      <p>Total: ${order.total_amount.toFixed(2)}</p>
-      <ul>${listItems}</ul>
-      <div class="k-actions">
-        <form method="post" action="/cafe/orders/${order.id}/status" class="inline">
-          <input type="hidden" name="status" value="preparing" />
-          <button type="submit">Preparing</button>
-        </form>
-        <form method="post" action="/cafe/orders/${order.id}/status" class="inline">
-          <input type="hidden" name="status" value="ready" />
-          <button type="submit">Ready</button>
-        </form>
-        <form method="post" action="/cafe/orders/${order.id}/status" class="inline">
-          <input type="hidden" name="status" value="served" />
-          <button type="submit">Served</button>
-        </form>
-        <form method="post" action="/cafe/orders/${order.id}/status" class="inline">
-          <input type="hidden" name="status" value="cancelled" />
-          <button type="submit">Cancel</button>
-        </form>
-      </div>`;
-
-    if (!card) {
-      card = document.createElement("article");
-      card.className = "k-card";
-      card.dataset.orderId = order.id;
-      board.prepend(card);
-    }
-    card.innerHTML = html;
-    if (["served", "cancelled", "paid"].includes(order.status)) {
-      setTimeout(() => {
-        const existing = board.querySelector(`[data-order-id="${order.id}"]`);
-        if (existing) existing.remove();
-      }, 400);
-    }
-  }
 
   socket.on("order_created", (payload) => {
     notifs.unshift({
       id: payload.id,
-      order_id: payload.id,
+      order_id: payload.order_code || payload.id,
       table_id: payload.table,
       items: payload.items || [],
       created_at: payload.created_at || "Now",
@@ -257,8 +606,13 @@
     if (notifs.length > 30) notifs.pop();
     renderNotifs();
     enqueueAnnouncement(`${normalizeTableAnnouncementName(payload.table || "-")} has placed a new order.`);
-    upsertOrder(payload);
+    refreshBoardData();
   });
+
+  socket.on("order_updated", () => {
+    refreshBoardData();
+  });
+
   socket.on("ops_notification", (payload) => {
     notifs.unshift({
       id: payload.order_id || payload.kind || "Notice",
@@ -266,6 +620,7 @@
       table_id: payload.table_id || "-",
       items_list: payload.message || "Notification",
       created_at: "Just now",
+      kind: payload.kind,
     });
     if (notifs.length > 30) notifs.pop();
     renderNotifs();
@@ -273,6 +628,7 @@
       enqueueAnnouncement(`${normalizeTableAnnouncementName(payload.table_name || payload.table_id || "-")} is calling for staff.`);
     }
   });
+
   socket.on("booking_created", (payload) => {
     notifs.unshift({
       id: `Booking-${payload.id}`,
@@ -284,19 +640,32 @@
     renderNotifs();
     enqueueAnnouncement(`Booking received for ${payload.customer_name || "a guest"}.`);
   });
-  socket.on("order_updated", upsertOrder);
+
   try {
-    soundEnabled = localStorage.getItem(soundPrefKey) === "1";
-  } catch (e) {}
-  if (!soundEnabled) soundEnabled = true;
-  try {
+    soundEnabled = localStorage.getItem(soundPrefKey) !== "0";
     const savedVolume = localStorage.getItem(soundVolumeKey);
     if (savedVolume && soundVolumeInput) soundVolumeInput.value = savedVolume;
+    if (trainingToggle) {
+      trainingToggle.checked = localStorage.getItem(trainingModeKey) === "1";
+      trainingLabel.textContent = trainingToggle.checked ? "On" : "Off";
+    }
   } catch (e) {}
-  soundVolumeInput?.addEventListener("input", () => {
-    try { localStorage.setItem(soundVolumeKey, soundVolumeInput.value); } catch (e) {}
-    applyVolume();
-  });
+
   applyVolume();
+  orderCards = loadJsonScript("kds-order-cards-payload", []);
+  sopLibraryItems = loadJsonScript("kds-sop-library-payload", []);
+  renderNotifs();
+  renderBoard();
+  renderSopLibrary();
+  refreshCurrentTime();
+  window.setInterval(refreshCurrentTime, 30000);
+
+  if (trainingToggle?.checked && orderCards.length && orderCards[0].items && orderCards[0].items.length) {
+    const card = orderCards[0];
+    const item = card.items[0];
+    selectedSopKey = buildSopKey(card.id, item.id, item.size_label || "");
+    openSop({ name: item.name, sizeLabel: item.size_label || "", sop: item.sop || {}, source: card.table_name || "" });
+    renderBoard();
+  }
 </script>
 {% endblock %}

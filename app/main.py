@@ -1,9 +1,10 @@
 import json
 import os
 import calendar
-from datetime import date, datetime
+from datetime import date, datetime, time
 from io import BytesIO
 from uuid import uuid4
+from zoneinfo import ZoneInfo
 
 import qrcode
 from flask import Blueprint, Response, current_app, flash, g, redirect, render_template, request, session, url_for
@@ -68,6 +69,8 @@ LEAVE_TYPE_OPTIONS = [
     ("earned", "Earned"),
     ("emergency", "Emergency"),
 ]
+IST_TZ = ZoneInfo("Asia/Kolkata")
+UTC_TZ = ZoneInfo("UTC")
 
 
 def _is_cafe_admin(user: User) -> bool:
@@ -218,6 +221,16 @@ def _leave_notice_message(start_date: date, end_date: date):
     notice_days = max(0, (start_date - today).days)
     if leave_days > 7 and notice_days < 30:
         return "Leaves longer than 7 days should be requested at least 1 month in advance."
+
+
+def _current_ist_day_bounds_utc_naive():
+    today_ist = datetime.now(IST_TZ).date()
+    start_local = datetime.combine(today_ist, time.min).replace(tzinfo=IST_TZ)
+    end_local = datetime.combine(today_ist, time.max).replace(tzinfo=IST_TZ)
+    return (
+        start_local.astimezone(UTC_TZ).replace(tzinfo=None),
+        end_local.astimezone(UTC_TZ).replace(tzinfo=None),
+    )
     if leave_days > 1 and notice_days < 7:
         return "Leaves longer than 1 day should ideally be requested at least 7 days in advance."
     return ""
@@ -332,6 +345,7 @@ def public_home():
         upcoming_bookings=upcoming,
         public_notice_text=notice_text,
         public_notice_enabled=notice_enabled and bool(notice_text),
+        hide_staff_nav=True,
     )
 
 
@@ -416,13 +430,16 @@ def book_table():
 @bp.route("/dashboard")
 @login_required
 def dashboard():
+    today_start, today_end = _current_ist_day_bounds_utc_naive()
     active_loans = LibraryLoan.query.filter_by(status="issued").count()
     due_tomorrow = LibraryLoan.query.filter(
         LibraryLoan.status == "issued",
         LibraryLoan.due_date == db.func.date(db.func.datetime("now", "+1 day")),
     ).count()
     open_orders = CafeOrder.query.filter(
-        CafeOrder.status.notin_(["paid", "cancelled"])
+        CafeOrder.status.notin_(["paid", "cancelled"]),
+        CafeOrder.created_at >= today_start,
+        CafeOrder.created_at <= today_end,
     ).count()
     return render_template(
         "dashboard.html",
@@ -1052,7 +1069,14 @@ def table_qr_page():
     if not table:
         table = CafeTable.query.filter_by(active=True).order_by(CafeTable.id.asc()).first()
     if not table:
-        return render_template("table_qr.html", table=None, menu_items=[], categories=[], item_frequency={})
+        return render_template(
+            "table_qr.html",
+            table=None,
+            menu_items=[],
+            categories=[],
+            item_frequency={},
+            hide_staff_nav=True,
+        )
     categories = _visible_categories_for_available_menu()
     all_category_rows = MenuCategory.query.order_by(MenuCategory.name.asc()).all()
     all_category_name_by_id = {c.id: c.name for c in all_category_rows}
@@ -1114,6 +1138,7 @@ def table_qr_page():
         item_size_map=item_size_map,
         item_category_names_map=item_category_names_map,
         qr_success_toast=qr_success_toast,
+        hide_staff_nav=True,
     )
 
 

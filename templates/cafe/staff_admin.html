@@ -1,13 +1,15 @@
 {% extends "base.html" %}
 {% block content %}
 <section class="panel">
-  <h2>Staff Management</h2>
-  <p class="muted">Admins and managers can manage staff, attendance, and leaves from this workspace.</p>
-  <div class="grid grid-4">
-    <div class="flash success"><strong>Active Staff:</strong> {{ active_profiles|length }}</div>
-    <div class="flash success"><strong>Attendance Today:</strong> {{ today_attendance_count }}</div>
-    <div class="flash success"><strong>Pending Leave Requests:</strong> {{ pending_leave_count }}</div>
-    <div class="flash success"><strong>Docs Need Review:</strong> {{ document_pending_count }}</div>
+  <a class="staff-summary-heading" href="{{ url_for('cafe.staff', section='active_staff') }}">
+    <h2>Staff Management</h2>
+    <p class="muted">Admins and managers can manage staff, attendance, and leaves from this workspace.</p>
+  </a>
+  <div class="grid grid-4 staff-summary-grid">
+    <a class="flash success staff-summary-card" href="{{ url_for('cafe.staff', section='active_staff') }}"><strong>Active Staff:</strong> {{ active_profiles|length }}</a>
+    <a class="flash success staff-summary-card" href="{{ url_for('cafe.staff', section='attendance_entry') }}"><strong>Attendance Today:</strong> {{ today_attendance_count }}</a>
+    <a class="flash success staff-summary-card" href="{{ url_for('cafe.staff', section='leave_requests') }}"><strong>Pending Leave Requests:</strong> {{ pending_leave_count }}</a>
+    <a class="flash success staff-summary-card" href="{{ url_for('cafe.staff', section='docs_review') }}"><strong>Docs Need Review:</strong> {{ document_pending_count }}</a>
   </div>
   {% if g.current_user.role == "admin" %}
   <p><a class="button-link" href="{{ url_for('cafe.user_types') }}">Manage Roles</a></p>
@@ -22,6 +24,7 @@
     <a href="{{ url_for('cafe.staff', section='attendance_calendar', attendance_user_id=attendance_user_id, attendance_month=attendance_month, attendance_year=attendance_year) }}" class="{% if active_staff_section == 'attendance_calendar' %}active{% endif %}">Attendance Calendar</a>
     <a href="{{ url_for('cafe.staff', section='attendance_entry', attendance_user_id=attendance_user_id, attendance_month=attendance_month, attendance_year=attendance_year) }}" class="{% if active_staff_section == 'attendance_entry' %}active{% endif %}">Attendance Entry</a>
     <a href="{{ url_for('cafe.staff', section='leave_requests') }}" class="{% if active_staff_section == 'leave_requests' %}active{% endif %}">Leave Requests</a>
+    <a href="{{ url_for('cafe.staff', section='docs_review') }}" class="{% if active_staff_section == 'docs_review' %}active{% endif %}">Docs Review</a>
     <a href="{{ url_for('cafe.staff', section='payroll_summary', payroll_month=payroll_month, payroll_year=payroll_year) }}" class="{% if active_staff_section == 'payroll_summary' %}active{% endif %}">Payroll Summary</a>
   </aside>
 
@@ -313,6 +316,51 @@
             </tr>
             {% else %}
             <tr><td colspan="6">No leave requests yet.</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </section>
+    {% endif %}
+
+    {% if active_staff_section == "docs_review" %}
+    <section class="panel">
+      <h3>Documents Needing Review</h3>
+      <p class="muted">Review pending or rejected staff documents and jump directly into the user document workspace.</p>
+      <div style="overflow:auto">
+        <table>
+          <thead>
+            <tr>
+              <th>Staff Member</th><th>Document</th><th>Status</th><th>Uploaded By</th><th>Date</th><th>Action</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for d in pending_documents %}
+            <tr>
+              <td>
+                <strong>{{ d.user.full_name if d.user else "-" }}</strong><br />
+                {{ d.user.email if d.user else "-" }}
+              </td>
+              <td>
+                {{ d.doc_type }}<br />
+                {{ d.doc_number or "-" }}
+              </td>
+              <td>
+                {{ d.verification_status.title() }}
+                {% if d.verification_note %}<br /><small>{{ d.verification_note }}</small>{% endif %}
+              </td>
+              <td>{{ d.uploaded_by.full_name if d.uploaded_by else "-" }}</td>
+              <td>{{ d.created_at.strftime("%Y-%m-%d %I:%M %p") if d.created_at else "-" }}</td>
+              <td>
+                {% if d.user %}
+                <a class="button-link" href="{{ url_for('main.profile', section='documents', user_id=d.user.id) }}">Open Documents</a>
+                {% else %}
+                -
+                {% endif %}
+              </td>
+            </tr>
+            {% else %}
+            <tr><td colspan="6">No staff documents currently need review.</td></tr>
             {% endfor %}
           </tbody>
         </table>

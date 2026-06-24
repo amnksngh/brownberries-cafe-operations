@@ -80,6 +80,7 @@ def _ensure_sqlite_schema_columns():
             "daily_sequence": "INTEGER",
             "display_code": "TEXT",
             "paid_at": "DATETIME",
+            "payment_breakdown_json": "TEXT",
         },
         "customer": {
             "default_map_url": "TEXT",
@@ -106,6 +107,17 @@ def _ensure_sqlite_schema_columns():
             "expiry_tracking": "BOOLEAN NOT NULL DEFAULT 0",
             "storage_location": "TEXT",
             "vendor_id": "INTEGER",
+        },
+        "inventory_recipe": {
+            "prep_time_minutes": "INTEGER",
+            "ingredients_note": "TEXT",
+            "preparation_steps": "TEXT",
+            "plating_notes": "TEXT",
+            "quality_checks": "TEXT",
+            "allergy_alerts": "TEXT",
+            "training_notes": "TEXT",
+            "sop_photo_url": "TEXT",
+            "size_sop_json": "TEXT",
         },
     }
     for table_name, cols in column_specs.items():

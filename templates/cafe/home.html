@@ -16,6 +16,7 @@
   <div class="links">
     <a href="{{ url_for('cafe.tables') }}">Table Management</a>
     <a href="{{ url_for('cafe.menu') }}">Menu Management</a>
+    <a href="{{ url_for('cafe.items_availability') }}">Items Availability</a>
     <a href="{{ url_for('cafe.orders') }}">Table Ordering</a>
     {% if g.current_user.role in ["admin", "manager", "cashier"] or (g.current_user.user_type and g.current_user.user_type.can_manage_cashier) %}
     <a href="{{ url_for('cafe.cashier') }}">Cashier Desk</a>
@@ -34,6 +35,20 @@
   </div>
 </section>
 {% if g.current_user.role in ["admin", "manager"] %}
+<section class="panel">
+  <h3>Order Cutoff Settings</h3>
+  <p class="muted">After the configured time, fresh orders will be blocked for the selected channel.</p>
+  <form method="post" action="{{ url_for('cafe.update_order_cutoff_settings') }}" class="grid grid-4">
+    <label>QR Table Ordering Cutoff
+      <input type="time" name="qr_order_cutoff_time" value="{{ qr_order_cutoff_time or '' }}" />
+    </label>
+    <label>Staff Assisted Ordering Cutoff
+      <input type="time" name="staff_order_cutoff_time" value="{{ staff_order_cutoff_time or '' }}" />
+    </label>
+    <button type="submit">Save Cutoff Settings</button>
+  </form>
+</section>
+
 <section class="panel">
   <h3>Public Notification Bar</h3>
   <form method="post" action="{{ url_for('cafe.update_public_notice') }}" class="grid grid-4">

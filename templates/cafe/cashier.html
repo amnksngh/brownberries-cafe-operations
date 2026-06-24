@@ -57,12 +57,13 @@
   <div style="overflow:auto">
     <table>
       <thead>
-        <tr><th>Order</th><th>Status</th><th>Items</th><th>Total</th><th>Action</th></tr>
+        <tr><th>Order</th><th>Placed At</th><th>Status</th><th>Items</th><th>Total</th><th>Action</th></tr>
       </thead>
       <tbody>
         {% for order in unpaid_orders %}
         <tr>
           <td>#{{ order.daily_sequence or order.id }}<br /><small>{{ order.display_code or order.id }}</small></td>
+          <td>{{ running_order_time_map.get(order.id, "-") }}</td>
           <td>{{ order.status }}</td>
           <td>
             {% for oi in order.order_items %}
@@ -90,31 +91,7 @@
               </div>
             </form>
             {% else %}
-            <form method="post" action="{{ url_for('cafe.mark_order_paid', order_id=order.id) }}" class="grid">
-              <input type="hidden" name="next" value="{{ url_for('cafe.cashier', tab='running', table_id=selected_table.id) }}" />
-              <label>Payment Type
-                <select name="payment_type">
-                  <option>Cash</option>
-                  <option>QR</option>
-                  <option>Card Tap</option>
-                  <option>Card Dip</option>
-                </select>
-              </label>
-              <label>Reference <input name="payment_reference" /></label>
-              <div class="grid grid-3">
-                <label>Code
-                  <select name="country_code">
-                    <option value="+91" selected>+91</option>
-                    <option value="+1">+1</option>
-                    <option value="+44">+44</option>
-                    <option value="+971">+971</option>
-                  </select>
-                </label>
-                <label>Mobile <input name="mobile" placeholder="Customer number" /></label>
-                <label><input type="checkbox" name="send_receipt_sms" /> Send Receipt SMS</label>
-              </div>
-              <button type="submit">Mark Paid</button>
-            </form>
+            <div class="muted">Ready for table settlement below.</div>
             {% endif %}
             <details style="margin-top:0.4rem;">
               <summary>Edit Order</summary>
@@ -137,7 +114,7 @@
           </td>
         </tr>
         {% else %}
-        <tr><td colspan="5">No unpaid orders for this table.</td></tr>
+        <tr><td colspan="6">No unpaid orders for this table.</td></tr>
         {% endfor %}
       </tbody>
     </table>
@@ -145,19 +122,85 @@
 </section>
 
 <section class="panel">
-  <h3>Clear Table Orders</h3>
-  <form method="post" action="{{ url_for('cafe.clear_table_orders', table_id=selected_table.id) }}" class="grid grid-4">
+  <h3>Table Settlement</h3>
+  <p><strong>Approved Orders Ready To Settle:</strong> ₹{{ "%.2f"|format(table_settle_total) }}</p>
+  <form method="post" action="{{ url_for('cafe.clear_table_orders', table_id=selected_table.id) }}" class="grid">
     <input type="hidden" name="next" value="{{ url_for('cafe.cashier', tab='running', table_id=selected_table.id) }}" />
-    <label>Payment Type
-      <select name="payment_type">
-        <option>Cash</option>
-        <option>QR</option>
-        <option>Card Tap</option>
-        <option>Card Dip</option>
-      </select>
-    </label>
-    <label>Reference<input name="payment_reference" /></label>
-    <button type="submit">Clear All Unpaid Orders For Table</button>
+    <table>
+      <thead>
+        <tr><th>Settle</th><th>Order</th><th>Status</th><th>Total</th><th>State</th></tr>
+      </thead>
+      <tbody>
+        {% for order in unpaid_orders %}
+        {% set can_settle = payable_order_id_map.get(order.id) %}
+        <tr>
+          <td>
+            <input type="checkbox" name="order_ids" value="{{ order.id }}" {% if can_settle %}checked{% else %}disabled{% endif %} />
+          </td>
+          <td>#{{ order.daily_sequence or order.id }}<br /><small>{{ order.display_code or order.id }}</small></td>
+          <td>{{ order.status }}</td>
+          <td>₹{{ "%.2f"|format(order.total_amount) }}</td>
+          <td>{% if can_settle %}Ready{% else %}Awaiting Approval{% endif %}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    <div class="grid grid-4">
+      <label>Payment 1
+        <select name="payment_type_1">
+          <option value="Cash">Cash</option>
+          <option value="QR">QR</option>
+          <option value="Card Tap">Card Tap</option>
+          <option value="Card Dip">Card Dip</option>
+          <option value="UPI">UPI</option>
+        </select>
+      </label>
+      <label>Amount 1 <input name="payment_amount_1" type="number" step="0.01" min="0" /></label>
+      <label>Reference 1 <input name="payment_reference_1" placeholder="Txn / note" /></label>
+    </div>
+    <div class="grid grid-4">
+      <label>Payment 2
+        <select name="payment_type_2">
+          <option value="">Select</option>
+          <option value="Cash">Cash</option>
+          <option value="QR">QR</option>
+          <option value="Card Tap">Card Tap</option>
+          <option value="Card Dip">Card Dip</option>
+          <option value="UPI">UPI</option>
+        </select>
+      </label>
+      <label>Amount 2 <input name="payment_amount_2" type="number" step="0.01" min="0" /></label>
+      <label>Reference 2 <input name="payment_reference_2" placeholder="Txn / note" /></label>
+    </div>
+    <div class="grid grid-4">
+      <label>Payment 3
+        <select name="payment_type_3">
+          <option value="">Select</option>
+          <option value="Cash">Cash</option>
+          <option value="QR">QR</option>
+          <option value="Card Tap">Card Tap</option>
+          <option value="Card Dip">Card Dip</option>
+          <option value="UPI">UPI</option>
+        </select>
+      </label>
+      <label>Amount 3 <input name="payment_amount_3" type="number" step="0.01" min="0" /></label>
+      <label>Reference 3 <input name="payment_reference_3" placeholder="Txn / note" /></label>
+    </div>
+    <div class="grid grid-4">
+      <label>Payment 4
+        <select name="payment_type_4">
+          <option value="">Select</option>
+          <option value="Cash">Cash</option>
+          <option value="QR">QR</option>
+          <option value="Card Tap">Card Tap</option>
+          <option value="Card Dip">Card Dip</option>
+          <option value="UPI">UPI</option>
+        </select>
+      </label>
+      <label>Amount 4 <input name="payment_amount_4" type="number" step="0.01" min="0" /></label>
+      <label>Reference 4 <input name="payment_reference_4" placeholder="Txn / note" /></label>
+    </div>
+    <button type="submit">Settle Selected Orders For Table</button>
   </form>
 </section>
 {% endif %}
@@ -198,7 +241,7 @@
       <td>{{ o.table.name if o.table else "-" }}</td>
       <td>{{ o.status }}</td>
       <td>₹{{ "%.2f"|format(o.total_amount) }}</td>
-      <td>{{ o.created_at.strftime("%Y-%m-%d %H:%M") }}</td>
+      <td>{{ o.created_at.strftime("%I:%M:%S %p") }}</td>
       <td><button type="button" class="open-order-modal" data-order-id="{{ o.id }}">View</button></td>
     </tr>
     {% else %}
@@ -265,6 +308,9 @@
       const parcel = it.is_parcel ? " (Parcel)" : "";
       return `<div>${it.name}${size}${parcel} x ${it.qty} — ₹${(it.unit_price * it.qty).toFixed(2)}</div>`;
     }).join("");
+    const breakdownHtml = Array.isArray(order.payment_breakdown) && order.payment_breakdown.length
+      ? order.payment_breakdown.map((row) => `<div>${row.method} — ₹${Number(row.amount || 0).toFixed(2)}${row.reference ? ` (${row.reference})` : ""}</div>`).join("")
+      : "<div>-</div>";
     odTitle.textContent = `Order #${order.pickup_no || order.id}`;
     odBody.innerHTML = `
       <div><strong>Internal Ref:</strong> ${order.code}</div>
@@ -272,6 +318,7 @@
       <div><strong>Status:</strong> ${order.status}</div>
       <div><strong>Payment:</strong> ${order.payment_type}</div>
       <div><strong>Ref:</strong> ${order.payment_reference || "-"}</div>
+      <div><strong>Payment Split</strong>${breakdownHtml}</div>
       <div><strong>Items</strong>${itemsHtml || "<div>-</div>"}</div>
       <div><strong>Subtotal:</strong> ₹${Number(order.subtotal || 0).toFixed(2)}</div>
       <div><strong>Packaging:</strong> ₹${Number(order.packaging_charge || 0).toFixed(2)}</div>

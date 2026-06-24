@@ -123,6 +123,33 @@
   gap: 0.8rem;
 }
 
+.staff-summary-heading {
+  display: block;
+  text-decoration: none;
+  color: inherit;
+}
+
+.staff-summary-heading .muted {
+  margin-bottom: 0.9rem;
+}
+
+.staff-summary-grid {
+  margin-bottom: 0.85rem;
+}
+
+.staff-summary-card {
+  display: block;
+  text-decoration: none;
+  color: inherit;
+  transition: transform 0.16s ease, box-shadow 0.16s ease;
+}
+
+.staff-summary-card:hover,
+.staff-summary-card:focus-visible {
+  transform: translateY(-1px);
+  box-shadow: 0 8px 18px rgba(69, 42, 29, 0.1);
+}
+
 .cashier-header-row {
   align-items: baseline;
   margin-bottom: 0.45rem;
@@ -1674,15 +1701,16 @@ th {
 
 .kitchen-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
   gap: 0.8rem;
 }
 
 .k-card {
   background: #ffffff;
   border: 1px solid var(--line);
-  border-radius: 8px;
-  padding: 0.82rem;
+  border-radius: 12px;
+  padding: 0.9rem;
+  box-shadow: 0 10px 28px rgba(47, 29, 20, 0.06);
 }
 
 .k-card h3 {
@@ -1699,6 +1727,444 @@ th {
   display: flex;
   flex-wrap: wrap;
   gap: 0.36rem;
+}
+
+.kds-shell {
+  display: grid;
+  gap: 0.9rem;
+}
+
+.kds-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 1rem;
+}
+
+.kds-header-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.7rem;
+}
+
+.kds-station-switch {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+}
+
+.kds-station-switch .button-link.active {
+  background: #4f3528;
+  color: #fff8f1;
+  border-color: #4f3528;
+}
+
+.kds-metrics {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.7rem;
+}
+
+.kds-metric-card {
+  background: linear-gradient(180deg, #fffdf9, #f6efe7);
+  border: 1px solid rgba(111, 74, 53, 0.12);
+  border-radius: 12px;
+  padding: 0.85rem 0.95rem;
+  display: grid;
+  gap: 0.2rem;
+}
+
+.kds-metric-card span {
+  font-size: 0.78rem;
+  color: var(--muted);
+}
+
+.kds-metric-card strong {
+  font-size: 1.12rem;
+  color: #4a2c1d;
+}
+
+.kds-training-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  font-weight: 700;
+}
+
+.kds-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1.7fr) minmax(320px, 0.95fr);
+  gap: 0.95rem;
+  align-items: start;
+}
+
+.kds-board-panel,
+.kds-sop-panel {
+  position: sticky;
+  top: calc(74px + env(safe-area-inset-top));
+}
+
+.kds-board-head,
+.kds-sop-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 0.75rem;
+  margin-bottom: 0.8rem;
+}
+
+.kds-board-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  color: var(--muted);
+  font-size: 0.86rem;
+}
+
+.kds-live-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  background: #36a269;
+  box-shadow: 0 0 0 6px rgba(54, 162, 105, 0.15);
+}
+
+.k-card.delayed {
+  border-color: rgba(189, 79, 52, 0.28);
+  box-shadow: 0 12px 26px rgba(189, 79, 52, 0.08);
+}
+
+.k-card-empty {
+  display: grid;
+  justify-items: center;
+  text-align: center;
+  padding: 2rem 1rem;
+}
+
+.kds-ticket-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 0.75rem;
+}
+
+.kds-ticket-meta {
+  display: grid;
+  justify-items: end;
+  gap: 0.35rem;
+}
+
+.kds-ticket-ref {
+  margin-top: 0.3rem;
+  font-size: 0.8rem;
+}
+
+.kds-status-badge,
+.kds-ticket-timer,
+.kds-mini-badge,
+.kds-alert-chip,
+.kds-sop-prep-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  border-radius: 999px;
+  padding: 0.22rem 0.58rem;
+  font-size: 0.76rem;
+  font-weight: 700;
+}
+
+.kds-status-badge.pending {
+  background: #ece7df;
+  color: #6a625c;
+}
+
+.kds-status-badge.preparing {
+  background: #fff1db;
+  color: #ba6d00;
+}
+
+.kds-status-badge.ready {
+  background: #e4f6ea;
+  color: #287b4d;
+}
+
+.kds-status-badge.served {
+  background: #e2eefb;
+  color: #2a5f95;
+}
+
+.kds-status-badge.cancelled {
+  background: #fbe8e5;
+  color: #b84e31;
+}
+
+.kds-ticket-timer {
+  background: #f5f0ea;
+  color: #6e5547;
+}
+
+.kds-ticket-timer.delayed {
+  background: #fbe8e5;
+  color: #b84e31;
+}
+
+.kds-item-list {
+  display: grid;
+  gap: 0.52rem;
+  margin: 0.8rem 0 0.9rem;
+}
+
+.kds-item-row {
+  width: 100%;
+  border: 1px solid rgba(111, 74, 53, 0.14);
+  background: #fffdfa;
+  border-radius: 10px;
+  padding: 0.72rem 0.8rem;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.7rem;
+  text-align: left;
+  cursor: pointer;
+}
+
+.kds-item-row.active {
+  border-color: #6f4a35;
+  box-shadow: 0 0 0 3px rgba(111, 74, 53, 0.12);
+}
+
+.kds-item-main {
+  display: grid;
+  gap: 0.18rem;
+}
+
+.kds-item-main span,
+.kds-item-side {
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+.kds-item-side {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  justify-content: flex-end;
+}
+
+.kds-mini-badge {
+  background: #fff0df;
+  color: #9a5500;
+}
+
+.kds-sop-quick {
+  color: #6f4a35;
+  font-weight: 700;
+}
+
+.kds-actions form button {
+  min-width: 88px;
+}
+
+.kds-actions .danger {
+  background: #fff1ef;
+  color: #b84e31;
+  border-color: rgba(184, 78, 49, 0.2);
+}
+
+.kds-sop-search {
+  display: grid;
+  gap: 0.35rem;
+  margin-bottom: 0.9rem;
+}
+
+.kds-sop-empty {
+  border: 1px dashed rgba(111, 74, 53, 0.2);
+  border-radius: 12px;
+  padding: 1rem;
+  background: #fffdfa;
+  margin-bottom: 0.9rem;
+}
+
+.kds-sop-content {
+  display: grid;
+  gap: 0.85rem;
+  margin-bottom: 1rem;
+}
+
+.kds-sop-title-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 0.75rem;
+}
+
+.kds-sop-prep-badge {
+  background: #f5ece0;
+  color: #6b4128;
+}
+
+.kds-sop-photo-wrap {
+  border-radius: 12px;
+  overflow: hidden;
+  border: 1px solid rgba(111, 74, 53, 0.16);
+  background: #fffdfa;
+}
+
+.kds-sop-photo {
+  width: 100%;
+  height: 190px;
+  object-fit: cover;
+  display: block;
+}
+
+.kds-sop-alerts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+}
+
+.kds-alert-chip {
+  background: #fbe8e5;
+  color: #b84e31;
+}
+
+.kds-sop-sections {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.kds-sop-section {
+  border: 1px solid rgba(111, 74, 53, 0.12);
+  border-radius: 12px;
+  padding: 0.8rem 0.9rem;
+  background: #fffdfa;
+}
+
+.kds-sop-section h4 {
+  margin: 0 0 0.45rem;
+}
+
+.kds-sop-section ul,
+.kds-training-wrap ul {
+  margin: 0;
+  padding-left: 1rem;
+  display: grid;
+  gap: 0.3rem;
+}
+
+.kds-training-wrap {
+  border: 1px solid rgba(45, 112, 112, 0.18);
+  border-radius: 12px;
+  padding: 0.8rem 0.9rem;
+  background: #f5fbfb;
+}
+
+.kds-training-wrap h4 {
+  margin: 0 0 0.45rem;
+}
+
+.kds-library-section {
+  display: grid;
+  gap: 0.7rem;
+}
+
+.kds-sop-library {
+  display: grid;
+  gap: 0.5rem;
+  max-height: 360px;
+  overflow: auto;
+  padding-right: 0.2rem;
+}
+
+.kds-library-item {
+  border: 1px solid rgba(111, 74, 53, 0.12);
+  background: #fff;
+  color: #4a2c1d;
+  border-radius: 10px;
+  padding: 0.72rem 0.8rem;
+  text-align: left;
+  display: grid;
+  gap: 0.18rem;
+  cursor: pointer;
+}
+
+.kds-library-item strong {
+  color: #4a2c1d;
+}
+
+.kds-library-item span {
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+.inventory-sop-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.7rem;
+}
+
+.inventory-sop-grid textarea,
+.inventory-size-notes textarea {
+  width: 100%;
+  resize: vertical;
+}
+
+.inventory-size-notes {
+  display: grid;
+  gap: 0.7rem;
+  padding: 0.85rem;
+  border: 1px solid rgba(111, 74, 53, 0.12);
+  border-radius: 12px;
+  background: #fffdfa;
+}
+
+@media (max-width: 1100px) {
+  .kds-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .kds-board-panel,
+  .kds-sop-panel {
+    position: static;
+  }
+}
+
+@media (max-width: 900px) {
+  .kds-header,
+  .kds-header-actions,
+  .kds-ticket-head,
+  .kds-sop-title-row {
+    grid-template-columns: 1fr;
+    display: grid;
+  }
+
+  .kds-metrics,
+  .inventory-sop-grid {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
+@media (max-width: 640px) {
+  .kds-metrics,
+  .inventory-sop-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .kitchen-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .kds-item-row {
+    align-items: flex-start;
+  }
+
+  .kds-item-side {
+    flex-direction: column;
+    align-items: flex-end;
+  }
 }
 
 .qr-menu-table .thumb-image.qr-thumb {

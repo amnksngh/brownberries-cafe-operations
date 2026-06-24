@@ -241,6 +241,7 @@
       </form>
       <form method="post" action="{{ url_for('cafe.update_menu_availability') }}">
         <input type="hidden" name="category_filter" value="{{ selected_category_filter or '' }}" />
+        <input type="hidden" name="next" value="{{ url_for('cafe.menu', section='availability', category_filter=selected_category_filter or '') }}" />
         <table>
           <tr><th>Food Item</th><th>Available</th></tr>
           {% for item in availability_items %}

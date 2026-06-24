@@ -392,17 +392,46 @@
     <section class="inventory-two-col">
       <article class="panel">
         <h3>Recipe Mapping / SOP</h3>
-        <form method="post" class="grid">
+        <form method="post" class="grid" id="inventory-recipe-form">
           <input type="hidden" name="action" value="save_recipe" />
           <div class="grid inventory-form-grid">
             <label>Menu Item
-              <select name="menu_item_id" required>
+              <select name="menu_item_id" id="recipe-menu-item-select" required>
                 <option value="">Select</option>
                 {% for m in menu_items %}<option value="{{ m.id }}">{{ m.name }}</option>{% endfor %}
               </select>
             </label>
             <label>Yield Qty <input type="number" step="0.001" min="0" name="yield_qty" value="1" /></label>
             <label>Yield Unit <input name="yield_unit" value="portion" /></label>
+            <label>Prep Time (mins) <input type="number" min="0" name="prep_time_minutes" value="" placeholder="12" /></label>
+            <label>SOP Photo URL <input name="sop_photo_url" placeholder="https://..." /></label>
+          </div>
+          <div class="inventory-sop-grid">
+            <label>Ingredients Notes
+              <textarea name="ingredients_note" rows="4" placeholder="Optional manual notes, one line per note."></textarea>
+            </label>
+            <label>Preparation Steps
+              <textarea name="preparation_steps" rows="6" placeholder="One step per line."></textarea>
+            </label>
+            <label>Plating Notes
+              <textarea name="plating_notes" rows="4" placeholder="One line per point."></textarea>
+            </label>
+            <label>Quality Checks
+              <textarea name="quality_checks" rows="4" placeholder="One line per check."></textarea>
+            </label>
+            <label>Allergy Alerts
+              <textarea name="allergy_alerts" rows="4" placeholder="Examples: Contains dairy"></textarea>
+            </label>
+            <label>Training Notes
+              <textarea name="training_notes" rows="4" placeholder="Helpful cues for new team members."></textarea>
+            </label>
+          </div>
+          <div id="recipe-size-notes-wrap" class="inventory-size-notes hidden">
+            <div class="split-head">
+              <strong>Serving Size SOP Notes</strong>
+              <span class="muted">Auto-linked to table, kitchen, and barista SOP panels.</span>
+            </div>
+            <div id="recipe-size-notes-list" class="grid"></div>
           </div>
           <table>
             <tr><th>Ingredient</th><th>Qty Per Menu</th><th>Unit</th></tr>
@@ -420,19 +449,25 @@
       <article class="panel">
         <h3>Mapped Recipes</h3>
         <table>
-          <tr><th>Menu Item</th><th>Yield</th><th>Ingredients</th></tr>
+          <tr><th>Menu Item</th><th>Yield</th><th>Prep</th><th>Ingredients</th></tr>
           {% for r in recipes %}
           <tr>
-            <td>{{ r.menu_item.name if r.menu_item else "-" }}</td>
+            <td>
+              <strong>{{ r.menu_item.name if r.menu_item else "-" }}</strong>
+              {% if r.menu_item %}<div class="muted">{{ "Barista" if r.menu_item.prep_station == "barista" else "Kitchen" }}</div>{% endif %}
+            </td>
             <td>{{ r.yield_qty }} {{ r.yield_unit or '' }}</td>
+            <td>{{ r.prep_time_minutes or "-" }} min</td>
             <td>{% for ing in r.ingredients %}<div>{{ ing.inventory_item.name if ing.inventory_item else "-" }} - {{ ing.qty_per_menu }} {{ ing.unit }}</div>{% endfor %}</td>
           </tr>
           {% else %}
-          <tr><td colspan="3">No recipes mapped.</td></tr>
+          <tr><td colspan="4">No recipes mapped.</td></tr>
           {% endfor %}
         </table>
       </article>
     </section>
+    <script id="inventory-menu-item-meta" type="application/json">{{ menu_item_meta|tojson }}</script>
+    <script id="inventory-recipe-payload-map" type="application/json">{{ recipe_payload_map|tojson }}</script>
     {% endif %}
 
     {% if section == "wastage" %}
@@ -556,4 +591,86 @@
     {% endif %}
   </div>
 </section>
+{% if section == "recipes" %}
+<script>
+  (() => {
+    const form = document.getElementById("inventory-recipe-form");
+    const menuSelect = document.getElementById("recipe-menu-item-select");
+    const sizeWrap = document.getElementById("recipe-size-notes-wrap");
+    const sizeList = document.getElementById("recipe-size-notes-list");
+    const menuMetaNode = document.getElementById("inventory-menu-item-meta");
+    const recipeMapNode = document.getElementById("inventory-recipe-payload-map");
+    if (!form || !menuSelect || !menuMetaNode || !recipeMapNode) return;
+
+    let menuMeta = {};
+    let recipeMap = {};
+    try { menuMeta = JSON.parse(menuMetaNode.textContent || "{}"); } catch (e) {}
+    try { recipeMap = JSON.parse(recipeMapNode.textContent || "{}"); } catch (e) {}
+
+    const field = (name) => form.querySelector(`[name="${name}"]`);
+
+    function renderSizeNotes(sizes, existingNotes = {}) {
+      if (!Array.isArray(sizes) || !sizes.length) {
+        sizeWrap?.classList.add("hidden");
+        if (sizeList) sizeList.innerHTML = "";
+        return;
+      }
+      sizeWrap?.classList.remove("hidden");
+      sizeList.innerHTML = sizes.map((row) => {
+        const label = row.size || "";
+        const note = existingNotes[label] || "";
+        return `
+          <label>
+            <span>${label} SOP Note</span>
+            <input type="hidden" name="size_sop_label[]" value="${label.replaceAll('"', '&quot;')}" />
+            <textarea name="size_sop_note[]" rows="2" placeholder="Specific steps or output notes for ${label.replaceAll('"', '&quot;')}">${note}</textarea>
+          </label>`;
+      }).join("");
+    }
+
+    function applyRecipe(menuItemId) {
+      const menuItem = menuMeta[String(menuItemId)] || null;
+      const recipe = recipeMap[String(menuItemId)] || null;
+      if (!menuItemId) {
+        form.reset();
+        menuSelect.value = "";
+        renderSizeNotes([], {});
+        return;
+      }
+      field("yield_qty").value = recipe?.yield_qty ?? 1;
+      field("yield_unit").value = recipe?.yield_unit ?? "portion";
+      field("prep_time_minutes").value = recipe?.prep_time_minutes ?? "";
+      field("ingredients_note").value = recipe?.ingredients_note ?? "";
+      field("preparation_steps").value = recipe?.preparation_steps ?? "";
+      field("plating_notes").value = recipe?.plating_notes ?? "";
+      field("quality_checks").value = recipe?.quality_checks ?? "";
+      field("allergy_alerts").value = recipe?.allergy_alerts ?? "";
+      field("training_notes").value = recipe?.training_notes ?? "";
+      field("sop_photo_url").value = recipe?.sop_photo_url ?? "";
+
+      form.querySelectorAll('input[name="recipe_item_id"]').forEach((checkbox) => {
+        checkbox.checked = false;
+      });
+      form.querySelectorAll('input[name^="recipe_qty_"]').forEach((input) => {
+        input.value = "";
+      });
+      form.querySelectorAll('input[name^="recipe_unit_"]').forEach((input) => {
+        const original = input.defaultValue || input.getAttribute("value") || "pcs";
+        input.value = original;
+      });
+      Object.entries(recipe?.ingredients || {}).forEach(([itemId, values]) => {
+        const checkbox = form.querySelector(`input[name="recipe_item_id"][value="${itemId}"]`);
+        const qtyInput = field(`recipe_qty_${itemId}`);
+        const unitInput = field(`recipe_unit_${itemId}`);
+        if (checkbox) checkbox.checked = true;
+        if (qtyInput) qtyInput.value = values.qty ?? "";
+        if (unitInput) unitInput.value = values.unit ?? "";
+      });
+      renderSizeNotes(menuItem?.sizes || [], recipe?.size_notes || {});
+    }
+
+    menuSelect.addEventListener("change", () => applyRecipe(menuSelect.value));
+  })();
+</script>
+{% endif %}
 {% endblock %}

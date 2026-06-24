@@ -32,6 +32,8 @@ def load_deployment_config(instance_path: str) -> dict:
         "TWILIO_AUTH_TOKEN": "TWILIO_AUTH_TOKEN",
         "SMS_CA_BUNDLE": "SMS_CA_BUNDLE",
         "SMS_ALLOW_INSECURE_SSL": "SMS_ALLOW_INSECURE_SSL",
+        "QR_ORDER_CUTOFF_TIME": "QR_ORDER_CUTOFF_TIME",
+        "STAFF_ORDER_CUTOFF_TIME": "STAFF_ORDER_CUTOFF_TIME",
     }
     for key, env_name in env_map.items():
         val = os.getenv(env_name, "").strip()

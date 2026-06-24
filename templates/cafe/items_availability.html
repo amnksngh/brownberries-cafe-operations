@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="panel">
+  <h2>Items Availability</h2>
+  <p class="muted">Quickly control which menu items are available right now.</p>
+</section>
+
+<section class="panel">
+  <form method="get" class="grid grid-4">
+    <label>Category
+      <select name="category_filter">
+        <option value="">All</option>
+        {% for c in categories %}
+        <option value="{{ c.id }}" {% if selected_category_filter == c.id %}selected{% endif %}>{{ c.name }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <button type="submit">Load Items</button>
+  </form>
+</section>
+
+<section class="panel">
+  <form method="post" action="{{ url_for('cafe.update_menu_availability') }}">
+    <input type="hidden" name="category_filter" value="{{ selected_category_filter or '' }}" />
+    <input type="hidden" name="next" value="{{ url_for('cafe.items_availability', category_filter=selected_category_filter or '') }}" />
+    <table>
+      <tr><th>Food Item</th><th>Available</th></tr>
+      {% for item in availability_items %}
+      <tr>
+        <td>{{ item.name }}</td>
+        <td><input type="checkbox" name="available_item_ids" value="{{ item.id }}" {% if item.available %}checked{% endif %} /></td>
+      </tr>
+      {% else %}
+      <tr><td colspan="2">No items found for this filter.</td></tr>
+      {% endfor %}
+    </table>
+    <button type="submit">Save Availability</button>
+  </form>
+</section>
+{% endblock %}

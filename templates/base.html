@@ -20,17 +20,19 @@
           <p>Food | Beverages | Books | Workstations</p>
         </div>
       </div>
-      {% if g.current_user %}
+      {% if g.current_user and not hide_staff_nav|default(false) %}
       <nav>
         {% if g.current_user.role == "staff" %}
         <a href="{{ url_for('main.profile') }}">Profile</a>
         <a href="{{ url_for('cafe.orders') }}">Table Ordering</a>
+        <a href="{{ url_for('cafe.items_availability') }}">Items Availability</a>
         <a href="{{ url_for('library.home') }}">Library</a>
         <a href="{{ url_for('main.logout') }}">Logout</a>
         {% else %}
         <a href="{{ url_for('main.dashboard') }}">Home</a>
         <a href="{{ url_for('cafe.home') }}">Cafe</a>
         <a href="{{ url_for('cafe.orders') }}">Table Ordering</a>
+        <a href="{{ url_for('cafe.items_availability') }}">Items Availability</a>
         {% if g.current_user.role == "cashier" %}
         <a href="{{ url_for('cafe.cashier') }}">Cashier</a>
         {% endif %}
@@ -56,7 +58,7 @@
       {% endwith %}
       {% block content %}{% endblock %}
     </main>
-    {% if g.current_user and (g.current_user.role == "cashier" or (g.current_user.user_type and g.current_user.user_type.can_manage_cashier)) %}
+    {% if g.current_user and not hide_staff_nav|default(false) and (g.current_user.role == "cashier" or (g.current_user.user_type and g.current_user.user_type.can_manage_cashier)) %}
     <script src="{{ url_for('static', filename='js/socket.io.min.js') }}"></script>
     <script>
       window.__bbGlobalNotifierInstalled = true;

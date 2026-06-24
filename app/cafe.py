@@ -88,6 +88,16 @@ def _order_local_date(order: CafeOrder | None) -> date:
     return local_dt.date() if local_dt else date.today()
 
 
+def _current_ist_day_bounds():
+    today_ist = datetime.now(IST_TZ).date()
+    start_local = datetime.combine(today_ist, time.min).replace(tzinfo=IST_TZ)
+    end_local = datetime.combine(today_ist, time.max).replace(tzinfo=IST_TZ)
+    return (
+        start_local.astimezone(UTC_TZ).replace(tzinfo=None),
+        end_local.astimezone(UTC_TZ).replace(tzinfo=None),
+    )
+
+
 def _order_channel_code(order: CafeOrder | None) -> str:
     if order and order.is_delivery:
         return "O"
@@ -283,6 +293,128 @@ def _safe_int(value, default=0):
         return int(value)
     except (TypeError, ValueError):
         return int(default)
+
+
+def _parse_cutoff_time(raw_value: str | None):
+    value = (raw_value or "").strip()
+    if not value:
+        return None
+    try:
+        return datetime.strptime(value, "%H:%M").time()
+    except ValueError:
+        return None
+
+
+def _format_cutoff_value(raw_value: str | None) -> str:
+    parsed = _parse_cutoff_time(raw_value)
+    return parsed.strftime("%H:%M") if parsed else ""
+
+
+def _order_cutoff_message(channel: str):
+    cfg = load_deployment_config(current_app.instance_path)
+    key = "QR_ORDER_CUTOFF_TIME" if channel == "qr" else "STAFF_ORDER_CUTOFF_TIME"
+    label = "table QR ordering" if channel == "qr" else "staff assisted table ordering"
+    parsed = _parse_cutoff_time(cfg.get(key))
+    if not parsed:
+        return None
+    now_ist = datetime.now(IST_TZ).time().replace(second=0, microsecond=0)
+    if now_ist <= parsed:
+        return None
+    return f"{label.title()} is closed for today after {parsed.strftime('%I:%M %p')}."
+
+
+def _split_multiline(value: str | None) -> list[str]:
+    if not value:
+        return []
+    return [line.strip() for line in str(value).splitlines() if line.strip()]
+
+
+def _load_menu_item_size_variants(menu_item: MenuItem | None) -> list[dict]:
+    if not menu_item or not menu_item.has_size_variants:
+        return []
+    try:
+        raw = json.loads(menu_item.size_pricing_json or "[]")
+    except (TypeError, ValueError, json.JSONDecodeError):
+        raw = []
+    rows = []
+    for entry in raw:
+        if not isinstance(entry, dict):
+            continue
+        label = str(entry.get("size") or "").strip()
+        if not label:
+            continue
+        rows.append(
+            {
+                "size": label,
+                "price": round(_safe_float(entry.get("price"), 0), 2),
+            }
+        )
+    return rows
+
+
+def _parse_recipe_size_notes_from_form() -> list[dict]:
+    labels = request.form.getlist("size_sop_label[]")
+    notes = request.form.getlist("size_sop_note[]")
+    rows = []
+    for idx, raw_label in enumerate(labels):
+        label = (raw_label or "").strip()
+        note = (notes[idx] if idx < len(notes) else "").strip()
+        if not label:
+            continue
+        rows.append({"size": label, "note": note})
+    return rows
+
+
+def _recipe_size_note_map(recipe: InventoryRecipe | None) -> dict[str, str]:
+    if not recipe or not recipe.size_sop_json:
+        return {}
+    try:
+        rows = json.loads(recipe.size_sop_json or "[]")
+    except (TypeError, ValueError, json.JSONDecodeError):
+        rows = []
+    result = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        label = str(row.get("size") or "").strip()
+        note = str(row.get("note") or "").strip()
+        if label:
+            result[label] = note
+    return result
+
+
+def _serialize_recipe_sop(recipe: InventoryRecipe | None, size_label: str | None = None) -> dict:
+    recipe = recipe or None
+    size_label = (size_label or "").strip()
+    size_note_map = _recipe_size_note_map(recipe)
+    ingredients = []
+    if recipe:
+        for ing in recipe.ingredients:
+            if not ing.inventory_item:
+                continue
+            ingredients.append(
+                {
+                    "name": ing.inventory_item.name,
+                    "qty": round(float(ing.qty_per_menu or 0), 3),
+                    "unit": ing.unit or ing.inventory_item.unit or "",
+                }
+            )
+    return {
+        "prep_time_minutes": int(recipe.prep_time_minutes or 0) if recipe else 0,
+        "yield_qty": round(float(recipe.yield_qty or 0), 3) if recipe else 0,
+        "yield_unit": (recipe.yield_unit or "").strip() if recipe else "",
+        "ingredients": ingredients,
+        "ingredients_note": _split_multiline(recipe.ingredients_note if recipe else None),
+        "preparation_steps": _split_multiline(recipe.preparation_steps if recipe else None),
+        "plating_notes": _split_multiline(recipe.plating_notes if recipe else None),
+        "quality_checks": _split_multiline(recipe.quality_checks if recipe else None),
+        "allergy_alerts": _split_multiline(recipe.allergy_alerts if recipe else None),
+        "training_notes": _split_multiline(recipe.training_notes if recipe else None),
+        "photo_url": (recipe.sop_photo_url or "").strip() if recipe else "",
+        "size_label": size_label,
+        "size_note": size_note_map.get(size_label, "") if size_label else "",
+        "size_notes": [{"size": key, "note": value} for key, value in size_note_map.items()],
+    }
 
 
 def _utc_naive_from_ist(dt_value: datetime) -> datetime:
@@ -524,6 +656,12 @@ def _build_staff_id_card(user: User, profile: StaffProfile):
 
 def _serialize_order(order: CafeOrder):
     pending_count = sum(1 for item in order.order_items if (item.approval_status or "pending") == "pending")
+    try:
+        payment_breakdown = json.loads(order.payment_breakdown_json or "[]")
+        if not isinstance(payment_breakdown, list):
+            payment_breakdown = []
+    except (TypeError, ValueError, json.JSONDecodeError):
+        payment_breakdown = []
     return {
         "id": order.id,
         "order_code": order.display_code or _format_internal_order_code(order),
@@ -533,6 +671,7 @@ def _serialize_order(order: CafeOrder):
         "table": "For Delivery" if order.is_delivery else (order.table.name if order.table else "-"),
         "status": order.status,
         "payment_type": order.payment_type or "-",
+        "payment_breakdown": payment_breakdown,
         "total_amount": round(order.total_amount, 2),
         "is_delivery": bool(order.is_delivery),
         "delivery_customer_name": order.delivery_customer_name,
@@ -775,6 +914,28 @@ def _receipt_link_for_order(order: CafeOrder) -> str:
     return f"{base}/cafe/receipt/{order.id}"
 
 
+def _parse_split_payment_rows():
+    rows = []
+    for idx in range(1, 5):
+        payment_type = (request.form.get(f"payment_type_{idx}") or "").strip()
+        amount = _safe_float(request.form.get(f"payment_amount_{idx}"), 0)
+        reference = (request.form.get(f"payment_reference_{idx}") or "").strip()
+        if not payment_type and amount <= 0 and not reference:
+            continue
+        if not payment_type or amount <= 0:
+            return None, "Each payment row must have a method and an amount."
+        rows.append(
+            {
+                "method": payment_type,
+                "amount": round(float(amount), 2),
+                "reference": reference,
+            }
+        )
+    if not rows:
+        return None, "Add at least one payment entry."
+    return rows, ""
+
+
 def _send_receipt_sms(country_code: str, mobile: str, message: str):
     cfg = load_deployment_config(current_app.instance_path)
     enabled = str(cfg.get("SMS_ENABLED", "0")).strip() in ["1", "true", "True"]
@@ -919,6 +1080,7 @@ def create_cafe_order(
 @login_required
 def home():
     cfg = load_deployment_config(current_app.instance_path)
+    today_start, today_end = _current_ist_day_bounds()
     sms_enabled = str(cfg.get("SMS_ENABLED", "0")).strip() in ["1", "true", "True"]
     sms_provider = (cfg.get("SMS_PROVIDER") or "twilio").strip().lower() or "twilio"
     sms_from = (cfg.get("SMS_FROM") or cfg.get("TWILIO_FROM_NUMBER") or "").strip()
@@ -928,16 +1090,24 @@ def home():
     token_hint = f"{twilio_auth_token[:3]}...{twilio_auth_token[-3:]}" if len(twilio_auth_token) >= 8 else ("Set" if twilio_auth_token else "")
     sms_ca_bundle = (cfg.get("SMS_CA_BUNDLE") or "").strip()
     sms_allow_insecure_ssl = str(cfg.get("SMS_ALLOW_INSECURE_SSL", "0")).strip() in ["1", "true", "True"]
+    qr_order_cutoff_time = _format_cutoff_value(cfg.get("QR_ORDER_CUTOFF_TIME"))
+    staff_order_cutoff_time = _format_cutoff_value(cfg.get("STAFF_ORDER_CUTOFF_TIME"))
     return render_template(
         "cafe/home.html",
         tables=CafeTable.query.count(),
         open_orders=CafeOrder.query.filter(
-            CafeOrder.status.notin_(["paid", "cancelled"])
+            CafeOrder.status.notin_(["paid", "cancelled"]),
+            CafeOrder.created_at >= today_start,
+            CafeOrder.created_at <= today_end,
         ).count(),
         low_stock=InventoryItem.query.filter(
             InventoryItem.current_amount <= InventoryItem.reorder_level
         ).count(),
-        delivery_open_orders=CafeOrder.query.filter_by(is_delivery=True).filter(CafeOrder.status.notin_(["paid", "cancelled"])).count(),
+        delivery_open_orders=CafeOrder.query.filter_by(is_delivery=True).filter(
+            CafeOrder.status.notin_(["paid", "cancelled"]),
+            CafeOrder.created_at >= today_start,
+            CafeOrder.created_at <= today_end,
+        ).count(),
         upcoming_bookings=TableBooking.query.filter(
             TableBooking.booking_date >= date.today(),
             TableBooking.status == "booked",
@@ -951,6 +1121,8 @@ def home():
         twilio_token_hint=token_hint,
         sms_ca_bundle=sms_ca_bundle,
         sms_allow_insecure_ssl=sms_allow_insecure_ssl,
+        qr_order_cutoff_time=qr_order_cutoff_time,
+        staff_order_cutoff_time=staff_order_cutoff_time,
     )
 
 
@@ -995,6 +1167,22 @@ def update_sms_settings():
     }
     save_deployment_config(current_app.instance_path, updates)
     flash("SMS gateway settings saved.", "success")
+    return redirect(url_for("cafe.home"))
+
+
+@bp.route("/order-cutoff-settings", methods=["POST"])
+@roles_required("admin", "manager")
+def update_order_cutoff_settings():
+    qr_cutoff = _format_cutoff_value(request.form.get("qr_order_cutoff_time"))
+    staff_cutoff = _format_cutoff_value(request.form.get("staff_order_cutoff_time"))
+    save_deployment_config(
+        current_app.instance_path,
+        {
+            "QR_ORDER_CUTOFF_TIME": qr_cutoff,
+            "STAFF_ORDER_CUTOFF_TIME": staff_cutoff,
+        },
+    )
+    flash("Order cutoff settings saved.", "success")
     return redirect(url_for("cafe.home"))
 
 
@@ -1206,7 +1394,7 @@ def menu():
 
 
 @bp.route("/menu/availability", methods=["POST"])
-@roles_required("admin", "manager")
+@login_required
 def update_menu_availability():
     category_filter = request.form.get("category_filter", "").strip()
     category_filter_id = int(category_filter) if category_filter.isdigit() else None
@@ -1218,7 +1406,27 @@ def update_menu_availability():
         item.available = item.id in selected_ids
     db.session.commit()
     flash("Menu item availability updated.", "success")
-    return redirect(url_for("cafe.menu", section="availability", category_filter=category_filter or ""))
+    next_url = request.form.get("next", "").strip()
+    if next_url:
+        return redirect(next_url)
+    return redirect(url_for("cafe.items_availability", category_filter=category_filter or ""))
+
+
+@bp.route("/items-availability")
+@login_required
+def items_availability():
+    selected_category_filter = request.args.get("category_filter", type=int)
+    categories = MenuCategory.query.order_by(MenuCategory.name.asc()).all()
+    availability_items = _apply_category_filter(
+        MenuItem.query.filter(MenuItem.is_deleted.is_(False)).order_by(MenuItem.name.asc()),
+        selected_category_filter,
+    ).all()
+    return render_template(
+        "cafe/items_availability.html",
+        categories=categories,
+        availability_items=availability_items,
+        selected_category_filter=selected_category_filter,
+    )
 
 
 @bp.route("/menu/categories", methods=["POST"])
@@ -1459,6 +1667,10 @@ def restore_menu_item(item_id):
 def orders():
     if request.method == "POST":
         selected_table_id = int(request.form["table_id"])
+        cutoff_message = _order_cutoff_message("staff")
+        if cutoff_message:
+            flash(cutoff_message, "error")
+            return redirect(url_for("cafe.orders", table_id=selected_table_id))
         order = _create_order(
             table_id=selected_table_id,
             ordered_by_user_id=g.current_user.id,
@@ -1648,25 +1860,56 @@ def approve_order(order_id):
 @roles_required("admin", "manager", "cashier")
 def clear_table_orders(table_id):
     table = CafeTable.query.get_or_404(table_id)
-    payment_type = request.form.get("payment_type", "").strip() or "Cash"
-    payment_reference = request.form.get("payment_reference", "").strip() or None
+    split_rows, split_error = _parse_split_payment_rows()
+    if split_error:
+        flash(split_error, "error")
+        next_url = request.form.get("next", "").strip() or request.args.get("next", "").strip()
+        return redirect(next_url or url_for("cafe.cashier", table_id=table.id, tab="running"))
+    selected_order_ids = {
+        int(value) for value in request.form.getlist("order_ids") if str(value).isdigit()
+    }
+    if not selected_order_ids:
+        flash("Select at least one order to settle.", "error")
+        next_url = request.form.get("next", "").strip() or request.args.get("next", "").strip()
+        return redirect(next_url or url_for("cafe.cashier", table_id=table.id, tab="running"))
     orders = CafeOrder.query.filter(
         CafeOrder.table_id == table.id,
         CafeOrder.status.notin_(["paid", "cancelled"]),
     ).all()
+    orders = [order for order in orders if order.id in selected_order_ids]
+    payable_orders = [
+        order for order in orders
+        if not any((oi.approval_status or "pending") == "pending" for oi in order.order_items)
+    ]
+    if not payable_orders:
+        flash("Select at least one approved order to settle.", "error")
+        next_url = request.form.get("next", "").strip() or request.args.get("next", "").strip()
+        return redirect(next_url or url_for("cafe.cashier", table_id=table.id, tab="running"))
+    selected_total = round(sum(float(order.total_amount or 0) for order in payable_orders), 2)
+    split_total = round(sum(float(row["amount"]) for row in split_rows), 2)
+    if abs(split_total - selected_total) > 0.01:
+        flash(f"Payment split total ₹{split_total:.2f} must match selected orders total ₹{selected_total:.2f}.", "error")
+        next_url = request.form.get("next", "").strip() or request.args.get("next", "").strip()
+        return redirect(next_url or url_for("cafe.cashier", table_id=table.id, tab="running"))
     count = 0
     paid_now = datetime.utcnow()
-    for order in orders:
+    summary_label = split_rows[0]["method"] if len(split_rows) == 1 else "Split Payment"
+    summary_ref = ", ".join(
+        [f'{row["method"]}: ₹{row["amount"]:.2f}' + (f' ({row["reference"]})' if row["reference"] else "") for row in split_rows]
+    )[:120] or None
+    payment_breakdown_json = json.dumps(split_rows)
+    for order in payable_orders:
         order.status = "paid"
         order.paid_at = paid_now
-        order.payment_type = payment_type
-        order.payment_reference = payment_reference or order.payment_reference
+        order.payment_type = summary_label
+        order.payment_reference = summary_ref or order.payment_reference
+        order.payment_breakdown_json = payment_breakdown_json
         payload = _serialize_order(order)
         socketio.emit("order_updated", payload, namespace="/kitchen")
         socketio.emit("order_updated", payload, namespace="/table")
         count += 1
     db.session.commit()
-    flash(f"Cleared {count} order(s) for {table.name}.", "success")
+    flash(f"Settled {count} order(s) for {table.name}.", "success")
     next_url = request.form.get("next", "").strip() or request.args.get("next", "").strip()
     if next_url:
         return redirect(next_url)
@@ -1732,6 +1975,8 @@ def cashier():
     )
     unpaid_orders = []
     table_total = 0
+    table_settle_total = 0
+    payable_order_id_map = {}
     if selected_table:
         unpaid_orders = (
             CafeOrder.query.filter(
@@ -1744,6 +1989,18 @@ def cashier():
             .all()
         )
         table_total = round(sum(o.total_amount for o in unpaid_orders), 2)
+        payable_order_id_map = {
+            o.id: (not any((oi.approval_status or "pending") == "pending" for oi in o.order_items))
+            for o in unpaid_orders
+        }
+        table_settle_total = round(
+            sum(float(o.total_amount or 0) for o in unpaid_orders if payable_order_id_map.get(o.id)),
+            2,
+        )
+    running_order_time_map = {
+        o.id: _format_ist(o.created_at, "%I:%M:%S %p")
+        for o in unpaid_orders
+    }
     all_orders = (
         CafeOrder.query.options(joinedload(CafeOrder.table), joinedload(CafeOrder.order_items).joinedload(CafeOrderItem.menu_item))
         .filter(CafeOrder.created_at >= day_start, CafeOrder.created_at < day_end)
@@ -1771,7 +2028,12 @@ def cashier():
                 "status": o.status,
                 "payment_type": o.payment_type or "-",
                 "payment_reference": o.payment_reference or "-",
-                "created_at": _format_ist(o.created_at),
+                "payment_breakdown": (
+                    json.loads(o.payment_breakdown_json)
+                    if (o.payment_breakdown_json and str(o.payment_breakdown_json).strip().startswith("["))
+                    else []
+                ),
+                "created_at": _format_ist(o.created_at, "%I:%M:%S %p"),
                 "items": [
                     {
                         "name": (oi.menu_item.name if oi.menu_item else "Item"),
@@ -1799,7 +2061,10 @@ def cashier():
         running_map=running_map,
         selected_table=selected_table,
         unpaid_orders=unpaid_orders,
+        payable_order_id_map=payable_order_id_map,
+        running_order_time_map=running_order_time_map,
         table_total=table_total,
+        table_settle_total=table_settle_total,
         total_sale_today=round(float(total_sale_today), 2),
         all_orders=all_orders,
         all_orders_payload=all_orders_payload,
@@ -1889,6 +2154,10 @@ def table_order():
     table = CafeTable.query.filter_by(qr_slug=slug, active=True).first()
     if not table:
         flash("Invalid table QR.", "error")
+        return redirect(url_for("main.table_qr_page", slug=slug))
+    cutoff_message = _order_cutoff_message("qr")
+    if cutoff_message:
+        flash(cutoff_message, "error")
         return redirect(url_for("main.table_qr_page", slug=slug))
     order = _create_order(
         table_id=table.id,
@@ -1999,7 +2268,80 @@ def kitchen_display():
         .order_by(CafeOrder.created_at.asc())
         .all()
     )
-    return render_template("cafe/kitchen_display.html", orders=orders, station=station)
+    recipes = (
+        InventoryRecipe.query.join(MenuItem, MenuItem.id == InventoryRecipe.menu_item_id)
+        .filter(InventoryRecipe.active.is_(True), MenuItem.prep_station == station)
+        .options(joinedload(InventoryRecipe.menu_item), joinedload(InventoryRecipe.ingredients).joinedload(InventoryRecipeItem.inventory_item))
+        .all()
+    )
+    recipe_map = {recipe.menu_item_id: recipe for recipe in recipes}
+    order_cards = []
+    prep_minutes = []
+    for order in orders:
+        station_items = []
+        order_expected = 0
+        for oi in order.order_items:
+            if not oi.menu_item or oi.menu_item.prep_station != station:
+                continue
+            if (oi.approval_status or "pending") != "approved":
+                continue
+            recipe = recipe_map.get(oi.menu_item_id)
+            sop = _serialize_recipe_sop(recipe, oi.size_label)
+            expected_minutes = int(sop.get("prep_time_minutes") or 0)
+            if expected_minutes > 0:
+                order_expected = max(order_expected, expected_minutes)
+            station_items.append(
+                {
+                    "id": oi.id,
+                    "name": oi.menu_item.name,
+                    "qty": int(oi.quantity or 0),
+                    "size_label": oi.size_label or "",
+                    "is_parcel": bool(oi.is_parcel),
+                    "approval_status": oi.approval_status or "pending",
+                    "sop": sop,
+                }
+            )
+        if not station_items:
+            continue
+        created_local = _ist_from_utc_naive(order.created_at)
+        elapsed_minutes = max(0, int(((datetime.now(IST_TZ) - created_local).total_seconds() // 60) if created_local else 0))
+        prep_minutes.append(elapsed_minutes)
+        order_cards.append(
+            {
+                "id": order.id,
+                "pickup_no": _format_pickup_number(order),
+                "pickup_no_compact": _format_pickup_number(order, compact=True),
+                "display_code": order.display_code or _format_internal_order_code(order),
+                "table_name": order.table.name if order.table else "-",
+                "status": order.status,
+                "total_amount": round(float(order.total_amount or 0), 2),
+                "created_at": _format_ist(order.created_at, "%I:%M %p"),
+                "created_at_iso": created_local.isoformat() if created_local else "",
+                "elapsed_minutes": elapsed_minutes,
+                "expected_minutes": order_expected,
+                "items": station_items,
+            }
+        )
+    sop_library = [
+        {
+            "menu_item_id": recipe.menu_item_id,
+            "name": recipe.menu_item.name if recipe.menu_item else "Menu Item",
+            "prep_station": recipe.menu_item.prep_station if recipe.menu_item else station,
+            "sizes": _load_menu_item_size_variants(recipe.menu_item),
+            "sop": _serialize_recipe_sop(recipe),
+        }
+        for recipe in sorted(recipes, key=lambda r: (r.menu_item.name.lower() if r.menu_item else ""))
+    ]
+    avg_ticket_minutes = round(sum(prep_minutes) / len(prep_minutes), 1) if prep_minutes else 0
+    return render_template(
+        "cafe/kitchen_display.html",
+        orders=orders,
+        order_cards=order_cards,
+        station=station,
+        active_orders=len(order_cards),
+        avg_ticket_minutes=avg_ticket_minutes,
+        sop_library=sop_library,
+    )
 
 
 @bp.route("/barista")
@@ -2015,14 +2357,16 @@ def update_order_status(order_id):
     new_status = request.form["status"]
     if new_status not in ["open", "preparing", "ready", "served", "cancelled", "paid"]:
         flash("Invalid status.", "error")
-        return redirect(url_for("cafe.kitchen_display"))
+        next_url = request.form.get("next", "").strip() or request.args.get("next", "").strip()
+        return redirect(next_url or url_for("cafe.kitchen_display"))
     order.status = new_status
     db.session.commit()
     payload = _serialize_order(order)
     socketio.emit("order_updated", payload, namespace="/kitchen")
     socketio.emit("order_updated", payload, namespace="/table")
     flash("Order status updated.", "success")
-    return redirect(url_for("cafe.kitchen_display"))
+    next_url = request.form.get("next", "").strip() or request.args.get("next", "").strip()
+    return redirect(next_url or url_for("cafe.kitchen_display"))
 
 
 def _inventory_item_status(item: InventoryItem):
@@ -2268,6 +2612,16 @@ def inventory():
                 db.session.flush()
             recipe.yield_qty = _safe_float(request.form.get("yield_qty"), 1)
             recipe.yield_unit = (request.form.get("yield_unit") or "").strip() or None
+            recipe.prep_time_minutes = _safe_int(request.form.get("prep_time_minutes"), 0) or None
+            recipe.ingredients_note = (request.form.get("ingredients_note") or "").strip() or None
+            recipe.preparation_steps = (request.form.get("preparation_steps") or "").strip() or None
+            recipe.plating_notes = (request.form.get("plating_notes") or "").strip() or None
+            recipe.quality_checks = (request.form.get("quality_checks") or "").strip() or None
+            recipe.allergy_alerts = (request.form.get("allergy_alerts") or "").strip() or None
+            recipe.training_notes = (request.form.get("training_notes") or "").strip() or None
+            recipe.sop_photo_url = (request.form.get("sop_photo_url") or "").strip() or None
+            size_notes = _parse_recipe_size_notes_from_form()
+            recipe.size_sop_json = json.dumps(size_notes) if size_notes else None
             for old in list(recipe.ingredients):
                 db.session.delete(old)
             ingredient_ids = [int(v) for v in request.form.getlist("recipe_item_id") if str(v).isdigit()]
@@ -2285,7 +2639,7 @@ def inventory():
                     )
                 )
             db.session.commit()
-            flash("Recipe saved.", "success")
+            flash("Recipe and SOP saved.", "success")
             return redirect(url_for("cafe.inventory", section="recipes"))
 
         if action == "add_wastage":
@@ -2353,8 +2707,48 @@ def inventory():
     filtered_items = _inventory_filtered_items(items, inventory_search, inventory_area, inventory_category_filter, inventory_status_filter)
     purchases = InventoryPurchase.query.order_by(InventoryPurchase.purchase_date.desc(), InventoryPurchase.id.desc()).limit(80).all()
     wastage_rows = InventoryWastage.query.order_by(InventoryWastage.wastage_date.desc(), InventoryWastage.id.desc()).limit(120).all()
-    recipes = InventoryRecipe.query.order_by(InventoryRecipe.id.desc()).all()
+    recipes = (
+        InventoryRecipe.query.options(
+            joinedload(InventoryRecipe.menu_item),
+            joinedload(InventoryRecipe.ingredients).joinedload(InventoryRecipeItem.inventory_item),
+        )
+        .order_by(InventoryRecipe.id.desc())
+        .all()
+    )
     menu_items = MenuItem.query.filter_by(available=True, is_deleted=False).order_by(MenuItem.name.asc()).all()
+    menu_item_meta = {
+        item.id: {
+            "name": item.name,
+            "prep_station": item.prep_station,
+            "sizes": _load_menu_item_size_variants(item),
+        }
+        for item in menu_items
+    }
+    recipe_payload_map = {
+        recipe.menu_item_id: {
+            "yield_qty": round(float(recipe.yield_qty or 0), 3),
+            "yield_unit": recipe.yield_unit or "",
+            "prep_time_minutes": int(recipe.prep_time_minutes or 0),
+            "ingredients_note": recipe.ingredients_note or "",
+            "preparation_steps": recipe.preparation_steps or "",
+            "plating_notes": recipe.plating_notes or "",
+            "quality_checks": recipe.quality_checks or "",
+            "allergy_alerts": recipe.allergy_alerts or "",
+            "training_notes": recipe.training_notes or "",
+            "sop_photo_url": recipe.sop_photo_url or "",
+            "size_notes": _recipe_size_note_map(recipe),
+            "ingredient_ids": [int(ing.inventory_item_id) for ing in recipe.ingredients if ing.inventory_item_id],
+            "ingredients": {
+                int(ing.inventory_item_id): {
+                    "qty": round(float(ing.qty_per_menu or 0), 3),
+                    "unit": ing.unit or (ing.inventory_item.unit if ing.inventory_item else ""),
+                }
+                for ing in recipe.ingredients
+                if ing.inventory_item_id
+            },
+        }
+        for recipe in recipes
+    }
     edit_item_id = request.args.get("edit_item_id", type=int)
     selected_item = InventoryItem.query.get(edit_item_id) if edit_item_id else (filtered_items[0] if filtered_items else None)
     edit_vendor_id = request.args.get("edit_vendor_id", type=int)
@@ -2476,6 +2870,8 @@ def inventory():
         top_stock_value_items=top_stock_value_items,
         top_consumption_rows=top_consumption_rows,
         vendor_purchase_map=vendor_purchase_map,
+        menu_item_meta=menu_item_meta,
+        recipe_payload_map=recipe_payload_map,
     )
 
 
@@ -3450,6 +3846,7 @@ def staff():
         "attendance_calendar",
         "attendance_entry",
         "leave_requests",
+        "docs_review",
         "payroll_summary",
     }
     active_staff_section = (request.args.get("section") or "add_new_staff").strip().lower()
@@ -3708,6 +4105,13 @@ def staff():
         StaffDocument.verification_status.in_(["pending", "rejected"])
     ).count()
     pending_leave_count = StaffLeaveRequest.query.filter_by(status="pending").count()
+    pending_documents = (
+        StaffDocument.query.join(User, StaffDocument.user_id == User.id)
+        .options(joinedload(StaffDocument.user), joinedload(StaffDocument.uploaded_by))
+        .filter(StaffDocument.verification_status.in_(["pending", "rejected"]))
+        .order_by(StaffDocument.created_at.desc())
+        .all()
+    )
     for staff_user in staff_users:
         profile = staff_user.staff_profile
         month_rows = StaffAttendance.query.filter(
@@ -3761,6 +4165,7 @@ def staff():
         total_payroll_estimate=round(total_payroll_estimate, 2),
         today_attendance_count=len(today_attendance_rows),
         document_pending_count=doc_pending_count,
+        pending_documents=pending_documents,
         pending_leave_count=pending_leave_count,
     )
 
