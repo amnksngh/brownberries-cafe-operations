@@ -229,6 +229,7 @@
     {% if active_section == "attendance" %}
     <section class="panel">
       <h3>Attendance</h3>
+      <p class="muted">Use one tap only: check in when you arrive, check out when you leave. The system calculates late marks and attendance status automatically.</p>
       <form method="get" class="grid grid-4" style="margin-bottom:0.8rem;">
         <input type="hidden" name="section" value="attendance" />
         {% if can_admin_view %}<input type="hidden" name="user_id" value="{{ profile_user.id }}" />{% endif %}
@@ -241,13 +242,34 @@
       <div class="grid grid-4" style="margin-bottom:0.8rem;">
         <div class="flash success"><strong>Present:</strong> {{ attendance_summary.present_days }}</div>
         <div class="flash success"><strong>Half Days:</strong> {{ attendance_summary.half_days }}</div>
+        <div class="flash success"><strong>Short Attendance:</strong> {{ attendance_summary.short_days }}</div>
         <div class="flash success"><strong>Late Marks:</strong> {{ attendance_summary.late_marks }}</div>
         <div class="flash success"><strong>Worked Hours:</strong> {{ "%.2f"|format(attendance_summary.worked_hours or 0) }}</div>
         <div class="flash success"><strong>Leave:</strong> {{ attendance_summary.leave_days }}</div>
         <div class="flash success"><strong>Sick Leave:</strong> {{ attendance_summary.sick_days }}</div>
         <div class="flash success"><strong>Weekly Off:</strong> {{ attendance_summary.weekly_off_days }}</div>
-        <div class="flash success"><strong>Missed Checkout:</strong> {{ attendance_summary.missed_checkouts }}</div>
+        <div class="flash success"><strong>Pending Correction:</strong> {{ attendance_summary.pending_corrections }}</div>
+        <div class="flash success"><strong>Late Penalty:</strong> {{ "%.2f"|format(attendance_summary.late_penalty_days or 0) }} day(s)</div>
       </div>
+      <div class="grid grid-4" style="margin-bottom:0.8rem;">
+        <div class="flash success"><strong>Today:</strong> {{ attendance_status_label(today_attendance.status) if today_attendance else "Not Started" }}</div>
+        <div class="flash success"><strong>Check-In:</strong> {{ today_attendance.check_in_at.strftime("%I:%M:%S %p") if today_attendance and today_attendance.check_in_at else "-" }}</div>
+        <div class="flash success"><strong>Check-Out:</strong> {{ today_attendance.check_out_at.strftime("%I:%M:%S %p") if today_attendance and today_attendance.check_out_at else "-" }}</div>
+        <div class="flash success"><strong>Worked:</strong> {{ "%.2f"|format(worked_hours_for_row(today_attendance) or 0) }} hrs</div>
+      </div>
+      {% if not can_admin_view or profile_user.id == g.current_user.id %}
+      <form method="post" class="grid grid-4" style="margin-bottom:0.8rem;">
+        <input type="hidden" name="action" value="{{ next_attendance_action if next_attendance_action in ['check_in', 'check_out'] else 'check_in' }}" />
+        {% if next_attendance_action == "check_in" %}
+        <button type="submit">Check-In Now</button>
+        {% elif next_attendance_action == "check_out" %}
+        <button type="submit">Check-Out Now</button>
+        {% else %}
+        <button type="button" disabled>Today's Attendance Completed</button>
+        {% endif %}
+      </form>
+      {% endif %}
+      {% if can_admin_view %}
       <form method="post" class="grid grid-4">
         <input type="hidden" name="action" value="attendance_status" />
         <label>Date<input type="date" name="attendance_date" required /></label>
@@ -258,17 +280,12 @@
             {% endfor %}
           </select>
         </label>
+        <label>Check-In Time<input type="time" name="check_in_time" /></label>
+        <label>Check-Out Time<input type="time" name="check_out_time" /></label>
         <label>Notes<input name="notes" /></label>
-        <button type="submit">Save Attendance Status</button>
+        <button type="submit">Save Admin Override</button>
       </form>
-      <form method="post" class="grid grid-4">
-        <input type="hidden" name="action" value="check_in" />
-        <button type="submit">Check-In Now</button>
-      </form>
-      <form method="post" class="grid grid-4">
-        <input type="hidden" name="action" value="check_out" />
-        <button type="submit">Check-Out Now</button>
-      </form>
+      {% endif %}
       {% if profile_user.id == g.current_user.id %}
       <form method="post" class="grid grid-4" style="margin-top:0.8rem;">
         <input type="hidden" name="action" value="leave_request" />
@@ -308,8 +325,8 @@
           <tr>
             <td>{{ a.attendance_date }}</td>
             <td>{{ attendance_status_label(a.status) }}</td>
-            <td>{{ a.check_in_at.strftime("%H:%M:%S") if a.check_in_at else "-" }}</td>
-            <td>{{ a.check_out_at.strftime("%H:%M:%S") if a.check_out_at else "-" }}</td>
+            <td>{{ a.check_in_at.strftime("%I:%M:%S %p") if a.check_in_at else "-" }}</td>
+            <td>{{ a.check_out_at.strftime("%I:%M:%S %p") if a.check_out_at else "-" }}</td>
             <td>{{ "%.2f"|format(worked_hours_for_row(a) or 0) }}</td>
             <td>{% set flags = attendance_flags_for_row(a) %}{{ flags|join(", ") if flags else "-" }}</td>
             <td>{{ a.notes or "-" }}</td>

@@ -102,9 +102,8 @@
           <label class="size-row">
             <span>Serving Size</span>
             <select class="size-select">
-              <option value="" data-price="" selected>Choose...</option>
               {% for s in sizes %}
-              <option value="{{ s.size }}" data-price="{{ s.price }}">{{ s.size }} | ₹{{ "%.2f"|format(s.price) }}</option>
+              <option value="{{ s.size }}" data-price="{{ s.price }}" {% if loop.first %}selected{% endif %}>{{ s.size }} | ₹{{ "%.2f"|format(s.price) }}</option>
               {% endfor %}
             </select>
           </label>
@@ -682,18 +681,17 @@
       btn.addEventListener("click", () => {
         const card = btn.closest(".item-card");
         const qtyInput = card.querySelector(".qty-input");
-        const quantity = normalizeQty(qtyInput.value);
-        const menu_item_id = Number(btn.dataset.itemId);
-        const name = btn.dataset.itemName;
-        const defaultPrice = Number(btn.dataset.itemPrice);
-        const selectedSize = card.querySelector(".size-select");
-        const sizeLabel = selectedSize?.value || "";
-        if (selectedSize && !sizeLabel) {
-          alert("Please choose a serving size.");
-          return;
-        }
-        const sizePrice = selectedSize ? Number(selectedSize.selectedOptions[0]?.dataset?.price || defaultPrice) : defaultPrice;
-        const isParcel = !!card.querySelector(".parcel-checkbox")?.checked;
+      const quantity = normalizeQty(qtyInput.value);
+      const menu_item_id = Number(btn.dataset.itemId);
+      const name = btn.dataset.itemName;
+      const defaultPrice = Number(btn.dataset.itemPrice);
+      const selectedSize = card.querySelector(".size-select");
+      const fallbackOption = selectedSize?.options?.[0] || null;
+      const sizeLabel = selectedSize?.value || fallbackOption?.value || "";
+      const sizePrice = selectedSize
+        ? Number(selectedSize.selectedOptions[0]?.dataset?.price || fallbackOption?.dataset?.price || defaultPrice)
+        : defaultPrice;
+      const isParcel = !!card.querySelector(".parcel-checkbox")?.checked;
         const lineKey = `${menu_item_id}:${isParcel ? 1 : 0}:${sizeLabel || "default"}`;
         if (!cart[lineKey]) cart[lineKey] = { line_key: lineKey, menu_item_id, name, price: sizePrice, quantity: 0, is_parcel: isParcel, size_label: sizeLabel || null };
         cart[lineKey].quantity += quantity;

@@ -5,12 +5,12 @@
   <div class="kds-header">
     <div>
       <h2>{{ display_title }}</h2>
-      <p class="muted">Live queue with built-in SOP support for fast execution.</p>
+      <p class="muted">{% if kiosk_mode %}Kiosk mode with live sound alerts and direct item status controls.{% else %}Live queue with built-in SOP support for fast execution.{% endif %}</p>
     </div>
     <div class="kds-header-actions">
       <div class="kds-station-switch">
-        <a class="button-link {% if station == 'kitchen' %}active{% endif %}" href="{{ url_for('cafe.kitchen_display', station='kitchen') }}">Kitchen</a>
-        <a class="button-link {% if station == 'barista' %}active{% endif %}" href="{{ url_for('cafe.kitchen_display', station='barista') }}">Barista Counter</a>
+        <a class="button-link {% if station == 'kitchen' %}active{% endif %}" href="{{ kitchen_switch_url }}">Kitchen</a>
+        <a class="button-link {% if station == 'barista' %}active{% endif %}" href="{{ barista_switch_url }}">Barista Counter</a>
       </div>
       <label class="sound-volume-control">Alert Volume
         <input type="range" id="sound-volume" min="0" max="100" step="5" value="85" />
@@ -126,7 +126,9 @@
   });
   const station = "{{ station }}";
   const displayLabel = station === "barista" ? "Brewing" : "Preparing";
-  const currentPageUrl = {{ url_for('cafe.kitchen_display', station=station)|tojson }};
+  const currentPageUrl = {{ current_page_url|tojson }};
+  const statusUpdateUrlTemplate = {{ status_update_url_template|tojson }};
+  const kioskMode = {{ 'true' if kiosk_mode else 'false' }};
   const socketState = document.getElementById("socket-state");
   const soundVolumeInput = document.getElementById("sound-volume");
   const notifBell = document.getElementById("notif-bell");
@@ -367,22 +369,22 @@
           <p class="muted kds-ticket-ref">Ref: ${escapeHtml(card.display_code || card.id)}</p>
           <div class="kds-item-list">${itemRows}</div>
           <div class="k-actions kds-actions">
-            <form method="post" action="/cafe/orders/${card.id}/status" class="inline">
+            <form method="post" action="${statusUpdateUrlTemplate.replace('/0/status', `/${card.id}/status`)}" class="inline">
               <input type="hidden" name="next" value="${escapeHtml(currentPageUrl)}" />
               <input type="hidden" name="status" value="preparing" />
               <button type="submit">${displayLabel}</button>
             </form>
-            <form method="post" action="/cafe/orders/${card.id}/status" class="inline">
+            <form method="post" action="${statusUpdateUrlTemplate.replace('/0/status', `/${card.id}/status`)}" class="inline">
               <input type="hidden" name="next" value="${escapeHtml(currentPageUrl)}" />
               <input type="hidden" name="status" value="ready" />
               <button type="submit">Ready</button>
             </form>
-            <form method="post" action="/cafe/orders/${card.id}/status" class="inline">
+            <form method="post" action="${statusUpdateUrlTemplate.replace('/0/status', `/${card.id}/status`)}" class="inline">
               <input type="hidden" name="next" value="${escapeHtml(currentPageUrl)}" />
               <input type="hidden" name="status" value="served" />
               <button type="submit">Served</button>
             </form>
-            <form method="post" action="/cafe/orders/${card.id}/status" class="inline">
+            <form method="post" action="${statusUpdateUrlTemplate.replace('/0/status', `/${card.id}/status`)}" class="inline">
               <input type="hidden" name="next" value="${escapeHtml(currentPageUrl)}" />
               <input type="hidden" name="status" value="cancelled" />
               <button type="submit" class="danger">Cancel</button>
@@ -659,6 +661,11 @@
   renderSopLibrary();
   refreshCurrentTime();
   window.setInterval(refreshCurrentTime, 30000);
+  if (kioskMode) {
+    window.setTimeout(() => enableSound(), 300);
+    window.setTimeout(() => enableSound(), 1200);
+    window.setTimeout(() => enableSound(), 2600);
+  }
 
   if (trainingToggle?.checked && orderCards.length && orderCards[0].items && orderCards[0].items.length) {
     const card = orderCards[0];

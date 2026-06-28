@@ -50,6 +50,29 @@
 </section>
 
 <section class="panel">
+  <h3>Kitchen / Barista Kiosk URL</h3>
+  <p class="muted">Use this for Windows kiosk browsers so the display opens without staff login and only shows kitchen or barista screens.</p>
+  <form method="post" action="{{ url_for('cafe.update_kiosk_settings') }}" class="grid grid-4">
+    <label class="full">Kiosk Access Key
+      <input name="kiosk_token" value="{{ kiosk_token or '' }}" placeholder="Leave blank to auto-generate a secure key" />
+    </label>
+    <button type="submit">Save / Generate Kiosk URL</button>
+  </form>
+  {% if kiosk_token %}
+  <div class="grid grid-2" style="margin-top:0.75rem;">
+    <div class="flash success">
+      <strong>Kitchen Kiosk URL</strong><br />
+      <a href="{{ kiosk_kitchen_url }}" target="_blank" rel="noopener">{{ kiosk_kitchen_url }}</a>
+    </div>
+    <div class="flash success">
+      <strong>Barista Kiosk URL</strong><br />
+      <a href="{{ kiosk_barista_url }}" target="_blank" rel="noopener">{{ kiosk_barista_url }}</a>
+    </div>
+  </div>
+  {% endif %}
+</section>
+
+<section class="panel">
   <h3>Public Notification Bar</h3>
   <form method="post" action="{{ url_for('cafe.update_public_notice') }}" class="grid grid-4">
     <label class="full">Notice Text

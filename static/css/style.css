@@ -1920,6 +1920,7 @@ th {
   width: 100%;
   border: 1px solid rgba(111, 74, 53, 0.14);
   background: #fffdfa;
+  color: var(--text);
   border-radius: 10px;
   padding: 0.72rem 0.8rem;
   display: flex;
@@ -1938,6 +1939,14 @@ th {
 .kds-item-main {
   display: grid;
   gap: 0.18rem;
+}
+
+.kds-item-main strong {
+  display: block;
+  color: #4a2c1d;
+  font-size: 0.98rem;
+  line-height: 1.22;
+  font-weight: 700;
 }
 
 .kds-item-main span,

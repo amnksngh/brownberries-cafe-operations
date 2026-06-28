@@ -12,6 +12,19 @@ from sqlalchemy.orm import joinedload
 from werkzeug.security import check_password_hash, generate_password_hash
 from werkzeug.utils import secure_filename
 
+from .attendance_logic import (
+    ATTENDANCE_STATUS_LABELS,
+    ATTENDANCE_STATUS_OPTIONS,
+    SELF_LEAVE_TYPE_OPTIONS,
+    attendance_datetime_for,
+    attendance_flags_for_row,
+    attendance_pay_fraction,
+    attendance_status_label,
+    build_attendance_summary,
+    late_penalty_days,
+    refresh_attendance_row,
+    worked_hours_for_row,
+)
 from .auth_helpers import login_required, roles_required
 from .extensions import socketio
 from .extensions import db
@@ -38,37 +51,6 @@ from .models import (
 bp = Blueprint("main", __name__)
 PROTECTED_ADMIN_EMAIL = "admin@brownberries.local"
 PROTECTED_MENU_CATEGORY_NAMES = {"other", "utility"}
-ATTENDANCE_STATUS_LABELS = {
-    "present_all_day": "Present All Day",
-    "first_half": "First Half",
-    "second_half": "Second Half",
-    "on_leave": "On Leave",
-    "sick_leave": "Sick Leave",
-    "weekly_off": "Weekly Off",
-    "late_entry": "Late Entry",
-    "early_exit": "Early Exit",
-    "missed_checkout": "Missed Checkout",
-    "absent": "Absent",
-}
-ATTENDANCE_STATUS_OPTIONS = [
-    ("present_all_day", "Present All Day"),
-    ("first_half", "First Half"),
-    ("second_half", "Second Half"),
-    ("on_leave", "On Leave"),
-    ("sick_leave", "Sick Leave"),
-    ("weekly_off", "Weekly Off"),
-    ("late_entry", "Late Entry"),
-    ("early_exit", "Early Exit"),
-    ("missed_checkout", "Missed Checkout"),
-    ("absent", "Absent"),
-]
-LEAVE_TYPE_OPTIONS = [
-    ("casual", "Casual"),
-    ("sick", "Sick"),
-    ("planned", "Planned"),
-    ("earned", "Earned"),
-    ("emergency", "Emergency"),
-]
 IST_TZ = ZoneInfo("Asia/Kolkata")
 UTC_TZ = ZoneInfo("UTC")
 
@@ -115,82 +97,6 @@ def _menu_item_category_ids(item: MenuItem) -> list[int]:
     return list(dict.fromkeys(parsed))
 
 
-def _attendance_status_label(status: str | None) -> str:
-    if not status:
-        return "-"
-    return ATTENDANCE_STATUS_LABELS.get(status, status.replace("_", " ").title())
-
-
-def _worked_hours_for_row(row: StaffAttendance | None) -> float:
-    if not row or not row.check_in_at or not row.check_out_at:
-        return 0.0
-    seconds = max(0.0, (row.check_out_at - row.check_in_at).total_seconds())
-    return round(seconds / 3600, 2)
-
-
-def _attendance_flags_for_row(row: StaffAttendance | None) -> list[str]:
-    if not row:
-        return []
-    flags = []
-    worked_hours = _worked_hours_for_row(row)
-    if row.check_in_at and row.check_in_at.time() > datetime.strptime("09:10", "%H:%M").time():
-        flags.append("Late")
-    if row.check_out_at and row.check_out_at.time() < datetime.strptime("18:00", "%H:%M").time():
-        flags.append("Early Exit")
-    if row.check_in_at and not row.check_out_at:
-        flags.append("Missed Checkout")
-    if worked_hours >= 8:
-        flags.append("Full Shift")
-    elif worked_hours >= 4.5:
-        flags.append("Half Shift")
-    if row.manager_override:
-        flags.append("Manager Override")
-    return flags
-
-
-def _attendance_pay_fraction(status: str | None) -> float:
-    if status in ["present_all_day", "weekly_off", "late_entry", "early_exit", "on_leave"]:
-        return 1.0
-    if status in ["first_half", "second_half"]:
-        return 0.5
-    return 0.0
-
-
-def _build_attendance_summary(attendance_logs: list[StaffAttendance]):
-    summary = {
-        "present_days": 0,
-        "half_days": 0,
-        "leave_days": 0,
-        "sick_days": 0,
-        "weekly_off_days": 0,
-        "late_marks": 0,
-        "early_exits": 0,
-        "missed_checkouts": 0,
-        "worked_hours": 0.0,
-    }
-    for row in attendance_logs:
-        status = row.status or ""
-        if status in ["present_all_day", "late_entry", "early_exit"]:
-            summary["present_days"] += 1
-        elif status in ["first_half", "second_half"]:
-            summary["half_days"] += 1
-        elif status == "on_leave":
-            summary["leave_days"] += 1
-        elif status == "sick_leave":
-            summary["sick_days"] += 1
-        elif status == "weekly_off":
-            summary["weekly_off_days"] += 1
-        flags = _attendance_flags_for_row(row)
-        if "Late" in flags:
-            summary["late_marks"] += 1
-        if "Early Exit" in flags:
-            summary["early_exits"] += 1
-        if "Missed Checkout" in flags:
-            summary["missed_checkouts"] += 1
-        summary["worked_hours"] = round(summary["worked_hours"] + _worked_hours_for_row(row), 2)
-    return summary
-
-
 def _build_salary_summary(profile, attendance_logs: list[StaffAttendance], ref_date: date | None = None):
     ref_date = ref_date or date.today()
     days_in_month = calendar.monthrange(ref_date.year, ref_date.month)[1]
@@ -199,7 +105,7 @@ def _build_salary_summary(profile, attendance_logs: list[StaffAttendance], ref_d
     payable_days = 0.0
     unpaid_days = 0.0
     for row in attendance_logs:
-        fraction = _attendance_pay_fraction(row.status)
+        fraction = attendance_pay_fraction(row.status)
         payable_days += fraction
         unpaid_days += max(0.0, 1.0 - fraction)
     estimated_pay = round(per_day_salary * payable_days, 2)
@@ -779,22 +685,30 @@ def profile():
             return redirect(url_for("main.profile", section="personal"))
 
         if action == "attendance_status":
-            if current_user.id != user.id and not can_admin_view:
+            if not can_admin_view:
                 return redirect(url_for("main.profile"))
             selected_date = date.fromisoformat(request.form["attendance_date"]) if request.form.get("attendance_date") else date.today()
-            status = request.form.get("status", "present_all_day")
-            if status not in dict(ATTENDANCE_STATUS_OPTIONS):
-                status = "present_all_day"
+            status = (request.form.get("status") or "").strip()
+            valid_statuses = {value for value, _ in ATTENDANCE_STATUS_OPTIONS if value}
+            if status and status not in valid_statuses:
+                status = ""
             notes = request.form.get("notes", "").strip() or None
+            check_in_time = attendance_datetime_for(selected_date, request.form.get("check_in_time"))
+            check_out_time = attendance_datetime_for(selected_date, request.form.get("check_out_time"))
+            if check_in_time and check_out_time and check_out_time < check_in_time:
+                flash("Check-out time cannot be before check-in time.", "error")
+                return redirect(url_for("main.profile", section="attendance", user_id=user.id if can_admin_view else None))
             row = StaffAttendance.query.filter_by(user_id=user.id, attendance_date=selected_date).first()
             if not row:
                 row = StaffAttendance(user_id=user.id, attendance_date=selected_date)
                 db.session.add(row)
-            row.status = status
+            row.check_in_at = check_in_time
+            row.check_out_at = check_out_time
             row.notes = notes
-            row.manager_override = bool(can_admin_view and current_user.id != user.id)
+            row.manager_override = True
+            refresh_attendance_row(row, manual_status=status)
             db.session.commit()
-            flash("Attendance status saved.", "success")
+            flash("Attendance override saved.", "success")
             return redirect(url_for("main.profile", section="attendance", user_id=user.id if can_admin_view else None))
 
         if action == "check_in":
@@ -802,11 +716,19 @@ def profile():
                 return redirect(url_for("main.profile"))
             today = date.today()
             row = StaffAttendance.query.filter_by(user_id=user.id, attendance_date=today).first()
+            if row and row.check_in_at and not row.check_out_at:
+                flash("You are already checked in for today.", "error")
+                return redirect(url_for("main.profile", section="attendance"))
+            if row and row.check_in_at and row.check_out_at:
+                flash("Today's attendance is already completed. Ask admin to correct it if needed.", "error")
+                return redirect(url_for("main.profile", section="attendance"))
             if not row:
-                row = StaffAttendance(user_id=user.id, attendance_date=today, status="present_all_day")
+                row = StaffAttendance(user_id=user.id, attendance_date=today)
                 db.session.add(row)
             row.check_in_at = datetime.now()
+            row.check_out_at = None
             row.manager_override = False
+            refresh_attendance_row(row)
             db.session.commit()
             flash("Check-in recorded.", "success")
             return redirect(url_for("main.profile", section="attendance"))
@@ -819,9 +741,14 @@ def profile():
             if not row:
                 flash("Please check-in first.", "error")
                 return redirect(url_for("main.profile", section="attendance"))
+            if not row.check_in_at:
+                flash("Please check-in first.", "error")
+                return redirect(url_for("main.profile", section="attendance"))
+            if row.check_out_at:
+                flash("You are already checked out for today.", "error")
+                return redirect(url_for("main.profile", section="attendance"))
             row.check_out_at = datetime.now()
-            if not row.status:
-                row.status = "present_all_day"
+            refresh_attendance_row(row)
             db.session.commit()
             flash("Check-out recorded.", "success")
             return redirect(url_for("main.profile", section="attendance"))
@@ -940,7 +867,16 @@ def profile():
         .order_by(StaffAttendance.attendance_date.desc())
         .all()
     )
-    attendance_summary = _build_attendance_summary(month_attendance_logs)
+    attendance_rows_to_refresh = {row.id: row for row in attendance_logs + month_attendance_logs if row.id}
+    attendance_changed = False
+    for row in attendance_rows_to_refresh.values():
+        before = row.status
+        refresh_attendance_row(row, manual_status=before if (row.manager_override and not (row.check_in_at or row.check_out_at)) else None)
+        if row.status != before:
+            attendance_changed = True
+    if attendance_changed:
+        db.session.commit()
+    attendance_summary = build_attendance_summary(month_attendance_logs)
     salary_summary = _build_salary_summary(profile, month_attendance_logs, month_start)
     receipts = (
         CafeOrder.query.filter_by(ordered_by_user_id=user.id, status="paid")
@@ -985,6 +921,12 @@ def profile():
         .limit(40)
         .all()
     )
+    today_attendance = next((row for row in attendance_logs if row.attendance_date == date.today()), None)
+    next_attendance_action = "completed"
+    if not today_attendance or not today_attendance.check_in_at:
+        next_attendance_action = "check_in"
+    elif today_attendance.check_in_at and not today_attendance.check_out_at:
+        next_attendance_action = "check_out"
     return render_template(
         "profile.html",
         profile_user=user,
@@ -1003,10 +945,13 @@ def profile():
         salary_summary=salary_summary,
         leave_logs=leave_logs,
         attendance_status_options=ATTENDANCE_STATUS_OPTIONS,
-        leave_type_options=LEAVE_TYPE_OPTIONS,
-        attendance_status_label=_attendance_status_label,
-        attendance_flags_for_row=_attendance_flags_for_row,
-        worked_hours_for_row=_worked_hours_for_row,
+        leave_type_options=SELF_LEAVE_TYPE_OPTIONS,
+        attendance_status_label=attendance_status_label,
+        attendance_flags_for_row=attendance_flags_for_row,
+        worked_hours_for_row=worked_hours_for_row,
+        today_attendance=today_attendance,
+        next_attendance_action=next_attendance_action,
+        late_penalty_days=late_penalty_days,
         active_section=active_section,
         summary_month=summary_month,
         summary_year=summary_year,

@@ -34,6 +34,7 @@ def load_deployment_config(instance_path: str) -> dict:
         "SMS_ALLOW_INSECURE_SSL": "SMS_ALLOW_INSECURE_SSL",
         "QR_ORDER_CUTOFF_TIME": "QR_ORDER_CUTOFF_TIME",
         "STAFF_ORDER_CUTOFF_TIME": "STAFF_ORDER_CUTOFF_TIME",
+        "KDS_KIOSK_TOKEN": "KDS_KIOSK_TOKEN",
     }
     for key, env_name in env_map.items():
         val = os.getenv(env_name, "").strip()

@@ -81,9 +81,8 @@
         <label class="size-row">
           <span>Serving Size</span>
           <select class="size-select">
-            <option value="" data-price="" selected>Choose...</option>
             {% for s in sizes %}
-            <option value="{{ s.size }}" data-price="{{ s.price }}">{{ s.size }} | ₹{{ "%.2f"|format(s.price) }}</option>
+            <option value="{{ s.size }}" data-price="{{ s.price }}" {% if loop.first %}selected{% endif %}>{{ s.size }} | ₹{{ "%.2f"|format(s.price) }}</option>
             {% endfor %}
           </select>
         </label>
@@ -360,12 +359,11 @@
       const name = btn.dataset.itemName;
       const defaultPrice = Number(btn.dataset.itemPrice);
       const selectedSize = card.querySelector(".size-select");
-      const sizeLabel = selectedSize?.value || "";
-      if (selectedSize && !sizeLabel) {
-        alert("Please choose a serving size.");
-        return;
-      }
-      const sizePrice = selectedSize ? Number(selectedSize.selectedOptions[0]?.dataset?.price || defaultPrice) : defaultPrice;
+      const fallbackOption = selectedSize?.options?.[0] || null;
+      const sizeLabel = selectedSize?.value || fallbackOption?.value || "";
+      const sizePrice = selectedSize
+        ? Number(selectedSize.selectedOptions[0]?.dataset?.price || fallbackOption?.dataset?.price || defaultPrice)
+        : defaultPrice;
       const isParcel = !!card.querySelector(".parcel-checkbox")?.checked;
       const lineKey = `${menu_item_id}:${isParcel ? 1 : 0}:${sizeLabel || "default"}`;
       if (!cart[lineKey]) {

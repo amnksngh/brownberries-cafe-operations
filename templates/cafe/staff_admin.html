@@ -238,7 +238,7 @@
         <label>Year<input type="number" min="2000" max="2100" name="attendance_year" value="{{ attendance_year }}" /></label>
         <button type="submit">View Calendar</button>
       </form>
-      <p class="muted">Present = green, Half Day = yellow, Absent = red, On Leave = blue.</p>
+      <p class="muted">Present = green, Half Day = yellow, Short Attendance = amber, Absent = red, On Leave = blue, Pending Correction = soft brown.</p>
       <div class="attendance-calendar">
         <div class="cal-head">Mon</div><div class="cal-head">Tue</div><div class="cal-head">Wed</div><div class="cal-head">Thu</div><div class="cal-head">Fri</div><div class="cal-head">Sat</div><div class="cal-head">Sun</div>
         {% for week in attendance_month_rows %}
@@ -247,7 +247,7 @@
             <div class="cal-cell empty"></div>
             {% else %}
             {% set st = selected_attendance_map.get(day) %}
-            <div class="cal-cell"><span class="day-dot {% if st in ['present','present_all_day'] %}st-present{% elif st in ['half-day','first_half','second_half'] %}st-half{% elif st == 'absent' %}st-absent{% elif st in ['on-leave','on_leave'] %}st-leave{% endif %}">{{ day }}</span></div>
+            <div class="cal-cell"><span class="day-dot {% if st in ['present','present_all_day'] %}st-present{% elif st in ['half-day','first_half','second_half'] %}st-half{% elif st == 'short_attendance' %}st-half{% elif st == 'absent' %}st-absent{% elif st in ['on-leave','on_leave'] %}st-leave{% elif st in ['pending_correction', 'missed_checkout'] %}st-leave{% endif %}">{{ day }}</span></div>
             {% endif %}
           {% endfor %}
         {% endfor %}
@@ -261,6 +261,7 @@
     {% if active_staff_section == "attendance_entry" %}
     <section class="panel">
       <h3>Attendance Entry</h3>
+      <p class="muted">Staff should normally use one-tap check-in and check-out from their own profile. Use this section for admin or manager override only.</p>
       <form method="post" class="grid grid-4">
         <input type="hidden" name="action" value="attendance_for_user" />
         <label>Staff
@@ -278,8 +279,10 @@
             {% endfor %}
           </select>
         </label>
+        <label>Check-In Time<input type="time" name="check_in_time" /></label>
+        <label>Check-Out Time<input type="time" name="check_out_time" /></label>
         <label>Notes<input name="notes" /></label>
-        <button type="submit">Save Attendance</button>
+        <button type="submit">Save Override</button>
       </form>
     </section>
     {% endif %}

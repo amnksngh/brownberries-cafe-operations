@@ -2,7 +2,7 @@
 {% block content %}
 <section class="panel">
   <h2>My Staff Portal</h2>
-  <p class="muted">Log attendance, submit leave requests, and view your own staff information.</p>
+  <p class="muted">Check in when you arrive, check out when you leave, and let the system calculate your attendance automatically.</p>
 </section>
 
 <section class="split">
@@ -28,21 +28,22 @@
   </article>
 
   <article class="panel">
-    <h3>Mark Attendance</h3>
+    <h3>Today's Attendance</h3>
+    <div class="grid grid-4" style="margin-bottom:0.8rem;">
+      <div class="flash success"><strong>Status:</strong> {{ attendance_status_label(today_attendance.status) if today_attendance else "Not Started" }}</div>
+      <div class="flash success"><strong>Check-In:</strong> {{ today_attendance.check_in_at.strftime("%I:%M:%S %p") if today_attendance and today_attendance.check_in_at else "-" }}</div>
+      <div class="flash success"><strong>Check-Out:</strong> {{ today_attendance.check_out_at.strftime("%I:%M:%S %p") if today_attendance and today_attendance.check_out_at else "-" }}</div>
+      <div class="flash success"><strong>Worked:</strong> {{ "%.2f"|format(worked_hours_for_row(today_attendance) or 0) }} hrs</div>
+    </div>
     <form method="post" class="grid">
-      <input type="hidden" name="action" value="attendance" />
-      <label>Date<input type="date" name="attendance_date" required /></label>
-      <label>Status
-        <select name="status">
-          <option value="present_all_day">Present All Day</option>
-          <option value="first_half">First Half</option>
-          <option value="second_half">Second Half</option>
-          <option value="absent">Absent</option>
-          <option value="on_leave">On Leave</option>
-        </select>
-      </label>
-      <label>Notes<input name="notes" /></label>
-      <button type="submit">Submit Attendance</button>
+      <input type="hidden" name="action" value="{{ next_attendance_action if next_attendance_action in ['check_in', 'check_out'] else 'check_in' }}" />
+      {% if next_attendance_action == "check_in" %}
+      <button type="submit">Check-In Now</button>
+      {% elif next_attendance_action == "check_out" %}
+      <button type="submit">Check-Out Now</button>
+      {% else %}
+      <button type="button" disabled>Today's Attendance Completed</button>
+      {% endif %}
     </form>
   </article>
 </section>
@@ -50,15 +51,15 @@
 <section class="split">
   <article class="panel">
     <h3>Apply Leave</h3>
-    <form method="post" class="grid">
-      <input type="hidden" name="action" value="leave" />
-      <label>Leave Type
-        <select name="leave_type">
-          <option value="casual">Casual</option>
-          <option value="sick">Sick</option>
-          <option value="planned">Planned</option>
-        </select>
-      </label>
+      <form method="post" class="grid">
+        <input type="hidden" name="action" value="leave" />
+        <label>Leave Type
+          <select name="leave_type">
+            {% for value, label in leave_type_options %}
+            <option value="{{ value }}">{{ label }}</option>
+            {% endfor %}
+          </select>
+        </label>
       <label>Start Date<input type="date" name="start_date" required /></label>
       <label>End Date<input type="date" name="end_date" required /></label>
       <label>Reason<input name="reason" /></label>
@@ -103,20 +104,30 @@
 
 <section class="panel">
   <h3>My Attendance History</h3>
+  <div class="grid grid-4" style="margin-bottom:0.8rem;">
+    <div class="flash success"><strong>Present:</strong> {{ attendance_summary.present_days }}</div>
+    <div class="flash success"><strong>Half Days:</strong> {{ attendance_summary.half_days }}</div>
+    <div class="flash success"><strong>Short Attendance:</strong> {{ attendance_summary.short_days }}</div>
+    <div class="flash success"><strong>Late Marks:</strong> {{ attendance_summary.late_marks }}</div>
+  </div>
   <div style="overflow:auto">
     <table>
       <thead>
-        <tr><th>Date</th><th>Status</th><th>Notes</th></tr>
+        <tr><th>Date</th><th>Status</th><th>Check-In</th><th>Check-Out</th><th>Worked</th><th>Flags</th><th>Notes</th></tr>
       </thead>
       <tbody>
         {% for log in attendance_logs %}
         <tr>
           <td>{{ log.attendance_date }}</td>
-          <td>{{ log.status.replace("_", " ").title() if log.status else "-" }}</td>
+          <td>{{ attendance_status_label(log.status) }}</td>
+          <td>{{ log.check_in_at.strftime("%I:%M:%S %p") if log.check_in_at else "-" }}</td>
+          <td>{{ log.check_out_at.strftime("%I:%M:%S %p") if log.check_out_at else "-" }}</td>
+          <td>{{ "%.2f"|format(worked_hours_for_row(log) or 0) }} hrs</td>
+          <td>{% set flags = attendance_flags_for_row(log) %}{{ flags|join(", ") if flags else "-" }}</td>
           <td>{{ log.notes or "-" }}</td>
         </tr>
         {% else %}
-        <tr><td colspan="3">No attendance records yet.</td></tr>
+        <tr><td colspan="7">No attendance records yet.</td></tr>
         {% endfor %}
       </tbody>
     </table>

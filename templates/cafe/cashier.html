@@ -124,8 +124,9 @@
 <section class="panel">
   <h3>Table Settlement</h3>
   <p><strong>Approved Orders Ready To Settle:</strong> ₹{{ "%.2f"|format(table_settle_total) }}</p>
-  <form method="post" action="{{ url_for('cafe.clear_table_orders', table_id=selected_table.id) }}" class="grid">
+  <form method="post" action="{{ url_for('cafe.clear_table_orders', table_id=selected_table.id) }}" class="grid" id="table-settlement-form">
     <input type="hidden" name="next" value="{{ url_for('cafe.cashier', tab='running', table_id=selected_table.id) }}" />
+    <input type="hidden" name="payment_row_count" id="payment-row-count" value="1" />
     <table>
       <thead>
         <tr><th>Settle</th><th>Order</th><th>Status</th><th>Total</th><th>State</th></tr>
@@ -145,60 +146,47 @@
         {% endfor %}
       </tbody>
     </table>
-    <div class="grid grid-4">
-      <label>Payment 1
-        <select name="payment_type_1">
-          <option value="Cash">Cash</option>
-          <option value="QR">QR</option>
-          <option value="Card Tap">Card Tap</option>
-          <option value="Card Dip">Card Dip</option>
-          <option value="UPI">UPI</option>
-        </select>
-      </label>
-      <label>Amount 1 <input name="payment_amount_1" type="number" step="0.01" min="0" /></label>
-      <label>Reference 1 <input name="payment_reference_1" placeholder="Txn / note" /></label>
-    </div>
-    <div class="grid grid-4">
-      <label>Payment 2
-        <select name="payment_type_2">
-          <option value="">Select</option>
-          <option value="Cash">Cash</option>
-          <option value="QR">QR</option>
-          <option value="Card Tap">Card Tap</option>
-          <option value="Card Dip">Card Dip</option>
-          <option value="UPI">UPI</option>
-        </select>
-      </label>
-      <label>Amount 2 <input name="payment_amount_2" type="number" step="0.01" min="0" /></label>
-      <label>Reference 2 <input name="payment_reference_2" placeholder="Txn / note" /></label>
-    </div>
-    <div class="grid grid-4">
-      <label>Payment 3
-        <select name="payment_type_3">
-          <option value="">Select</option>
-          <option value="Cash">Cash</option>
-          <option value="QR">QR</option>
-          <option value="Card Tap">Card Tap</option>
-          <option value="Card Dip">Card Dip</option>
-          <option value="UPI">UPI</option>
-        </select>
-      </label>
-      <label>Amount 3 <input name="payment_amount_3" type="number" step="0.01" min="0" /></label>
-      <label>Reference 3 <input name="payment_reference_3" placeholder="Txn / note" /></label>
-    </div>
-    <div class="grid grid-4">
-      <label>Payment 4
-        <select name="payment_type_4">
-          <option value="">Select</option>
-          <option value="Cash">Cash</option>
-          <option value="QR">QR</option>
-          <option value="Card Tap">Card Tap</option>
-          <option value="Card Dip">Card Dip</option>
-          <option value="UPI">UPI</option>
-        </select>
-      </label>
-      <label>Amount 4 <input name="payment_amount_4" type="number" step="0.01" min="0" /></label>
-      <label>Reference 4 <input name="payment_reference_4" placeholder="Txn / note" /></label>
+    <div class="cashier-payment-builder">
+      <div id="payment-rows" class="grid">
+        <div class="cashier-payment-row grid grid-4" data-row-index="1">
+          <label>Payment Method
+            <select name="payment_type_1" class="payment-type-input">
+              <option value="QR" selected>QR</option>
+              <option value="Cash">Cash</option>
+              <option value="Card Tap">Card Tap</option>
+              <option value="Card Dip">Card Dip</option>
+              <option value="UPI">UPI</option>
+            </select>
+          </label>
+          <label>Amount <input name="payment_amount_1" type="number" step="0.01" min="0" class="payment-amount-input" value="{{ '%.2f'|format(table_settle_total or 0) }}" /></label>
+          <label>Reference <input name="payment_reference_1" placeholder="Txn / note" /></label>
+          <div class="cashier-payment-row-actions">
+            <button type="button" class="button-link payment-remove-btn hidden">Remove</button>
+          </div>
+        </div>
+      </div>
+      <div class="cashier-payment-builder-actions">
+        <button type="button" id="add-payment-row" class="button-link">Add Payment Method</button>
+        <div class="muted" id="payment-total-hint">Payment total: ₹{{ "%.2f"|format(table_settle_total or 0) }}</div>
+      </div>
+      <template id="payment-row-template">
+        <div class="cashier-payment-row grid grid-4" data-row-index="__INDEX__">
+          <label>Payment Method
+            <select name="payment_type___INDEX__" class="payment-type-input">
+              <option value="QR">QR</option>
+              <option value="Cash">Cash</option>
+              <option value="Card Tap">Card Tap</option>
+              <option value="Card Dip">Card Dip</option>
+              <option value="UPI">UPI</option>
+            </select>
+          </label>
+          <label>Amount <input name="payment_amount___INDEX__" type="number" step="0.01" min="0" class="payment-amount-input" value="" /></label>
+          <label>Reference <input name="payment_reference___INDEX__" placeholder="Txn / note" /></label>
+          <div class="cashier-payment-row-actions">
+            <button type="button" class="button-link payment-remove-btn">Remove</button>
+          </div>
+        </div>
+      </template>
     </div>
     <button type="submit">Settle Selected Orders For Table</button>
   </form>
@@ -366,6 +354,72 @@
   function bindCashierDynamicHandlers(root = document) {
     bindOrderModalButtons(root);
     bindDecisionForms(root);
+    initSettlementBuilder(root);
+  }
+
+  function renumberPaymentRows() {
+    const paymentRowsEl = document.getElementById("payment-rows");
+    const paymentRowCountInput = document.getElementById("payment-row-count");
+    if (!paymentRowsEl || !paymentRowCountInput) return;
+    const rows = [...paymentRowsEl.querySelectorAll(".cashier-payment-row")];
+    rows.forEach((row, idx) => {
+      const nextIndex = idx + 1;
+      row.dataset.rowIndex = String(nextIndex);
+      row.querySelectorAll("select, input").forEach((field) => {
+        if (!field.name) return;
+        field.name = field.name.replace(/_(\d+)$/, `_${nextIndex}`);
+      });
+      const removeBtn = row.querySelector(".payment-remove-btn");
+      if (removeBtn) removeBtn.classList.toggle("hidden", rows.length === 1);
+    });
+    paymentRowCountInput.value = String(rows.length || 1);
+  }
+
+  function updatePaymentTotalHint() {
+    const paymentRowsEl = document.getElementById("payment-rows");
+    const paymentTotalHint = document.getElementById("payment-total-hint");
+    if (!paymentRowsEl || !paymentTotalHint) return;
+    const total = [...paymentRowsEl.querySelectorAll(".payment-amount-input")]
+      .reduce((sum, input) => sum + Number(input.value || 0), 0);
+    paymentTotalHint.textContent = `Payment total: ₹${total.toFixed(2)}`;
+  }
+
+  function bindPaymentRow(row) {
+    if (!row) return;
+    row.querySelector(".payment-remove-btn")?.addEventListener("click", () => {
+      row.remove();
+      renumberPaymentRows();
+      updatePaymentTotalHint();
+    });
+    row.querySelector(".payment-amount-input")?.addEventListener("input", updatePaymentTotalHint);
+  }
+
+  function addPaymentRow() {
+    const paymentRowsEl = document.getElementById("payment-rows");
+    const paymentRowTemplate = document.getElementById("payment-row-template");
+    if (!paymentRowsEl || !paymentRowTemplate) return;
+    const nextIndex = paymentRowsEl.querySelectorAll(".cashier-payment-row").length + 1;
+    const wrapper = document.createElement("div");
+    wrapper.innerHTML = paymentRowTemplate.innerHTML.replaceAll("__INDEX__", String(nextIndex)).trim();
+    const row = wrapper.firstElementChild;
+    if (!row) return;
+    paymentRowsEl.appendChild(row);
+    bindPaymentRow(row);
+    renumberPaymentRows();
+    updatePaymentTotalHint();
+  }
+
+  function initSettlementBuilder(root = document) {
+    const paymentRowsEl = root.getElementById ? root.getElementById("payment-rows") : document.getElementById("payment-rows");
+    const addPaymentRowBtn = root.getElementById ? root.getElementById("add-payment-row") : document.getElementById("add-payment-row");
+    if (!paymentRowsEl) return;
+    paymentRowsEl.querySelectorAll(".cashier-payment-row").forEach(bindPaymentRow);
+    renumberPaymentRows();
+    updatePaymentTotalHint();
+    if (addPaymentRowBtn && !addPaymentRowBtn.dataset.bound) {
+      addPaymentRowBtn.dataset.bound = "1";
+      addPaymentRowBtn.addEventListener("click", addPaymentRow);
+    }
   }
 
   function refreshCashierRunningView() {

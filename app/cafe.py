@@ -4,6 +4,7 @@ import math
 import os
 import base64
 import ssl
+import secrets
 from datetime import date, datetime, timedelta, time
 from io import BytesIO
 from urllib.parse import urlencode
@@ -19,6 +20,17 @@ from sqlalchemy.orm import joinedload
 from werkzeug.security import check_password_hash, generate_password_hash
 from werkzeug.utils import secure_filename
 
+from .attendance_logic import (
+    ATTENDANCE_STATUS_OPTIONS,
+    SELF_LEAVE_TYPE_OPTIONS,
+    attendance_datetime_for,
+    attendance_flags_for_row,
+    attendance_pay_fraction,
+    attendance_status_label,
+    build_attendance_summary,
+    refresh_attendance_row,
+    worked_hours_for_row,
+)
 from .auth_helpers import login_required, roles_required
 from .deploy_config import load_deployment_config, save_deployment_config
 from .extensions import db, socketio
@@ -69,18 +81,20 @@ PREP_STATION_OPTIONS = ("kitchen", "barista")
 IST_TZ = ZoneInfo("Asia/Kolkata")
 UTC_TZ = ZoneInfo("UTC")
 PROTECTED_MENU_CATEGORY_NAMES = {"other", "utility"}
-STAFF_ATTENDANCE_STATUS_OPTIONS = [
-    ("present_all_day", "Present All Day"),
-    ("first_half", "First Half"),
-    ("second_half", "Second Half"),
-    ("on_leave", "On Leave"),
-    ("sick_leave", "Sick Leave"),
-    ("weekly_off", "Weekly Off"),
-    ("late_entry", "Late Entry"),
-    ("early_exit", "Early Exit"),
-    ("missed_checkout", "Missed Checkout"),
-    ("absent", "Absent"),
-]
+
+
+def _kiosk_token():
+    return (load_deployment_config(current_app.instance_path).get("KDS_KIOSK_TOKEN") or "").strip()
+
+
+def _has_valid_kiosk_access(token: str | None) -> bool:
+    configured = _kiosk_token()
+    supplied = (token or "").strip()
+    return bool(configured and supplied and secrets.compare_digest(configured, supplied))
+
+
+def _kiosk_display_url(token: str, station: str = "kitchen") -> str:
+    return url_for("cafe.kiosk_display", access_key=token, station=station)
 
 
 def _order_local_date(order: CafeOrder | None) -> date:
@@ -159,14 +173,6 @@ def _backfill_paid_timestamps():
         changed = True
     if changed:
         db.session.commit()
-
-
-def _staff_attendance_pay_fraction(status: str | None) -> float:
-    if status in ["present_all_day", "weekly_off", "late_entry", "early_exit", "on_leave"]:
-        return 1.0
-    if status in ["first_half", "second_half"]:
-        return 0.5
-    return 0.0
 
 
 def _menu_form_state_from_request():
@@ -916,7 +922,9 @@ def _receipt_link_for_order(order: CafeOrder) -> str:
 
 def _parse_split_payment_rows():
     rows = []
-    for idx in range(1, 5):
+    row_count = int(request.form.get("payment_row_count") or 1)
+    row_count = max(1, min(row_count, 12))
+    for idx in range(1, row_count + 1):
         payment_type = (request.form.get(f"payment_type_{idx}") or "").strip()
         amount = _safe_float(request.form.get(f"payment_amount_{idx}"), 0)
         reference = (request.form.get(f"payment_reference_{idx}") or "").strip()
@@ -1080,6 +1088,7 @@ def create_cafe_order(
 @login_required
 def home():
     cfg = load_deployment_config(current_app.instance_path)
+    public_base = (current_app.config.get("PUBLIC_BASE_URL") or request.host_url.rstrip("/")).rstrip("/")
     today_start, today_end = _current_ist_day_bounds()
     sms_enabled = str(cfg.get("SMS_ENABLED", "0")).strip() in ["1", "true", "True"]
     sms_provider = (cfg.get("SMS_PROVIDER") or "twilio").strip().lower() or "twilio"
@@ -1092,6 +1101,7 @@ def home():
     sms_allow_insecure_ssl = str(cfg.get("SMS_ALLOW_INSECURE_SSL", "0")).strip() in ["1", "true", "True"]
     qr_order_cutoff_time = _format_cutoff_value(cfg.get("QR_ORDER_CUTOFF_TIME"))
     staff_order_cutoff_time = _format_cutoff_value(cfg.get("STAFF_ORDER_CUTOFF_TIME"))
+    kiosk_token = (cfg.get("KDS_KIOSK_TOKEN") or "").strip()
     return render_template(
         "cafe/home.html",
         tables=CafeTable.query.count(),
@@ -1123,6 +1133,9 @@ def home():
         sms_allow_insecure_ssl=sms_allow_insecure_ssl,
         qr_order_cutoff_time=qr_order_cutoff_time,
         staff_order_cutoff_time=staff_order_cutoff_time,
+        kiosk_token=kiosk_token,
+        kiosk_kitchen_url=f"{public_base}{_kiosk_display_url(kiosk_token, 'kitchen')}" if kiosk_token else "",
+        kiosk_barista_url=f"{public_base}{_kiosk_display_url(kiosk_token, 'barista')}" if kiosk_token else "",
     )
 
 
@@ -1183,6 +1196,22 @@ def update_order_cutoff_settings():
         },
     )
     flash("Order cutoff settings saved.", "success")
+    return redirect(url_for("cafe.home"))
+
+
+@bp.route("/kiosk-settings", methods=["POST"])
+@roles_required("admin", "manager")
+def update_kiosk_settings():
+    raw_token = (request.form.get("kiosk_token") or "").strip()
+    if not raw_token:
+        raw_token = secrets.token_urlsafe(18)
+    save_deployment_config(
+        current_app.instance_path,
+        {
+            "KDS_KIOSK_TOKEN": raw_token,
+        },
+    )
+    flash("Kitchen and barista kiosk URL updated.", "success")
     return redirect(url_for("cafe.home"))
 
 
@@ -2247,10 +2276,8 @@ def call_staff_for_table():
     return jsonify({"ok": True, "message": f"Staff has been notified for {table.name}."})
 
 
-@bp.route("/kitchen")
-@login_required
-def kitchen_display():
-    station = (request.args.get("station") or "kitchen").strip().lower()
+def _render_kitchen_display(station: str = "kitchen", kiosk_mode: bool = False, access_key: str = ""):
+    station = (request.args.get("station") or station or "kitchen").strip().lower()
     if station not in PREP_STATION_OPTIONS:
         station = "kitchen"
     orders = (
@@ -2341,7 +2368,32 @@ def kitchen_display():
         active_orders=len(order_cards),
         avg_ticket_minutes=avg_ticket_minutes,
         sop_library=sop_library,
+        kiosk_mode=kiosk_mode,
+        kiosk_access_key=access_key,
+        kitchen_switch_url=_kiosk_display_url(access_key, "kitchen") if kiosk_mode and access_key else url_for("cafe.kitchen_display", station="kitchen"),
+        barista_switch_url=_kiosk_display_url(access_key, "barista") if kiosk_mode and access_key else url_for("cafe.kitchen_display", station="barista"),
+        current_page_url=_kiosk_display_url(access_key, station) if kiosk_mode and access_key else url_for("cafe.kitchen_display", station=station),
+        status_update_url_template=(
+            url_for("cafe.kiosk_update_order_status", access_key=access_key, order_id=0)
+            if kiosk_mode and access_key
+            else url_for("cafe.update_order_status", order_id=0)
+        ),
+        hide_staff_nav=kiosk_mode,
     )
+
+
+@bp.route("/kitchen")
+@login_required
+def kitchen_display():
+    return _render_kitchen_display("kitchen", kiosk_mode=False)
+
+
+@bp.route("/display/<string:access_key>")
+@bp.route("/display/<string:access_key>/<string:station>")
+def kiosk_display(access_key, station="kitchen"):
+    if not _has_valid_kiosk_access(access_key):
+        return Response("Invalid kiosk access key.", status=403)
+    return _render_kitchen_display(station=station, kiosk_mode=True, access_key=access_key)
 
 
 @bp.route("/barista")
@@ -2353,11 +2405,15 @@ def barista_display():
 @bp.route("/orders/<int:order_id>/status", methods=["POST"])
 @roles_required("admin", "manager", "staff", "server", "barista", "chef", "cashier")
 def update_order_status(order_id):
+    next_url = request.form.get("next", "").strip() or request.args.get("next", "").strip()
+    return _update_order_status_impl(order_id, next_url)
+
+
+def _update_order_status_impl(order_id: int, next_url: str = ""):
     order = CafeOrder.query.get_or_404(order_id)
     new_status = request.form["status"]
     if new_status not in ["open", "preparing", "ready", "served", "cancelled", "paid"]:
         flash("Invalid status.", "error")
-        next_url = request.form.get("next", "").strip() or request.args.get("next", "").strip()
         return redirect(next_url or url_for("cafe.kitchen_display"))
     order.status = new_status
     db.session.commit()
@@ -2365,8 +2421,15 @@ def update_order_status(order_id):
     socketio.emit("order_updated", payload, namespace="/kitchen")
     socketio.emit("order_updated", payload, namespace="/table")
     flash("Order status updated.", "success")
-    next_url = request.form.get("next", "").strip() or request.args.get("next", "").strip()
     return redirect(next_url or url_for("cafe.kitchen_display"))
+
+
+@bp.route("/display/<string:access_key>/orders/<int:order_id>/status", methods=["POST"])
+def kiosk_update_order_status(access_key, order_id):
+    if not _has_valid_kiosk_access(access_key):
+        return Response("Invalid kiosk access key.", status=403)
+    next_url = request.form.get("next", "").strip() or request.args.get("next", "").strip() or _kiosk_display_url(access_key)
+    return _update_order_status_impl(order_id, next_url)
 
 
 def _inventory_item_status(item: InventoryItem):
@@ -4006,29 +4069,39 @@ def staff():
         if action == "attendance_for_user":
             target_user_id = int(request.form["target_user_id"])
             attendance_date = date.fromisoformat(request.form["attendance_date"])
-            status = request.form.get("status", "present_all_day").strip()
-            if status not in dict(STAFF_ATTENDANCE_STATUS_OPTIONS):
-                status = "present_all_day"
+            status = (request.form.get("status") or "").strip()
+            valid_statuses = {value for value, _ in ATTENDANCE_STATUS_OPTIONS if value}
+            if status and status not in valid_statuses:
+                status = ""
             notes = request.form.get("notes", "").strip() or None
+            check_in_time = attendance_datetime_for(attendance_date, request.form.get("check_in_time"))
+            check_out_time = attendance_datetime_for(attendance_date, request.form.get("check_out_time"))
+            if check_in_time and check_out_time and check_out_time < check_in_time:
+                flash("Check-out time cannot be before check-in time.", "error")
+                return _staff_redirect("attendance_entry", attendance_user_id=target_user_id)
             existing = StaffAttendance.query.filter_by(
                 user_id=target_user_id, attendance_date=attendance_date
             ).first()
             if existing:
-                existing.status = status
+                existing.check_in_at = check_in_time
+                existing.check_out_at = check_out_time
                 existing.notes = notes
                 existing.manager_override = True
+                refresh_attendance_row(existing, manual_status=status)
             else:
-                db.session.add(
-                    StaffAttendance(
-                        user_id=target_user_id,
-                        attendance_date=attendance_date,
-                        status=status,
-                        manager_override=True,
-                        notes=notes,
-                    )
+                existing = StaffAttendance(
+                    user_id=target_user_id,
+                    attendance_date=attendance_date,
+                    status=status or "absent",
+                    check_in_at=check_in_time,
+                    check_out_at=check_out_time,
+                    manager_override=True,
+                    notes=notes,
                 )
+                db.session.add(existing)
+                refresh_attendance_row(existing, manual_status=status)
             db.session.commit()
-            flash("Attendance saved for selected staff member.", "success")
+            flash("Attendance override saved for selected staff member.", "success")
             return _staff_redirect("attendance_entry", attendance_user_id=target_user_id)
 
     excluded_staff_emails = ["qr.guest@brownberries.local", "delivery.guest@brownberries.local"]
@@ -4122,8 +4195,8 @@ def staff():
         present_days = sum(1 for row in month_rows if row.status in ["present_all_day", "late_entry", "early_exit", "weekly_off", "on_leave"])
         half_days = sum(1 for row in month_rows if row.status in ["first_half", "second_half"])
         sick_days = sum(1 for row in month_rows if row.status == "sick_leave")
-        unpaid_days = sum(max(0.0, 1.0 - _staff_attendance_pay_fraction(row.status)) for row in month_rows)
-        payable_days = sum(_staff_attendance_pay_fraction(row.status) for row in month_rows)
+        unpaid_days = sum(max(0.0, 1.0 - attendance_pay_fraction(row.status)) for row in month_rows)
+        payable_days = sum(attendance_pay_fraction(row.status) for row in month_rows)
         salary_amount = float(profile.salary_amount or 0)
         per_day_salary = round((salary_amount / payroll_days), 2) if salary_amount else 0.0
         estimated_pay = round(payable_days * per_day_salary, 2)
@@ -4158,7 +4231,7 @@ def staff():
         staff_role_options=_get_role_options(),
         user_types=UserType.query.order_by(UserType.name.asc()).all(),
         active_staff_section=active_staff_section,
-        attendance_status_options=STAFF_ATTENDANCE_STATUS_OPTIONS,
+        attendance_status_options=ATTENDANCE_STATUS_OPTIONS,
         payroll_rows=payroll_rows,
         payroll_month=payroll_month,
         payroll_year=payroll_year,
@@ -4261,9 +4334,19 @@ def export_staff_attendance():
     wb = Workbook()
     ws = wb.active
     ws.title = "Attendance"
-    ws.append(["Staff Name", "Email", "Date", "Status", "Notes"])
+    ws.append(["Staff Name", "Email", "Date", "Status", "Check In", "Check Out", "Worked Hours", "Flags", "Notes"])
     for row in logs:
-        ws.append([user.full_name, user.email, row.attendance_date.isoformat(), row.status, row.notes or ""])
+        ws.append([
+            user.full_name,
+            user.email,
+            row.attendance_date.isoformat(),
+            attendance_status_label(row.status),
+            row.check_in_at.strftime("%I:%M:%S %p") if row.check_in_at else "",
+            row.check_out_at.strftime("%I:%M:%S %p") if row.check_out_at else "",
+            worked_hours_for_row(row),
+            ", ".join(attendance_flags_for_row(row)),
+            row.notes or "",
+        ])
     output = BytesIO()
     wb.save(output)
     output.seek(0)
@@ -4329,29 +4412,43 @@ def my_staff():
         profile = user.staff_profile
     if request.method == "POST":
         action = request.form.get("action")
-        if action == "attendance":
-            attendance_date = (
-                date.fromisoformat(request.form["attendance_date"])
-                if request.form.get("attendance_date")
-                else date.today()
-            )
+        if action == "check_in":
+            attendance_date = date.today()
             existing = StaffAttendance.query.filter_by(
                 user_id=user.id, attendance_date=attendance_date
             ).first()
-            if existing:
-                existing.status = request.form.get("status", "present_all_day")
-                existing.notes = request.form.get("notes", "").strip() or None
-                flash("Attendance updated.", "success")
-            else:
-                db.session.add(
-                    StaffAttendance(
-                        user_id=user.id,
-                        attendance_date=attendance_date,
-                        status=request.form.get("status", "present_all_day"),
-                        notes=request.form.get("notes", "").strip() or None,
-                    )
-                )
-                flash("Attendance logged.", "success")
+            if existing and existing.check_in_at and not existing.check_out_at:
+                flash("You are already checked in for today.", "error")
+                return redirect(url_for("cafe.my_staff"))
+            if existing and existing.check_in_at and existing.check_out_at:
+                flash("Today's attendance is already completed. Contact admin for corrections.", "error")
+                return redirect(url_for("cafe.my_staff"))
+            if not existing:
+                existing = StaffAttendance(user_id=user.id, attendance_date=attendance_date)
+                db.session.add(existing)
+            existing.check_in_at = datetime.now()
+            existing.check_out_at = None
+            existing.manager_override = False
+            refresh_attendance_row(existing)
+            flash("Check-in recorded.", "success")
+            db.session.commit()
+            return redirect(url_for("cafe.my_staff"))
+
+        if action == "check_out":
+            attendance_date = date.today()
+            existing = StaffAttendance.query.filter_by(
+                user_id=user.id, attendance_date=attendance_date
+            ).first()
+            if not existing or not existing.check_in_at:
+                flash("Please check in first.", "error")
+                return redirect(url_for("cafe.my_staff"))
+            if existing.check_out_at:
+                flash("You are already checked out for today.", "error")
+                return redirect(url_for("cafe.my_staff"))
+            existing.check_out_at = datetime.now()
+            existing.manager_override = False
+            refresh_attendance_row(existing)
+            flash("Check-out recorded.", "success")
             db.session.commit()
             return redirect(url_for("cafe.my_staff"))
 
@@ -4399,15 +4496,39 @@ def my_staff():
         .limit(40)
         .all()
     )
+    attendance_changed = False
+    for row in attendance_logs:
+        before = row.status
+        refresh_attendance_row(row, manual_status=before if (row.manager_override and not (row.check_in_at or row.check_out_at)) else None)
+        if row.status != before:
+            attendance_changed = True
+    if attendance_changed:
+        db.session.commit()
     leave_logs = (
         StaffLeaveRequest.query.filter_by(user_id=user.id)
         .order_by(StaffLeaveRequest.created_at.desc())
         .limit(40)
         .all()
     )
+    month_start = date.today().replace(day=1)
+    month_logs = [row for row in attendance_logs if row.attendance_date >= month_start]
+    attendance_summary = build_attendance_summary(month_logs)
+    today_attendance = next((row for row in attendance_logs if row.attendance_date == date.today()), None)
+    next_attendance_action = "completed"
+    if not today_attendance or not today_attendance.check_in_at:
+        next_attendance_action = "check_in"
+    elif today_attendance.check_in_at and not today_attendance.check_out_at:
+        next_attendance_action = "check_out"
     return render_template(
         "cafe/staff_self.html",
         profile=profile,
         attendance_logs=attendance_logs,
         leave_logs=leave_logs,
+        attendance_summary=attendance_summary,
+        today_attendance=today_attendance,
+        next_attendance_action=next_attendance_action,
+        attendance_status_label=attendance_status_label,
+        attendance_flags_for_row=attendance_flags_for_row,
+        worked_hours_for_row=worked_hours_for_row,
+        leave_type_options=SELF_LEAVE_TYPE_OPTIONS,
     )
