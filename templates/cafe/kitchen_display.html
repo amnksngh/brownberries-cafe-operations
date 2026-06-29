@@ -31,7 +31,7 @@
       <strong id="kds-current-time">--:--</strong>
     </article>
     <article class="kds-metric-card">
-      <span>Active Orders</span>
+      <span>Active Tables</span>
       <strong id="kds-active-orders">{{ active_orders }}</strong>
     </article>
     <article class="kds-metric-card">
@@ -48,11 +48,11 @@
   </div>
 </section>
 
-<section class="kds-layout">
+<section class="kds-layout" id="kds-layout">
   <div class="panel kds-board-panel">
     <div class="kds-board-head">
       <div>
-        <h3>{{ "New Drinks Queue" if station == "barista" else "Active Order Tickets" }}</h3>
+        <h3>{{ "Barista Table Queue" if station == "barista" else "Kitchen Table Queue" }}</h3>
         <p class="muted">Tap an item to open its SOP without leaving the queue.</p>
       </div>
       <div class="kds-board-state">
@@ -62,8 +62,20 @@
     </div>
     <div id="kitchen-board" class="kitchen-grid"></div>
   </div>
+  <div id="kds-card-backdrop" class="kds-card-backdrop hidden"></div>
 
-  <aside class="panel kds-sop-panel">
+  <button
+    type="button"
+    id="kds-sop-toggle"
+    class="kds-sop-toggle"
+    aria-expanded="false"
+    aria-controls="kds-sop-panel"
+    aria-label="Open SOP panel"
+  >
+    <span id="kds-sop-toggle-icon">←</span>
+  </button>
+
+  <aside class="panel kds-sop-panel" id="kds-sop-panel">
     <div class="kds-sop-head">
       <div>
         <h3>SOP Panel</h3>
@@ -128,6 +140,7 @@
   const displayLabel = station === "barista" ? "Brewing" : "Preparing";
   const currentPageUrl = {{ current_page_url|tojson }};
   const statusUpdateUrlTemplate = {{ status_update_url_template|tojson }};
+  const itemStatusUpdateUrlTemplate = {{ item_status_update_url_template|tojson }};
   const kioskMode = {{ 'true' if kiosk_mode else 'false' }};
   const socketState = document.getElementById("socket-state");
   const soundVolumeInput = document.getElementById("sound-volume");
@@ -136,6 +149,11 @@
   const notifPanel = document.getElementById("notif-panel");
   const notifList = document.getElementById("notif-list");
   const notifClear = document.getElementById("notif-clear");
+  const layout = document.getElementById("kds-layout");
+  const boardPanel = document.querySelector(".kds-board-panel");
+  const sopPanel = document.getElementById("kds-sop-panel");
+  const sopToggle = document.getElementById("kds-sop-toggle");
+  const sopToggleIcon = document.getElementById("kds-sop-toggle-icon");
   const trainingToggle = document.getElementById("kds-training-mode");
   const trainingLabel = document.getElementById("kds-training-label");
   const currentTimeEl = document.getElementById("kds-current-time");
@@ -167,9 +185,11 @@
   let selectedSopKey = "";
   let boardRefreshInFlight = false;
   let boardRefreshPending = false;
+  let expandedCardId = "";
 
   const soundPrefKey = `kitchen_sound_enabled_v1:${station}`;
   const soundVolumeKey = `kitchen_sound_volume_v1:${station}`;
+  const sopPanelKey = `kds_sop_panel_open_v1:${station}`;
   const notifAudio = new Audio(notifSoundUrl);
   notifAudio.preload = "auto";
 
@@ -294,7 +314,8 @@
       : '<p class="muted">No new notifications.</p>';
   }
 
-  function statusLabel(status) {
+  function orderStatusLabel(status) {
+    if (status === "pending_approval") return "Pending Approval";
     if (status === "preparing") return displayLabel;
     if (status === "ready") return "Ready";
     if (status === "served") return "Served";
@@ -303,11 +324,53 @@
   }
 
   function statusClass(status) {
+    if (status === "pending_approval") return "pending-approval";
     if (status === "ready") return "ready";
     if (status === "served") return "served";
     if (status === "cancelled") return "cancelled";
     if (status === "preparing") return "preparing";
     return "pending";
+  }
+
+  function itemStatusLabel(status) {
+    if (status === "preparing") return displayLabel;
+    if (status === "ready") return "Ready";
+    if (status === "served") return "Served";
+    return "Pending";
+  }
+
+  function itemApprovalLabel(approvalStatus) {
+    return approvalStatus === "pending" ? "Pending Approval" : "Approved";
+  }
+
+  function updateExpandedBackdrop() {
+    const backdrop = document.getElementById("kds-card-backdrop");
+    const shouldShow = Boolean(expandedCardId) && !layout?.classList.contains("sop-open");
+    backdrop?.classList.toggle("hidden", !shouldShow);
+  }
+
+  function syncExpandedCardBounds() {
+    if (!expandedCardId || !boardPanel) return;
+    const rect = boardPanel.getBoundingClientRect();
+    const root = document.documentElement;
+    root.style.setProperty("--kds-max-top", `${Math.max(12, rect.top)}px`);
+    root.style.setProperty("--kds-max-left", `${Math.max(12, rect.left)}px`);
+    root.style.setProperty("--kds-max-right", `${Math.max(12, window.innerWidth - rect.right)}px`);
+    root.style.setProperty("--kds-max-bottom", `12px`);
+  }
+
+  function setSopPanelOpen(open) {
+    const shouldOpen = !!open;
+    layout?.classList.toggle("sop-open", shouldOpen);
+    sopPanel?.classList.toggle("hidden", !shouldOpen);
+    if (sopToggle) {
+      sopToggle.setAttribute("aria-expanded", shouldOpen ? "true" : "false");
+      sopToggle.setAttribute("aria-label", shouldOpen ? "Close SOP panel" : "Open SOP panel");
+    }
+    if (sopToggleIcon) sopToggleIcon.textContent = shouldOpen ? "→" : "←";
+    try { localStorage.setItem(sopPanelKey, shouldOpen ? "1" : "0"); } catch (e) {}
+    syncExpandedCardBounds();
+    updateExpandedBackdrop();
   }
 
   function minutesSince(isoString) {
@@ -340,64 +403,64 @@
       const delayed = card.expected_minutes > 0 && elapsed > card.expected_minutes;
       const itemRows = (card.items || []).map((item) => {
         const sopKey = buildSopKey(card.id, item.id, item.size_label || "");
+        const awaitingApproval = item.approval_status === "pending";
         return `
-          <button type="button" class="kds-item-row ${selectedSopKey === sopKey ? "active" : ""}" data-order-id="${card.id}" data-item-id="${item.id}">
-            <div class="kds-item-main">
-              <strong>${escapeHtml(item.name)}</strong>
-              <span>${item.size_label ? escapeHtml(item.size_label) : "Standard"} • x ${Number(item.qty || 0)}</span>
+          <div class="kds-item-shell ${selectedSopKey === sopKey ? "active" : ""} ${awaitingApproval ? "approval-pending" : "approval-approved"} ${item.prep_status === "served" ? "item-served" : ""}">
+            <button type="button" class="kds-item-row" data-order-id="${card.id}" data-item-id="${item.id}">
+              <div class="kds-item-main">
+                <strong>${escapeHtml(item.name)}</strong>
+                <span>${item.size_label ? escapeHtml(item.size_label) : "Standard"} • x ${Number(item.qty || 0)}</span>
+                <small>Order #${escapeHtml(item.order_pickup_no || "-")} • ${escapeHtml(item.ordered_at || "-")}</small>
+              </div>
+              <div class="kds-item-side">
+                ${item.is_parcel ? '<span class="kds-mini-badge">Parcel</span>' : ""}
+                <span class="kds-status-badge ${statusClass(item.approval_status === "pending" ? "pending_approval" : "ready")}">${itemApprovalLabel(item.approval_status)}</span>
+                <span class="kds-status-badge ${statusClass(item.prep_status)}">${itemStatusLabel(item.prep_status)}</span>
+                <span class="kds-sop-quick">📖 SOP</span>
+              </div>
+            </button>
+            <div class="kds-item-actions">
+              ${["pending", "preparing", "ready", "served"].map((actionStatus) => `
+                <form method="post" action="${itemStatusUpdateUrlTemplate.replace('/0/status', `/${item.id}/status`)}" class="inline">
+                  <input type="hidden" name="next" value="${escapeHtml(currentPageUrl)}" />
+                  <input type="hidden" name="status" value="${actionStatus}" />
+                  <button type="submit" class="${item.prep_status === actionStatus ? "active" : ""}" ${awaitingApproval ? "disabled" : ""}>${escapeHtml(itemStatusLabel(actionStatus))}</button>
+                </form>
+              `).join("")}
             </div>
-            <div class="kds-item-side">
-              ${item.is_parcel ? '<span class="kds-mini-badge">Parcel</span>' : ""}
-              <span class="kds-sop-quick">📖 SOP</span>
-            </div>
-          </button>`;
+          </div>`;
       }).join("");
       return `
-        <article class="k-card ${delayed ? "delayed" : ""}" data-order-id="${card.id}">
+        <article class="k-card ${delayed ? "delayed" : ""} ${expandedCardId === String(card.id) ? "maximized" : ""}" data-order-id="${card.id}">
           <div class="kds-ticket-head">
             <div>
-              <h3>Order #${escapeHtml(card.pickup_no || card.pickup_no_compact || card.id)}</h3>
-              <p class="muted">${escapeHtml(card.table_name)} • ${escapeHtml(card.created_at || "-")}</p>
+              <h3>${escapeHtml(card.table_name || card.id)}</h3>
+              <p class="muted">${escapeHtml(String(card.order_count || 0))} order(s) • Since ${escapeHtml(card.created_at || "-")}</p>
             </div>
             <div class="kds-ticket-meta">
-              <span class="kds-status-badge ${statusClass(card.status)}">${statusLabel(card.status)}</span>
+              <button
+                type="button"
+                class="kds-card-toggle"
+                data-card-toggle="${escapeHtml(String(card.id))}"
+                aria-expanded="${expandedCardId === String(card.id) ? "true" : "false"}"
+                aria-label="${expandedCardId === String(card.id) ? "Minimize table card" : "Maximize table card"}"
+              >${expandedCardId === String(card.id) ? "↙" : "↗"}</button>
+              <span class="kds-status-badge ${statusClass(card.status)}">${orderStatusLabel(card.status)}</span>
               <span class="kds-ticket-timer ${delayed ? "delayed" : ""}">
                 ${elapsed} min${card.expected_minutes > 0 ? ` / ${card.expected_minutes} min` : ""}
               </span>
             </div>
           </div>
-          <p class="muted kds-ticket-ref">Ref: ${escapeHtml(card.display_code || card.id)}</p>
+          <p class="muted kds-ticket-ref">${(card.order_refs || []).map((ref) => `#${escapeHtml(ref.pickup_no || "-")} (${escapeHtml(ref.created_at || "-")})`).join(" • ")}</p>
           <div class="kds-item-list">${itemRows}</div>
-          <div class="k-actions kds-actions">
-            <form method="post" action="${statusUpdateUrlTemplate.replace('/0/status', `/${card.id}/status`)}" class="inline">
-              <input type="hidden" name="next" value="${escapeHtml(currentPageUrl)}" />
-              <input type="hidden" name="status" value="preparing" />
-              <button type="submit">${displayLabel}</button>
-            </form>
-            <form method="post" action="${statusUpdateUrlTemplate.replace('/0/status', `/${card.id}/status`)}" class="inline">
-              <input type="hidden" name="next" value="${escapeHtml(currentPageUrl)}" />
-              <input type="hidden" name="status" value="ready" />
-              <button type="submit">Ready</button>
-            </form>
-            <form method="post" action="${statusUpdateUrlTemplate.replace('/0/status', `/${card.id}/status`)}" class="inline">
-              <input type="hidden" name="next" value="${escapeHtml(currentPageUrl)}" />
-              <input type="hidden" name="status" value="served" />
-              <button type="submit">Served</button>
-            </form>
-            <form method="post" action="${statusUpdateUrlTemplate.replace('/0/status', `/${card.id}/status`)}" class="inline">
-              <input type="hidden" name="next" value="${escapeHtml(currentPageUrl)}" />
-              <input type="hidden" name="status" value="cancelled" />
-              <button type="submit" class="danger">Cancel</button>
-            </form>
-          </div>
         </article>`;
     }).join("");
 
     board.querySelectorAll(".kds-item-row").forEach((btn) => {
       btn.addEventListener("click", () => {
-        const orderId = Number(btn.dataset.orderId || 0);
+        const orderId = String(btn.dataset.orderId || "");
         const itemId = Number(btn.dataset.itemId || 0);
-        const card = orderCards.find((row) => Number(row.id) === orderId);
+        const card = orderCards.find((row) => String(row.id) === orderId);
         const item = card?.items?.find((row) => Number(row.id) === itemId);
         if (!item) return;
         selectedSopKey = buildSopKey(orderId, itemId, item.size_label || "");
@@ -407,6 +470,19 @@
           sop: item.sop || {},
           source: card?.table_name || "",
         });
+        renderBoard();
+      });
+    });
+
+    board.querySelectorAll(".kds-card-toggle").forEach((btn) => {
+      btn.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        const cardId = String(btn.dataset.cardToggle || "");
+        expandedCardId = expandedCardId === cardId ? "" : cardId;
+        document.body.classList.toggle("kds-card-expanded", Boolean(expandedCardId));
+        syncExpandedCardBounds();
+        updateExpandedBackdrop();
         renderBoard();
       });
     });
@@ -556,6 +632,16 @@
   }
 
   notifBell?.addEventListener("click", () => notifPanel.classList.toggle("hidden"));
+  document.getElementById("kds-card-backdrop")?.addEventListener("click", () => {
+    expandedCardId = "";
+    document.body.classList.remove("kds-card-expanded");
+    updateExpandedBackdrop();
+    renderBoard();
+  });
+  sopToggle?.addEventListener("click", () => {
+    const isOpen = layout?.classList.contains("sop-open");
+    setSopPanelOpen(!isOpen);
+  });
   ["click", "touchstart", "keydown"].forEach((eventName) => {
     document.addEventListener(eventName, () => {
       if (soundEnabled) enableSound();
@@ -651,7 +737,17 @@
       trainingToggle.checked = localStorage.getItem(trainingModeKey) === "1";
       trainingLabel.textContent = trainingToggle.checked ? "On" : "Off";
     }
+    setSopPanelOpen(localStorage.getItem(sopPanelKey) === "1");
   } catch (e) {}
+
+  if (!layout?.classList.contains("sop-open")) {
+    setSopPanelOpen(false);
+  }
+
+  window.addEventListener("resize", () => {
+    syncExpandedCardBounds();
+    updateExpandedBackdrop();
+  });
 
   applyVolume();
   orderCards = loadJsonScript("kds-order-cards-payload", []);

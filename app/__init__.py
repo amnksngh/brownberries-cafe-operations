@@ -95,6 +95,7 @@ def _ensure_sqlite_schema_columns():
             "size_label": "TEXT",
             "approval_status": "TEXT NOT NULL DEFAULT 'pending'",
             "is_parcel": "BOOLEAN NOT NULL DEFAULT 0",
+            "prep_status": "TEXT NOT NULL DEFAULT 'pending'",
         },
         "inventory_item": {
             "item_code": "TEXT",
@@ -149,6 +150,12 @@ def _ensure_sqlite_schema_columns():
     )
     db.session.execute(
         text("CREATE INDEX IF NOT EXISTS idx_cafe_order_item_menu ON cafe_order_item (menu_item_id)")
+    )
+    db.session.execute(
+        text("CREATE INDEX IF NOT EXISTS idx_cafe_order_item_prep_status ON cafe_order_item (prep_status)")
+    )
+    db.session.execute(
+        text("UPDATE cafe_order_item SET prep_status = 'pending' WHERE prep_status IS NULL OR prep_status = ''")
     )
     db.session.execute(
         text("CREATE INDEX IF NOT EXISTS idx_menu_item_available_cat_sub_type ON menu_item (available, category_id, subcategory_id, item_type)")

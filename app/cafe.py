@@ -81,6 +81,7 @@ PREP_STATION_OPTIONS = ("kitchen", "barista")
 IST_TZ = ZoneInfo("Asia/Kolkata")
 UTC_TZ = ZoneInfo("UTC")
 PROTECTED_MENU_CATEGORY_NAMES = {"other", "utility"}
+ITEM_PREP_STATUSES = ("pending", "preparing", "ready", "served")
 
 
 def _kiosk_token():
@@ -660,6 +661,32 @@ def _build_staff_id_card(user: User, profile: StaffProfile):
     return out
 
 
+def _normalized_item_prep_status(item: CafeOrderItem | None) -> str:
+    raw = ((item.prep_status if item else "") or "").strip().lower()
+    return raw if raw in ITEM_PREP_STATUSES else "pending"
+
+
+def _refresh_order_status_from_items(order: CafeOrder | None) -> str:
+    if not order:
+        return "open"
+    pending_left = any((item.approval_status or "pending") == "pending" for item in order.order_items)
+    approved_items = [item for item in order.order_items if (item.approval_status or "pending") == "approved"]
+    if not approved_items:
+        order.status = "pending_approval" if pending_left else "cancelled"
+        return order.status
+
+    prep_states = [_normalized_item_prep_status(item) for item in approved_items]
+    if all(state == "served" for state in prep_states):
+        order.status = "served"
+    elif any(state == "preparing" for state in prep_states):
+        order.status = "preparing"
+    elif any(state == "ready" for state in prep_states):
+        order.status = "ready"
+    else:
+        order.status = "open"
+    return order.status
+
+
 def _serialize_order(order: CafeOrder):
     pending_count = sum(1 for item in order.order_items if (item.approval_status or "pending") == "pending")
     try:
@@ -698,6 +725,7 @@ def _serialize_order(order: CafeOrder):
                 "is_parcel": bool(item.is_parcel),
                 "prep_station": item.menu_item.prep_station if item.menu_item else "kitchen",
                 "approval_status": item.approval_status or "pending",
+                "prep_status": _normalized_item_prep_status(item),
             }
             for item in order.order_items
         ],
@@ -1061,6 +1089,7 @@ def create_cafe_order(
                 size_label=size_label,
                 is_parcel=bool(is_parcel),
                 approval_status="pending" if status == "pending_approval" else "approved",
+                prep_status="pending",
             )
         )
 
@@ -1076,6 +1105,7 @@ def create_cafe_order(
     order.delivery_distance_km = delivery_distance_km
     order.delivery_charge = delivery_charge
     _recalculate_order_totals(order)
+    _refresh_order_status_from_items(order)
     _apply_recipe_inventory_deduction(order)
     db.session.commit()
     payload = _serialize_order(order)
@@ -1852,20 +1882,14 @@ def approve_order(order_id):
             continue
         if decision == "approve":
             oi.approval_status = "approved"
+            oi.prep_status = "pending"
             approved_names.append(f"{oi.menu_item.name if oi.menu_item else 'Item'} x {oi.quantity}")
         else:
             oi.approval_status = "rejected"
             rejected_names.append(f"{oi.menu_item.name if oi.menu_item else 'Item'} x {oi.quantity}")
 
-    pending_left = [oi for oi in order.order_items if (oi.approval_status or "pending") == "pending"]
-    approved_items = [oi for oi in order.order_items if (oi.approval_status or "pending") == "approved"]
     _recalculate_order_totals(order)
-    if approved_items:
-        order.status = "open"
-    elif pending_left:
-        order.status = "pending_approval"
-    else:
-        order.status = "cancelled"
+    _refresh_order_status_from_items(order)
     db.session.commit()
     payload = _serialize_order(order)
     socketio.emit("order_updated", payload, namespace="/kitchen")
@@ -2168,6 +2192,8 @@ def edit_order_items(order_id):
     order = CafeOrder.query.options(joinedload(CafeOrder.order_items)).get(order_id)
     if kept == 0:
         order.status = "cancelled"
+    else:
+        _refresh_order_status_from_items(order)
     _recalculate_order_totals(order)
     db.session.commit()
     payload = _serialize_order(order)
@@ -2250,10 +2276,12 @@ def edit_pending_table_order(order_id):
                 size_label=size_label,
                 is_parcel=bool(is_parcel),
                 approval_status="pending",
+                prep_status="pending",
             )
         )
     db.session.flush()
     _recalculate_order_totals(order)
+    _refresh_order_status_from_items(order)
     db.session.commit()
     payload = _serialize_order(order)
     socketio.emit("order_updated", payload, namespace="/kitchen")
@@ -2284,7 +2312,7 @@ def _render_kitchen_display(station: str = "kitchen", kiosk_mode: bool = False, 
         CafeOrder.query.join(CafeOrderItem, CafeOrderItem.order_id == CafeOrder.id)
         .join(MenuItem, MenuItem.id == CafeOrderItem.menu_item_id)
         .filter(
-            CafeOrder.status.in_(["open", "preparing", "ready"]),
+            CafeOrder.status.in_(["pending_approval", "open", "preparing", "ready", "served"]),
             MenuItem.prep_station == station,
         )
         .options(
@@ -2302,22 +2330,58 @@ def _render_kitchen_display(station: str = "kitchen", kiosk_mode: bool = False, 
         .all()
     )
     recipe_map = {recipe.menu_item_id: recipe for recipe in recipes}
-    order_cards = []
+    table_cards_map = {}
     prep_minutes = []
+    status_changed = False
     for order in orders:
-        station_items = []
+        previous_status = (order.status or "").strip().lower()
+        derived_status = _refresh_order_status_from_items(order)
+        if derived_status != previous_status:
+            status_changed = True
         order_expected = 0
-        for oi in order.order_items:
+        created_local = _ist_from_utc_naive(order.created_at)
+        elapsed_minutes = max(0, int(((datetime.now(IST_TZ) - created_local).total_seconds() // 60) if created_local else 0))
+        prep_minutes.append(elapsed_minutes)
+        table_key = f"table-{order.table_id or 0}"
+        table_label = order.table.name if order.table else "-"
+        card = table_cards_map.get(table_key)
+        if not card:
+            card = {
+                "id": table_key,
+                "table_id": order.table_id or 0,
+                "table_name": table_label,
+                "status": "open",
+                "order_count": 0,
+                "created_at": _format_ist(order.created_at, "%I:%M %p"),
+                "created_at_iso": created_local.isoformat() if created_local else "",
+                "expected_minutes": 0,
+                "items": [],
+                "order_refs": [],
+            }
+            table_cards_map[table_key] = card
+        card["order_count"] += 1
+        card["expected_minutes"] = max(int(card["expected_minutes"] or 0), order_expected)
+        if created_local and (not card["created_at_iso"] or created_local.isoformat() < card["created_at_iso"]):
+            card["created_at_iso"] = created_local.isoformat()
+            card["created_at"] = _format_ist(order.created_at, "%I:%M %p")
+        card["order_refs"].append(
+            {
+                "pickup_no": _format_pickup_number(order),
+                "display_code": order.display_code or _format_internal_order_code(order),
+                "created_at": _format_ist(order.created_at, "%I:%M:%S %p"),
+            }
+        )
+        for oi in sorted(order.order_items, key=lambda row: (row.created_at or datetime.min, row.id or 0)):
             if not oi.menu_item or oi.menu_item.prep_station != station:
                 continue
-            if (oi.approval_status or "pending") != "approved":
+            if (oi.approval_status or "pending") == "rejected":
                 continue
             recipe = recipe_map.get(oi.menu_item_id)
             sop = _serialize_recipe_sop(recipe, oi.size_label)
             expected_minutes = int(sop.get("prep_time_minutes") or 0)
             if expected_minutes > 0:
                 order_expected = max(order_expected, expected_minutes)
-            station_items.append(
+            card["items"].append(
                 {
                     "id": oi.id,
                     "name": oi.menu_item.name,
@@ -2325,30 +2389,56 @@ def _render_kitchen_display(station: str = "kitchen", kiosk_mode: bool = False, 
                     "size_label": oi.size_label or "",
                     "is_parcel": bool(oi.is_parcel),
                     "approval_status": oi.approval_status or "pending",
+                    "prep_status": _normalized_item_prep_status(oi),
+                    "order_pickup_no": _format_pickup_number(order),
+                    "order_display_code": order.display_code or _format_internal_order_code(order),
+                    "ordered_at": _format_ist(order.created_at, "%I:%M:%S %p"),
                     "sop": sop,
                 }
             )
-        if not station_items:
+        card["expected_minutes"] = max(int(card["expected_minutes"] or 0), order_expected)
+        if order.status == "preparing":
+            card["status"] = "preparing"
+        elif order.status == "ready" and card["status"] not in ["preparing"]:
+            card["status"] = "ready"
+        elif order.status == "served" and card["status"] not in ["preparing", "ready"]:
+            card["status"] = "served"
+        elif order.status == "pending_approval" and card["status"] == "open":
+            card["status"] = "pending_approval"
+    if status_changed:
+        db.session.commit()
+    order_cards = []
+    for card in table_cards_map.values():
+        if not card["items"]:
             continue
-        created_local = _ist_from_utc_naive(order.created_at)
-        elapsed_minutes = max(0, int(((datetime.now(IST_TZ) - created_local).total_seconds() // 60) if created_local else 0))
-        prep_minutes.append(elapsed_minutes)
-        order_cards.append(
-            {
-                "id": order.id,
-                "pickup_no": _format_pickup_number(order),
-                "pickup_no_compact": _format_pickup_number(order, compact=True),
-                "display_code": order.display_code or _format_internal_order_code(order),
-                "table_name": order.table.name if order.table else "-",
-                "status": order.status,
-                "total_amount": round(float(order.total_amount or 0), 2),
-                "created_at": _format_ist(order.created_at, "%I:%M %p"),
-                "created_at_iso": created_local.isoformat() if created_local else "",
-                "elapsed_minutes": elapsed_minutes,
-                "expected_minutes": order_expected,
-                "items": station_items,
-            }
+        card["items"] = sorted(
+            card["items"],
+            key=lambda row: (
+                row["approval_status"] != "pending",
+                row["prep_status"] == "served",
+                row["ordered_at"],
+                row["id"],
+            ),
         )
+        pending_approval = any((item.get("approval_status") or "pending") == "pending" for item in card["items"])
+        approved_items = [item for item in card["items"] if (item.get("approval_status") or "pending") == "approved"]
+        if approved_items:
+            prep_states = [item.get("prep_status") or "pending" for item in approved_items]
+            if all(state == "served" for state in prep_states):
+                card["status"] = "served"
+            elif any(state == "preparing" for state in prep_states):
+                card["status"] = "preparing"
+            elif any(state == "ready" for state in prep_states):
+                card["status"] = "ready"
+            elif pending_approval:
+                card["status"] = "pending_approval"
+            else:
+                card["status"] = "open"
+        else:
+            card["status"] = "pending_approval" if pending_approval else "open"
+        card["order_refs"] = sorted(card["order_refs"], key=lambda row: row["created_at"])
+        order_cards.append(card)
+    order_cards.sort(key=lambda row: row["created_at_iso"] or "")
     sop_library = [
         {
             "menu_item_id": recipe.menu_item_id,
@@ -2377,6 +2467,11 @@ def _render_kitchen_display(station: str = "kitchen", kiosk_mode: bool = False, 
             url_for("cafe.kiosk_update_order_status", access_key=access_key, order_id=0)
             if kiosk_mode and access_key
             else url_for("cafe.update_order_status", order_id=0)
+        ),
+        item_status_update_url_template=(
+            url_for("cafe.kiosk_update_order_item_status", access_key=access_key, item_id=0)
+            if kiosk_mode and access_key
+            else url_for("cafe.update_order_item_status", item_id=0)
         ),
         hide_staff_nav=kiosk_mode,
     )
@@ -2415,6 +2510,10 @@ def _update_order_status_impl(order_id: int, next_url: str = ""):
     if new_status not in ["open", "preparing", "ready", "served", "cancelled", "paid"]:
         flash("Invalid status.", "error")
         return redirect(next_url or url_for("cafe.kitchen_display"))
+    if new_status in ["open", "preparing", "ready", "served"]:
+        for item in order.order_items:
+            if (item.approval_status or "pending") == "approved":
+                item.prep_status = "pending" if new_status == "open" else new_status
     order.status = new_status
     db.session.commit()
     payload = _serialize_order(order)
@@ -2430,6 +2529,41 @@ def kiosk_update_order_status(access_key, order_id):
         return Response("Invalid kiosk access key.", status=403)
     next_url = request.form.get("next", "").strip() or request.args.get("next", "").strip() or _kiosk_display_url(access_key)
     return _update_order_status_impl(order_id, next_url)
+
+
+@bp.route("/order-items/<int:item_id>/status", methods=["POST"])
+@roles_required("admin", "manager", "staff", "server", "barista", "chef", "cashier")
+def update_order_item_status(item_id):
+    next_url = request.form.get("next", "").strip() or request.args.get("next", "").strip()
+    return _update_order_item_status_impl(item_id, next_url)
+
+
+def _update_order_item_status_impl(item_id: int, next_url: str = ""):
+    item = CafeOrderItem.query.options(joinedload(CafeOrderItem.order).joinedload(CafeOrder.order_items)).get_or_404(item_id)
+    order = item.order
+    new_status = (request.form.get("status") or "").strip().lower()
+    if new_status not in ITEM_PREP_STATUSES:
+        flash("Invalid item status.", "error")
+        return redirect(next_url or url_for("cafe.kitchen_display"))
+    if (item.approval_status or "pending") != "approved":
+        flash("Only approved items can be updated from the display.", "error")
+        return redirect(next_url or url_for("cafe.kitchen_display"))
+    item.prep_status = new_status
+    _refresh_order_status_from_items(order)
+    db.session.commit()
+    payload = _serialize_order(order)
+    socketio.emit("order_updated", payload, namespace="/kitchen")
+    socketio.emit("order_updated", payload, namespace="/table")
+    flash("Item status updated.", "success")
+    return redirect(next_url or url_for("cafe.kitchen_display"))
+
+
+@bp.route("/display/<string:access_key>/order-items/<int:item_id>/status", methods=["POST"])
+def kiosk_update_order_item_status(access_key, item_id):
+    if not _has_valid_kiosk_access(access_key):
+        return Response("Invalid kiosk access key.", status=403)
+    next_url = request.form.get("next", "").strip() or request.args.get("next", "").strip() or _kiosk_display_url(access_key)
+    return _update_order_item_status_impl(item_id, next_url)
 
 
 def _inventory_item_status(item: InventoryItem):

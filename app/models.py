@@ -127,6 +127,7 @@ class CafeOrderItem(TimestampMixin, db.Model):
     size_label = db.Column(db.String(80), nullable=True)
     is_parcel = db.Column(db.Boolean, nullable=False, default=False)
     approval_status = db.Column(db.String(20), nullable=False, default="pending")
+    prep_status = db.Column(db.String(20), nullable=False, default="pending")
     order = db.relationship("CafeOrder", backref="order_items")
     menu_item = db.relationship("MenuItem")
 
