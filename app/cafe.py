@@ -1990,27 +1990,55 @@ def cashier():
     today_day_start = _utc_naive_from_ist(datetime.combine(today_ist, time.min))
     today_day_end = _utc_naive_from_ist(datetime.combine(today_ist + timedelta(days=1), time.min))
     tables = CafeTable.query.filter_by(active=True).order_by(CafeTable.name).all()
-    running_rows = (
-        db.session.query(
-            CafeOrder.table_id,
-            db.func.count(CafeOrder.id).label("order_count"),
-            db.func.coalesce(db.func.sum(CafeOrder.total_amount), 0).label("pending_total"),
+    running_orders = (
+        CafeOrder.query.options(
+            joinedload(CafeOrder.table),
+            joinedload(CafeOrder.order_items).joinedload(CafeOrderItem.menu_item),
         )
         .filter(
             CafeOrder.status.notin_(["paid", "cancelled"]),
             CafeOrder.created_at >= day_start,
             CafeOrder.created_at < day_end,
         )
-        .group_by(CafeOrder.table_id)
+        .order_by(CafeOrder.created_at.asc())
         .all()
     )
-    running_map = {
-        row.table_id: {
-            "count": int(row.order_count or 0),
-            "total": float(row.pending_total or 0),
-        }
-        for row in running_rows
-    }
+    running_map = {}
+    for order in running_orders:
+        entry = running_map.setdefault(
+            order.table_id,
+            {
+                "count": 0,
+                "total": 0.0,
+                "pending_approval_count": 0,
+                "queued_count": 0,
+                "preparing_count": 0,
+                "ready_count": 0,
+                "served_count": 0,
+                "rejected_count": 0,
+            },
+        )
+        entry["count"] += 1
+        entry["total"] += float(order.total_amount or 0)
+        for oi in order.order_items:
+            approval = (oi.approval_status or "pending").strip().lower()
+            if approval == "rejected":
+                entry["rejected_count"] += int(oi.quantity or 0)
+                continue
+            if approval == "pending":
+                entry["pending_approval_count"] += int(oi.quantity or 0)
+                continue
+            prep_status = _normalized_item_prep_status(oi)
+            if prep_status == "preparing":
+                entry["preparing_count"] += int(oi.quantity or 0)
+            elif prep_status == "ready":
+                entry["ready_count"] += int(oi.quantity or 0)
+            elif prep_status == "served":
+                entry["served_count"] += int(oi.quantity or 0)
+            else:
+                entry["queued_count"] += int(oi.quantity or 0)
+    for running_table_id in list(running_map.keys()):
+        running_map[running_table_id]["total"] = float(running_map[running_table_id]["total"])
     if not table_id and tables:
         running_table_ids = [t.id for t in tables if running_map.get(t.id, {}).get("count", 0) > 0]
         table_id = running_table_ids[0] if running_table_ids else tables[0].id
@@ -2030,9 +2058,12 @@ def cashier():
     table_total = 0
     table_settle_total = 0
     payable_order_id_map = {}
+    pending_order_item_map = {}
     if selected_table:
         unpaid_orders = (
-            CafeOrder.query.filter(
+            CafeOrder.query.options(
+                joinedload(CafeOrder.order_items).joinedload(CafeOrderItem.menu_item),
+            ).filter(
                 CafeOrder.table_id == selected_table.id,
                 CafeOrder.status.notin_(["paid", "cancelled"]),
                 CafeOrder.created_at >= day_start,
@@ -2044,6 +2075,10 @@ def cashier():
         table_total = round(sum(o.total_amount for o in unpaid_orders), 2)
         payable_order_id_map = {
             o.id: (not any((oi.approval_status or "pending") == "pending" for oi in o.order_items))
+            for o in unpaid_orders
+        }
+        pending_order_item_map = {
+            o.id: [oi for oi in o.order_items if (oi.approval_status or "pending") == "pending"]
             for o in unpaid_orders
         }
         table_settle_total = round(
@@ -2094,9 +2129,10 @@ def cashier():
                         "size_label": oi.size_label or "",
                         "is_parcel": bool(oi.is_parcel),
                         "unit_price": round(float(oi.unit_price or 0), 2),
+                        "approval_status": (oi.approval_status or "pending"),
+                        "prep_status": _normalized_item_prep_status(oi),
                     }
                     for oi in o.order_items
-                    if (oi.approval_status or "pending") != "rejected"
                 ],
                 "subtotal": line_subtotal,
                 "packaging_charge": round(float(o.packaging_charge or 0), 2),
@@ -2115,6 +2151,7 @@ def cashier():
         selected_table=selected_table,
         unpaid_orders=unpaid_orders,
         payable_order_id_map=payable_order_id_map,
+        pending_order_item_map=pending_order_item_map,
         running_order_time_map=running_order_time_map,
         table_total=table_total,
         table_settle_total=table_settle_total,

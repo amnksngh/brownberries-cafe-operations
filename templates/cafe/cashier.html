@@ -43,6 +43,28 @@
       <strong>{{ t.name }}</strong>
       <span>{{ running.count }} running order(s)</span>
       <span>Pending: {{ "%.2f"|format(running.total) }}</span>
+      {% if running.count > 0 %}
+      <div class="cashier-table-stats">
+        {% if running.pending_approval_count %}
+        <span class="cashier-status-chip pending-approval">Approval {{ running.pending_approval_count }}</span>
+        {% endif %}
+        {% if running.queued_count %}
+        <span class="cashier-status-chip pending">Queued {{ running.queued_count }}</span>
+        {% endif %}
+        {% if running.preparing_count %}
+        <span class="cashier-status-chip preparing">Preparing {{ running.preparing_count }}</span>
+        {% endif %}
+        {% if running.ready_count %}
+        <span class="cashier-status-chip ready">Ready {{ running.ready_count }}</span>
+        {% endif %}
+        {% if running.served_count %}
+        <span class="cashier-status-chip served">Served {{ running.served_count }}</span>
+        {% endif %}
+        {% if running.rejected_count %}
+        <span class="cashier-status-chip rejected">Rejected {{ running.rejected_count }}</span>
+        {% endif %}
+      </div>
+      {% endif %}
     </a>
     {% endfor %}
   </div>
@@ -67,15 +89,28 @@
           <td>{{ order.status }}</td>
           <td>
             {% for oi in order.order_items %}
-            {% if (oi.approval_status or "pending") != "rejected" %}
-            <div>{{ oi.menu_item.name }}{% if oi.size_label %} ({{ oi.size_label }}){% endif %}{% if oi.is_parcel %} (Parcel){% endif %} x {{ oi.quantity }}</div>
-            {% endif %}
+            {% set approval = oi.approval_status or "pending" %}
+            {% set prep = oi.prep_status or "pending" %}
+            <div class="cashier-item-line {% if approval == 'rejected' %}rejected{% elif prep == 'served' %}served{% endif %}">
+              <div>
+                {{ oi.menu_item.name }}{% if oi.size_label %} ({{ oi.size_label }}){% endif %}{% if oi.is_parcel %} (Parcel){% endif %} x {{ oi.quantity }}
+              </div>
+              <div class="cashier-item-chips">
+                {% if approval == "pending" %}
+                <span class="cashier-status-chip pending-approval">Pending Approval</span>
+                {% elif approval == "rejected" %}
+                <span class="cashier-status-chip rejected">Rejected</span>
+                {% else %}
+                <span class="cashier-status-chip {{ prep }}">{{ "Queued" if prep == "pending" else prep|title }}</span>
+                {% endif %}
+              </div>
+            </div>
             {% endfor %}
           </td>
           <td>{{ "%.2f"|format(order.total_amount) }}</td>
           <td>
             <button type="button" class="open-order-modal" data-order-id="{{ order.id }}">Preview</button>
-            {% set pending_items = order.order_items | selectattr("approval_status", "equalto", "pending") | list %}
+            {% set pending_items = pending_order_item_map.get(order.id, []) %}
             {% if pending_items %}
             <form method="post" action="{{ url_for('cafe.approve_order', order_id=order.id) }}" class="grid">
               <input type="hidden" name="next" value="{{ url_for('cafe.cashier', tab='running', table_id=selected_table.id) }}" />
@@ -294,7 +329,16 @@
     const itemsHtml = (order.items || []).map((it) => {
       const size = it.size_label ? ` (${it.size_label})` : "";
       const parcel = it.is_parcel ? " (Parcel)" : "";
-      return `<div>${it.name}${size}${parcel} x ${it.qty} — ₹${(it.unit_price * it.qty).toFixed(2)}</div>`;
+      const approval = String(it.approval_status || "pending").toLowerCase();
+      const prep = String(it.prep_status || "pending").toLowerCase();
+      const state = approval === "pending"
+        ? "Pending Approval"
+        : approval === "rejected"
+          ? "Rejected"
+          : prep === "pending"
+            ? "Queued"
+            : prep.charAt(0).toUpperCase() + prep.slice(1);
+      return `<div>${it.name}${size}${parcel} x ${it.qty} — ₹${(it.unit_price * it.qty).toFixed(2)} <span class="cashier-inline-state">${state}</span></div>`;
     }).join("");
     const breakdownHtml = Array.isArray(order.payment_breakdown) && order.payment_breakdown.length
       ? order.payment_breakdown.map((row) => `<div>${row.method} — ₹${Number(row.amount || 0).toFixed(2)}${row.reference ? ` (${row.reference})` : ""}</div>`).join("")

@@ -2584,6 +2584,86 @@ th {
   outline: 2px solid #8c6a54;
 }
 
+.cashier-table-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+  margin-top: 0.2rem;
+}
+
+.cashier-status-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
+  border-radius: 999px;
+  padding: 0.16rem 0.48rem;
+  font-size: 0.72rem;
+  font-weight: 700;
+}
+
+.cashier-status-chip.pending-approval {
+  background: #fff1db;
+  color: #ba6d00;
+}
+
+.cashier-status-chip.pending {
+  background: #ece7df;
+  color: #6a625c;
+}
+
+.cashier-status-chip.preparing {
+  background: #fff1db;
+  color: #ba6d00;
+}
+
+.cashier-status-chip.ready {
+  background: #e4f6ea;
+  color: #287b4d;
+}
+
+.cashier-status-chip.served {
+  background: #e2eefb;
+  color: #2a5f95;
+}
+
+.cashier-status-chip.rejected {
+  background: #fbe8e5;
+  color: #b84e31;
+}
+
+.cashier-item-line {
+  display: grid;
+  gap: 0.18rem;
+  margin-bottom: 0.32rem;
+}
+
+.cashier-item-line.served > :first-child {
+  text-decoration: line-through;
+  text-decoration-thickness: 2px;
+  text-decoration-color: #6e5e52;
+}
+
+.cashier-item-line.rejected > :first-child {
+  text-decoration: line-through;
+  text-decoration-thickness: 2px;
+  text-decoration-color: #b84e31;
+  opacity: 0.75;
+}
+
+.cashier-item-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.26rem;
+}
+
+.cashier-inline-state {
+  display: inline-block;
+  margin-left: 0.25rem;
+  color: var(--muted);
+  font-size: 0.8rem;
+  font-weight: 700;
+}
+
 /* Ordering UI polish: shared rhythm, hierarchy, and density */
 .qr-cafe-top,
 .panel h2,
