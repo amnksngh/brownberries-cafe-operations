@@ -1,0 +1,89 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="panel career-detail-hero">
+  <div>
+    <div class="career-card-meta">
+      <span class="career-chip">{{ job.department }}</span>
+      <span class="career-chip">{{ job.employment_type }}</span>
+      <span class="career-chip">{{ job.location_type }}</span>
+    </div>
+    <h2>{{ job.title }}</h2>
+    <p class="career-salary">{{ job_card.salary_text }}</p>
+    <p class="muted">{{ job.vacancies }} opening{% if job.vacancies != 1 %}s{% endif %} · Experience: {{ job.experience_required or "Flexible" }}</p>
+  </div>
+  <a href="#apply-form">Apply Now</a>
+</section>
+
+<section class="career-detail-layout">
+  <article class="panel">
+    <h3>Overview</h3>
+    <p>{{ job.description or "Join Brownberries Café and help us create a warm, professional guest experience." }}</p>
+    {% if job.responsibilities %}<h4>Responsibilities</h4><p>{{ job.responsibilities }}</p>{% endif %}
+    {% if job.requirements %}<h4>Requirements</h4><p>{{ job.requirements }}</p>{% endif %}
+    {% if job.benefits %}<h4>Benefits</h4><p>{{ job.benefits }}</p>{% endif %}
+    {% if job.working_hours %}<h4>Working Hours</h4><p>{{ job.working_hours }}</p>{% endif %}
+    {% if job.weekly_off %}<h4>Weekly Off</h4><p>{{ job.weekly_off }}</p>{% endif %}
+    {% if job.perks %}<h4>Perks</h4><p>{{ job.perks }}</p>{% endif %}
+    {% if job.growth_opportunities %}<h4>Growth Opportunities</h4><p>{{ job.growth_opportunities }}</p>{% endif %}
+    {% if job_skills %}
+    <h4>Skills</h4>
+    <div class="career-skill-list">
+      {% for skill in job_skills %}
+      <span>{{ skill }}</span>
+      {% endfor %}
+    </div>
+    {% endif %}
+  </article>
+
+  <form method="post" enctype="multipart/form-data" class="panel career-apply-form" id="apply-form">
+    <h3>Apply Online</h3>
+    <div class="grid grid-2">
+      <label>Full Name *<input name="full_name" required /></label>
+      <label>Gender<input name="gender" /></label>
+      <label>DOB<input type="date" name="dob" /></label>
+      <label>Mobile *<input name="mobile" required /></label>
+      <label>Whatsapp<input name="whatsapp" /></label>
+      <label>Email<input type="email" name="email" /></label>
+      <label class="full">Address<input name="address" /></label>
+      <label>City<input name="city" /></label>
+      <label>State<input name="state" /></label>
+      <label>PIN Code<input name="pincode" /></label>
+      <label>Highest Qualification<input name="highest_qualification" /></label>
+      <label>School / College<input name="school_college" /></label>
+      <label>Passing Year<input name="passing_year" /></label>
+      <label>Percentage<input name="percentage" /></label>
+      <label><input type="checkbox" name="currently_working" /> Currently Working</label>
+      <label><input type="checkbox" name="immediate_joining" /> Immediate Joining</label>
+      <label>Previous Employer<input name="previous_employer" /></label>
+      <label>Current Salary<input name="current_salary" /></label>
+      <label>Expected Salary<input name="expected_salary" /></label>
+      <label>Notice Period<input name="notice_period" /></label>
+      <label>Experience<input name="experience" placeholder="0 years / 1 year / 3 years" /></label>
+      <label>Available From<input type="date" name="available_from" /></label>
+    </div>
+
+    <h4>Skills</h4>
+    <div class="career-skill-picker">
+      {% for skill in skill_options %}
+      <label><input type="checkbox" name="skills" value="{{ skill }}" /> {{ skill }}</label>
+      {% endfor %}
+    </div>
+    <label>Other Skills<input name="other_skills" placeholder="Comma separated" /></label>
+
+    {% if job.require_cover_letter %}
+    <label>Cover Letter<textarea name="cover_letter" rows="5"></textarea></label>
+    {% endif %}
+
+    <div class="grid grid-2">
+      <label>Resume{% if job.require_resume %} *{% endif %}<input type="file" name="resume_file" accept=".pdf,.doc,.docx,image/*" /></label>
+      <label>Photo{% if job.require_photograph %} *{% endif %}<input type="file" name="photo_file" accept="image/*" /></label>
+      <label>Aadhaar{% if job.require_aadhaar %} *{% endif %}<input type="file" name="aadhaar_file" accept=".pdf,image/*" /></label>
+      <label>Driving License{% if job.require_driving_license %} *{% endif %}<input type="file" name="driving_license_file" accept=".pdf,image/*" /></label>
+      <label class="full">Certificates<input type="file" name="certificates_file" accept=".pdf,.zip,image/*" /></label>
+    </div>
+
+    <label><input type="checkbox" name="declaration_confirmed" value="1" required /> I confirm all information is correct.</label>
+    <button type="submit">Submit Application</button>
+  </form>
+</section>
+{% endblock %}

@@ -23,7 +23,7 @@
         <label>User
           <select name="user_id">
             {% for u in managed_users %}
-            <option value="{{ u.id }}" {% if u.id == profile_user.id %}selected{% endif %}>{{ u.full_name }} ({{ u.role }})</option>
+            <option value="{{ u.id }}" {% if u.id == profile_user.id %}selected{% endif %}>{{ u.full_name }} ({{ user_display_roles(u) }})</option>
             {% endfor %}
           </select>
         </label>
@@ -255,13 +255,51 @@
         <div class="flash success"><strong>Today:</strong> {{ attendance_status_label(today_attendance.status) if today_attendance else "Not Started" }}</div>
         <div class="flash success"><strong>Check-In:</strong> {{ today_attendance.check_in_at.strftime("%I:%M:%S %p") if today_attendance and today_attendance.check_in_at else "-" }}</div>
         <div class="flash success"><strong>Check-Out:</strong> {{ today_attendance.check_out_at.strftime("%I:%M:%S %p") if today_attendance and today_attendance.check_out_at else "-" }}</div>
-        <div class="flash success"><strong>Worked:</strong> {{ "%.2f"|format(worked_hours_for_row(today_attendance) or 0) }} hrs</div>
+        <div class="flash success"><strong>Worked:</strong> <span id="profile-live-worked-hours">{{ "%.2f"|format(worked_hours_for_row(today_attendance) or 0) }}</span> hrs</div>
       </div>
+      {% if active_attendance_session and active_attendance_session.check_in_at and not active_attendance_session.check_out_at %}
+      <div
+        class="flash success"
+        style="margin-bottom:0.8rem;"
+        id="profile-active-attendance-session"
+        data-checkin-at="{{ active_attendance_session.check_in_at.strftime('%Y-%m-%dT%H:%M:%S') }}"
+      >
+        <strong>Active Session:</strong>
+        Checked in on {{ active_attendance_session.attendance_date }} at {{ active_attendance_session.check_in_at.strftime("%I:%M:%S %p") }}
+        • <span id="profile-live-session-elapsed">{{ attendance_elapsed_text(active_attendance_session) }}</span>
+        • {{ attendance_source_label(active_attendance_session) }}
+        {% if active_attendance_session.check_in_distance_m is not none %}
+        • {{ "%.0f"|format(active_attendance_session.check_in_distance_m) }} m from cafe
+        {% endif %}
+      </div>
+      <script>
+        (() => {
+          const sessionEl = document.getElementById("profile-active-attendance-session");
+          const elapsedEl = document.getElementById("profile-live-session-elapsed");
+          const workedEl = document.getElementById("profile-live-worked-hours");
+          const rawStart = sessionEl?.dataset?.checkinAt || "";
+          if (!sessionEl || !elapsedEl || !workedEl || !rawStart) return;
+          const start = new Date(rawStart);
+          if (Number.isNaN(start.getTime())) return;
+
+          const render = () => {
+            const seconds = Math.max(0, Math.floor((Date.now() - start.getTime()) / 1000));
+            const hours = Math.floor(seconds / 3600);
+            const minutes = Math.floor((seconds % 3600) / 60);
+            elapsedEl.textContent = `${String(hours).padStart(2, "0")}h ${String(minutes).padStart(2, "0")}m`;
+            workedEl.textContent = (seconds / 3600).toFixed(2);
+          };
+
+          render();
+          window.setInterval(render, 1000);
+        })();
+      </script>
+      {% endif %}
       {% if not can_admin_view or profile_user.id == g.current_user.id %}
       <form method="post" class="grid grid-4" style="margin-bottom:0.8rem;">
-        <input type="hidden" name="action" value="{{ next_attendance_action if next_attendance_action in ['check_in', 'check_out'] else 'check_in' }}" />
+        <input type="hidden" name="action" value="{{ 'check_out' if next_attendance_action == 'check_out' else 'check_in' }}" />
         {% if next_attendance_action == "check_in" %}
-        <button type="submit">Check-In Now</button>
+        <a href="{{ url_for('main.staff_attendance_check_in') }}" class="button-link">Open QR Check-In</a>
         {% elif next_attendance_action == "check_out" %}
         <button type="submit">Check-Out Now</button>
         {% else %}
@@ -329,7 +367,10 @@
             <td>{{ a.check_out_at.strftime("%I:%M:%S %p") if a.check_out_at else "-" }}</td>
             <td>{{ "%.2f"|format(worked_hours_for_row(a) or 0) }}</td>
             <td>{% set flags = attendance_flags_for_row(a) %}{{ flags|join(", ") if flags else "-" }}</td>
-            <td>{{ a.notes or "-" }}</td>
+            <td>
+              {{ a.notes or "-" }}
+              {% if a.check_in_method %}<br /><small>{{ attendance_source_label(a) }}</small>{% endif %}
+            </td>
           </tr>
           {% else %}
           <tr><td colspan="7">No attendance records yet.</td></tr>

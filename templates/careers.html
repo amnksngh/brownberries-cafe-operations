@@ -1,0 +1,63 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="panel careers-hero">
+  <h2>Apply for a Job</h2>
+  <p class="muted">Work with us at Brownberries Café. Explore live roles and apply online.</p>
+  <form method="get" class="careers-filters">
+    <input name="q" value="{{ filters.q }}" placeholder="Search jobs, departments, or skills" />
+    <select name="department">
+      <option value="">All Departments</option>
+      {% for option in departments %}
+      <option value="{{ option }}" {% if filters.department == option %}selected{% endif %}>{{ option }}</option>
+      {% endfor %}
+    </select>
+    <select name="employment_type">
+      <option value="">All Employment Types</option>
+      {% for option in employment_types %}
+      <option value="{{ option }}" {% if filters.employment_type == option %}selected{% endif %}>{{ option }}</option>
+      {% endfor %}
+    </select>
+    <select name="location_type">
+      <option value="">All Locations</option>
+      {% for option in location_types %}
+      <option value="{{ option }}" {% if filters.location_type == option %}selected{% endif %}>{{ option }}</option>
+      {% endfor %}
+    </select>
+    <select name="sort">
+      <option value="newest" {% if filters.sort == "newest" %}selected{% endif %}>Newest</option>
+      <option value="highest_salary" {% if filters.sort == "highest_salary" %}selected{% endif %}>Highest Salary</option>
+      <option value="popular" {% if filters.sort == "popular" %}selected{% endif %}>Most Popular</option>
+    </select>
+    <button type="submit">Apply Filters</button>
+  </form>
+</section>
+
+<section class="careers-grid">
+  {% for job in jobs %}
+  <article class="panel career-card">
+    <div class="career-card-meta">
+      <span class="career-chip priority-{{ job.priority|lower|replace(' ', '-') }}">{{ job.priority }}</span>
+      <span class="career-chip">{{ job.department }}</span>
+      <span class="career-chip">{{ job.employment_type }}</span>
+    </div>
+    <h3>{{ job.title }}</h3>
+    <p class="career-salary">{{ job.salary_text }}</p>
+    <p class="muted">{{ job.location_type }} · {{ job.vacancies }} opening{% if job.vacancies != 1 %}s{% endif %}</p>
+    <p class="muted">Experience: {{ job.experience_required }}</p>
+    {% if job.skills %}
+    <div class="career-skill-list">
+      {% for skill in job.skills[:5] %}
+      <span>{{ skill }}</span>
+      {% endfor %}
+    </div>
+    {% endif %}
+    <a href="{{ url_for('main.career_detail', career_slug=job.career_slug) }}">Apply Now</a>
+  </article>
+  {% else %}
+  <article class="panel">
+    <h3>No matching openings right now</h3>
+    <p class="muted">Please try a broader search or check back again soon.</p>
+  </article>
+  {% endfor %}
+</section>
+{% endblock %}

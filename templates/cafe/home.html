@@ -18,23 +18,24 @@
     <a href="{{ url_for('cafe.menu') }}">Menu Management</a>
     <a href="{{ url_for('cafe.items_availability') }}">Items Availability</a>
     <a href="{{ url_for('cafe.orders') }}">Table Ordering</a>
-    {% if g.current_user.role in ["admin", "manager", "cashier"] or (g.current_user.user_type and g.current_user.user_type.can_manage_cashier) %}
+    {% if user_has_any_role(g.current_user, "admin", "manager", "cashier") or user_has_permission(g.current_user, "can_manage_cashier") %}
     <a href="{{ url_for('cafe.cashier') }}">Cashier Desk</a>
     <a href="{{ url_for('cafe.bookings') }}">Table Bookings</a>
     {% endif %}
-    {% if g.current_user.role in ["admin", "manager", "delivery_partner"] or (g.current_user.user_type and g.current_user.user_type.can_view_delivery_locations) %}
+    {% if user_has_any_role(g.current_user, "admin", "manager", "delivery_partner") or user_has_permission(g.current_user, "can_view_delivery_locations") %}
     <a href="{{ url_for('cafe.delivery_locations') }}">Delivery Locations</a>
     {% endif %}
     <a href="{{ url_for('cafe.kitchen_display', station='kitchen') }}">Kitchen Display</a>
     <a href="{{ url_for('cafe.kitchen_display', station='barista') }}">Barista Counter Display</a>
     <a href="{{ url_for('cafe.inventory') }}">Inventory Management</a>
-    {% if g.current_user.role in ["admin", "manager"] %}
+    {% if user_has_any_role(g.current_user, "admin", "manager") or user_has_permission(g.current_user, "can_manage_staff") %}
     <a href="{{ url_for('cafe.staff') }}">Staff Management</a>
+    <a href="{{ url_for('main.recruitment') }}">Recruitment</a>
     {% endif %}
     <a href="{{ url_for('cafe.stats') }}">Statistics Dashboard</a>
   </div>
 </section>
-{% if g.current_user.role in ["admin", "manager"] %}
+{% if user_has_any_role(g.current_user, "admin", "manager") or user_has_permission(g.current_user, "can_manage_staff") %}
 <section class="panel">
   <h3>Order Cutoff Settings</h3>
   <p class="muted">After the configured time, fresh orders will be blocked for the selected channel.</p>
@@ -47,6 +48,34 @@
     </label>
     <button type="submit">Save Cutoff Settings</button>
   </form>
+</section>
+
+<section class="panel">
+  <h3>Staff Attendance QR & Geofence</h3>
+  <p class="muted">Staff will scan this QR, allow phone location, and check in only if they are within the cafe premises radius.</p>
+  <form method="post" action="{{ url_for('cafe.update_attendance_settings') }}" class="grid grid-4">
+    <label>Cafe Latitude
+      <input name="attendance_cafe_lat" value="{{ attendance_cafe_lat }}" />
+    </label>
+    <label>Cafe Longitude
+      <input name="attendance_cafe_lng" value="{{ attendance_cafe_lng }}" />
+    </label>
+    <label>Allowed Radius (meters)
+      <input name="attendance_radius_m" type="text" inputmode="numeric" value="{{ attendance_radius_m }}" />
+    </label>
+    <button type="submit">Save Attendance Settings</button>
+  </form>
+  <p class="muted">This uses direct coordinate-to-coordinate distance. Increase the radius here if GPS drift around the cafe is higher than expected.</p>
+  <div class="grid grid-2" style="margin-top:0.75rem;">
+    <div class="flash success">
+      <strong>Staff QR Check-In URL</strong><br />
+      <a href="{{ staff_attendance_qr_url }}" target="_blank" rel="noopener">{{ staff_attendance_qr_url }}</a>
+    </div>
+    <div class="flash success">
+      <strong>Attendance QR</strong><br />
+      <a href="{{ staff_attendance_qr_png_url }}" target="_blank" rel="noopener">Open / Download QR PNG</a>
+    </div>
+  </div>
 </section>
 
 <section class="panel">
@@ -67,6 +96,25 @@
     <div class="flash success">
       <strong>Barista Kiosk URL</strong><br />
       <a href="{{ kiosk_barista_url }}" target="_blank" rel="noopener">{{ kiosk_barista_url }}</a>
+    </div>
+  </div>
+  {% endif %}
+</section>
+
+<section class="panel">
+  <h3>Reception Kiosk URL</h3>
+  <p class="muted">Use this for a passwordless reception or cashier kiosk. It opens only the order-handling workspace without the normal staff navigation.</p>
+  <form method="post" action="{{ url_for('cafe.update_reception_kiosk_settings') }}" class="grid grid-4">
+    <label class="full">Reception Access Key
+      <input name="reception_kiosk_token" value="{{ reception_kiosk_token or '' }}" placeholder="Leave blank to auto-generate a secure key" />
+    </label>
+    <button type="submit">Save / Generate Reception URL</button>
+  </form>
+  {% if reception_kiosk_token %}
+  <div class="grid" style="margin-top:0.75rem;">
+    <div class="flash success">
+      <strong>Reception Kiosk URL</strong><br />
+      <a href="{{ reception_kiosk_url }}" target="_blank" rel="noopener">{{ reception_kiosk_url }}</a>
     </div>
   </div>
   {% endif %}

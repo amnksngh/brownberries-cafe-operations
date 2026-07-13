@@ -1,81 +1,115 @@
 {% extends "base.html" %}
-{% block content %}
-<section class="panel">
-  <div class="split-head cashier-header-row">
-    <h2>Cashier Desk</h2>
-    <div class="cashier-header-actions">
-      <h3 id="cashier-total-sale">Total Sale: ₹{{ "%.2f"|format(total_sale_today or 0) }}</h3>
-      <div class="notif-wrap">
-        <button type="button" id="notif-bell" class="notif-bell">🔔 <span id="notif-count" class="notif-count">0</span></button>
-        <div id="notif-panel" class="notif-panel hidden">
-          <div class="split-head"><strong>Notifications</strong><button type="button" id="notif-clear">Clear All</button></div>
-          <div id="notif-list" class="grid"></div>
-        </div>
-      </div>
+{% block body_class %}cashier-shell{% endblock %}
+{% block main_class %}container-wide container-cashier{% endblock %}
+{% block topbar_extra %}
+<div class="cashier-topbar-tools">
+  <label class="cashier-mode-select cashier-topbar-select" aria-label="Select order list">
+    <select id="cashier-tab-select">
+      <option
+        value="{% if kiosk_mode %}{{ url_for('cafe.reception_kiosk', access_key=kiosk_access_key, tab='running', table_id=selected_table.id if selected_table else None) }}{% else %}{{ url_for('cafe.cashier', tab='running', table_id=selected_table.id if selected_table else None) }}{% endif %}"
+        {% if tab == 'running' %}selected{% endif %}
+      >Running Orders</option>
+      <option
+        value="{% if kiosk_mode %}{{ url_for('cafe.reception_kiosk', access_key=kiosk_access_key, tab='all_orders', year=sel_year, month=sel_month, day=sel_day) }}{% else %}{{ url_for('cafe.cashier', tab='all_orders', year=sel_year, month=sel_month, day=sel_day) }}{% endif %}"
+        {% if tab == 'all_orders' %}selected{% endif %}
+      >All Orders</option>
+    </select>
+  </label>
+  <label class="sound-volume-control cashier-topbar-volume" aria-label="Alert volume">
+    <input type="range" id="sound-volume" min="0" max="100" step="5" value="85" />
+  </label>
+  <div class="notif-wrap cashier-topbar-notif">
+    <button type="button" id="notif-bell" class="notif-bell">🔔 <span id="notif-count" class="notif-count">0</span></button>
+    <div id="notif-panel" class="notif-panel hidden">
+      <div class="split-head"><strong>Notifications</strong><button type="button" id="notif-clear">Clear All</button></div>
+      <div id="notif-list" class="grid"></div>
     </div>
   </div>
-  <div class="cashier-toolbar-row">
-    <label class="cashier-mode-select">
-      <span>Orders View</span>
-      <select id="cashier-tab-select">
-        <option
-          value="{{ url_for('cafe.cashier', tab='running', table_id=selected_table.id if selected_table else None) }}"
-          {% if tab == 'running' %}selected{% endif %}
-        >Running Orders</option>
-        <option
-          value="{{ url_for('cafe.cashier', tab='all_orders', year=sel_year, month=sel_month, day=sel_day) }}"
-          {% if tab == 'all_orders' %}selected{% endif %}
-        >All Orders</option>
-      </select>
-    </label>
-    <label class="sound-volume-control">Alert Volume
-      <input type="range" id="sound-volume" min="0" max="100" step="5" value="85" />
-    </label>
-  </div>
-  {% if tab == "running" %}
-  <div id="cashier-table-grid" class="cashier-table-grid">
-    {% for t in tables %}
-    {% set running = running_map.get(t.id, {"count": 0, "total": 0}) %}
-    <a
-      href="{{ url_for('cafe.cashier', tab='running', table_id=t.id) }}"
-      class="cashier-table-box {% if selected_table and selected_table.id == t.id %}selected{% endif %} {% if running.count > 0 %}running{% endif %}"
-    >
-      <strong>{{ t.name }}</strong>
-      <span>{{ running.count }} running order(s)</span>
-      <span>Pending: {{ "%.2f"|format(running.total) }}</span>
-      {% if running.count > 0 %}
-      <div class="cashier-table-stats">
-        {% if running.pending_approval_count %}
-        <span class="cashier-status-chip pending-approval">Approval {{ running.pending_approval_count }}</span>
+</div>
+{% endblock %}
+{% block content %}
+{% if tab == "running" %}
+<section class="cashier-workspace">
+  <aside class="panel cashier-table-panel">
+    <div class="cashier-table-panel-head">
+      <h3>Tables</h3>
+    </div>
+    <div id="cashier-table-grid" class="cashier-table-grid cashier-table-grid-compact">
+      {% for t in tables %}
+      {% set running = running_map.get(t.id, {"count": 0, "total": 0}) %}
+      <a
+        href="{% if kiosk_mode %}{{ url_for('cafe.reception_kiosk', access_key=kiosk_access_key, tab='running', table_id=t.id) }}{% else %}{{ url_for('cafe.cashier', tab='running', table_id=t.id) }}{% endif %}"
+        class="cashier-table-box cashier-table-box-compact {% if selected_table and selected_table.id == t.id %}selected{% endif %} {% if running.count > 0 %}running{% endif %}"
+      >
+        <strong>{{ t.name }}</strong>
+        <span>{{ running.count }} order(s)</span>
+        <span>₹{{ "%.0f"|format(running.total) }}</span>
+        {% if running.count > 0 %}
+        <div class="cashier-table-stats">
+          {% if running.pending_approval_count %}
+          <span class="cashier-status-chip pending-approval">A {{ running.pending_approval_count }}</span>
+          {% endif %}
+          {% if running.queued_count %}
+          <span class="cashier-status-chip pending">Q {{ running.queued_count }}</span>
+          {% endif %}
+          {% if running.preparing_count %}
+          <span class="cashier-status-chip preparing">P {{ running.preparing_count }}</span>
+          {% endif %}
+          {% if running.ready_count %}
+          <span class="cashier-status-chip ready">R {{ running.ready_count }}</span>
+          {% endif %}
+          {% if running.served_count %}
+          <span class="cashier-status-chip served">S {{ running.served_count }}</span>
+          {% endif %}
+          {% if running.rejected_count %}
+          <span class="cashier-status-chip rejected">X {{ running.rejected_count }}</span>
+          {% endif %}
+        </div>
         {% endif %}
-        {% if running.queued_count %}
-        <span class="cashier-status-chip pending">Queued {{ running.queued_count }}</span>
-        {% endif %}
-        {% if running.preparing_count %}
-        <span class="cashier-status-chip preparing">Preparing {{ running.preparing_count }}</span>
-        {% endif %}
-        {% if running.ready_count %}
-        <span class="cashier-status-chip ready">Ready {{ running.ready_count }}</span>
-        {% endif %}
-        {% if running.served_count %}
-        <span class="cashier-status-chip served">Served {{ running.served_count }}</span>
-        {% endif %}
-        {% if running.rejected_count %}
-        <span class="cashier-status-chip rejected">Rejected {{ running.rejected_count }}</span>
-        {% endif %}
-      </div>
-      {% endif %}
-    </a>
-    {% endfor %}
-  </div>
-  {% endif %}
-</section>
+      </a>
+      {% endfor %}
+    </div>
+  </aside>
 
-<div id="cashier-selected-sections">
-{% if tab == "running" and selected_table %}
-<section class="panel">
-  <h3>{{ selected_table.name }} - Unpaid Orders</h3>
-  <p><strong>Total Pending:</strong> {{ "%.2f"|format(table_total) }}</p>
+  <div class="cashier-rail-splitter" id="cashier-rail-splitter" role="separator" aria-orientation="vertical" aria-label="Resize table selection and work panels">
+    <button type="button" class="cashier-rail-splitter-handle" aria-label="Resize table rail"></button>
+  </div>
+
+  <div id="cashier-selected-sections" class="cashier-selected-sections">
+{% if selected_table %}
+<section class="panel cashier-orders-panel">
+  <div class="cashier-section-headline">
+    <h3>{{ selected_table.name }} - Unpaid Orders</h3>
+    <p><strong>Total Pending:</strong> {{ "%.2f"|format(table_total) }}</p>
+  </div>
+  <form method="post" action="{% if kiosk_mode %}{{ url_for('cafe.reception_kiosk_move_table_orders', access_key=kiosk_access_key, table_id=selected_table.id) }}{% else %}{{ url_for('cafe.move_table_orders', table_id=selected_table.id) }}{% endif %}" class="cashier-move-form">
+    <input type="hidden" name="next" value="{{ current_cashier_url }}" />
+    <div class="cashier-move-grid">
+      <div class="cashier-move-picks">
+        <strong>Move Selected Orders</strong>
+        <div class="cashier-move-order-list">
+          {% for order in unpaid_orders %}
+          <label class="cashier-move-order-chip">
+            <input type="checkbox" name="order_ids" value="{{ order.id }}" />
+            <span>#{{ order.daily_sequence or order.id }} • ₹{{ "%.2f"|format(order.total_amount) }} • {{ running_order_time_map.get(order.id, "-") }}</span>
+          </label>
+          {% else %}
+          <span class="muted">No active orders to move.</span>
+          {% endfor %}
+        </div>
+      </div>
+      <label class="cashier-move-target">
+        <span>Move To</span>
+        <select name="target_table_id" {% if not unpaid_orders %}disabled{% endif %}>
+          <option value="">Select table</option>
+          {% for table in target_tables %}
+          <option value="{{ table.id }}">{{ table.name }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <button type="submit" {% if not unpaid_orders %}disabled{% endif %}>Move Orders</button>
+    </div>
+  </form>
   <div style="overflow:auto">
     <table>
       <thead>
@@ -112,8 +146,8 @@
             <button type="button" class="open-order-modal" data-order-id="{{ order.id }}">Preview</button>
             {% set pending_items = pending_order_item_map.get(order.id, []) %}
             {% if pending_items %}
-            <form method="post" action="{{ url_for('cafe.approve_order', order_id=order.id) }}" class="grid">
-              <input type="hidden" name="next" value="{{ url_for('cafe.cashier', tab='running', table_id=selected_table.id) }}" />
+            <form method="post" action="{% if kiosk_mode %}{{ url_for('cafe.reception_kiosk_approve_order', access_key=kiosk_access_key, order_id=order.id) }}{% else %}{{ url_for('cafe.approve_order', order_id=order.id) }}{% endif %}" class="grid">
+              <input type="hidden" name="next" value="{{ current_cashier_url }}" />
               <div class="grid">
                 <strong>Pending Queue</strong>
                 {% for oi in pending_items %}
@@ -130,8 +164,8 @@
             {% endif %}
             <details style="margin-top:0.4rem;">
               <summary>Edit Order</summary>
-              <form method="post" action="{{ url_for('cafe.edit_order_items', order_id=order.id) }}" class="grid">
-                <input type="hidden" name="next" value="{{ url_for('cafe.cashier', tab='running', table_id=selected_table.id) }}" />
+              <form method="post" action="{% if kiosk_mode %}{{ url_for('cafe.reception_kiosk_edit_order_items', access_key=kiosk_access_key, order_id=order.id) }}{% else %}{{ url_for('cafe.edit_order_items', order_id=order.id) }}{% endif %}" class="grid">
+                <input type="hidden" name="next" value="{{ current_cashier_url }}" />
                 {% for oi in order.order_items %}
                 {% if (oi.approval_status or "pending") != "rejected" %}
                 <input type="hidden" name="keep_{{ oi.id }}" value="0" />
@@ -156,11 +190,17 @@
   </div>
 </section>
 
-<section class="panel">
-  <h3>Table Settlement</h3>
-  <p><strong>Approved Orders Ready To Settle:</strong> ₹{{ "%.2f"|format(table_settle_total) }}</p>
-  <form method="post" action="{{ url_for('cafe.clear_table_orders', table_id=selected_table.id) }}" class="grid" id="table-settlement-form">
-    <input type="hidden" name="next" value="{{ url_for('cafe.cashier', tab='running', table_id=selected_table.id) }}" />
+<div class="cashier-section-splitter" id="cashier-section-splitter" role="separator" aria-orientation="horizontal" aria-label="Resize orders and settlement panels">
+  <button type="button" class="cashier-section-splitter-handle" aria-label="Resize panels"></button>
+</div>
+
+<section class="panel cashier-settlement-panel">
+  <div class="cashier-section-headline">
+    <h3>Table Settlement</h3>
+    <p><strong>Approved Orders Ready To Settle:</strong> ₹{{ "%.2f"|format(table_settle_total) }}</p>
+  </div>
+  <form method="post" action="{% if kiosk_mode %}{{ url_for('cafe.reception_kiosk_clear_table_orders', access_key=kiosk_access_key, table_id=selected_table.id) }}{% else %}{{ url_for('cafe.clear_table_orders', table_id=selected_table.id) }}{% endif %}" class="grid" id="table-settlement-form">
+    <input type="hidden" name="next" value="{{ current_cashier_url }}" />
     <input type="hidden" name="payment_row_count" id="payment-row-count" value="1" />
     <table>
       <thead>
@@ -226,12 +266,19 @@
     <button type="submit">Settle Selected Orders For Table</button>
   </form>
 </section>
+{% else %}
+<section class="panel cashier-empty-panel">
+  <h3>Select a Table</h3>
+  <p class="muted">Choose a table from the left to open unpaid orders and settlement tools.</p>
+</section>
 {% endif %}
 </div>
+</section>
+{% endif %}
 {% if tab == "all_orders" %}
 <section class="panel">
   <h3>All Orders by Date</h3>
-  <form method="get" class="grid grid-4">
+  <form method="get" action="{% if kiosk_mode %}{{ url_for('cafe.reception_kiosk', access_key=kiosk_access_key) }}{% else %}{{ url_for('cafe.cashier') }}{% endif %}" class="grid grid-4">
     <input type="hidden" name="tab" value="all_orders" />
     <label>Year
       <select name="year">
@@ -307,7 +354,7 @@
   const selectedTableId = {{ selected_table.id if selected_table else 0 }};
   const activeTab = "{{ tab }}";
   let allOrdersPayload = [];
-  const sendReceiptSmsUrlTemplate = "{{ url_for('cafe.send_order_receipt_sms', order_id=0) }}";
+  const sendReceiptSmsUrlTemplate = "{% if kiosk_mode %}{{ url_for('cafe.reception_kiosk_send_order_receipt_sms', access_key=kiosk_access_key, order_id=0) }}{% else %}{{ url_for('cafe.send_order_receipt_sms', order_id=0) }}{% endif %}";
   const cashierTabSelect = document.getElementById("cashier-tab-select");
   const soundVolumeInput = document.getElementById("sound-volume");
   const globalNotifier = window.__bbGlobalNotifier || null;
@@ -399,6 +446,35 @@
     bindOrderModalButtons(root);
     bindDecisionForms(root);
     initSettlementBuilder(root);
+    applyCashierDeviceMode();
+    initCashierRailResize(root);
+    initCashierWorkspace(root);
+  }
+
+  function cashierViewport() {
+    const vv = window.visualViewport;
+    const width = Math.round(vv?.width || window.innerWidth || document.documentElement.clientWidth || 0);
+    const height = Math.round(vv?.height || window.innerHeight || document.documentElement.clientHeight || 0);
+    return { width, height };
+  }
+
+  function applyCashierDeviceMode() {
+    const body = document.body;
+    if (!body) return;
+    const ua = navigator.userAgent || "";
+    const coarsePointer = window.matchMedia("(pointer: coarse)").matches;
+    const isAndroid = /Android/i.test(ua);
+    const isIPadLike = /iPad/i.test(ua) || (navigator.platform === "MacIntel" && (navigator.maxTouchPoints || 0) > 1);
+    const isTouchDevice = (navigator.maxTouchPoints || 0) > 0 || coarsePointer || isAndroid || isIPadLike;
+    const { width, height } = cashierViewport();
+    const orientation = (screen.orientation?.type || "").toLowerCase();
+    const landscape = orientation.includes("landscape") || width > height;
+    const longestEdge = Math.max(width, height);
+    const shortestEdge = Math.min(width, height);
+    const tabletLike = isTouchDevice && longestEdge >= 900 && shortestEdge >= 600;
+    body.classList.remove("cashier-tablet-landscape", "cashier-tablet-portrait");
+    if (!tabletLike) return;
+    body.classList.add(landscape ? "cashier-tablet-landscape" : "cashier-tablet-portrait");
   }
 
   function renumberPaymentRows() {
@@ -463,6 +539,171 @@
     if (addPaymentRowBtn && !addPaymentRowBtn.dataset.bound) {
       addPaymentRowBtn.dataset.bound = "1";
       addPaymentRowBtn.addEventListener("click", addPaymentRow);
+    }
+  }
+
+  function initCashierWorkspace(root = document) {
+    const sections = root.getElementById ? root.getElementById("cashier-selected-sections") : document.getElementById("cashier-selected-sections");
+    const splitter = root.getElementById ? root.getElementById("cashier-section-splitter") : document.getElementById("cashier-section-splitter");
+    const topPanel = sections?.querySelector(".cashier-orders-panel");
+    const bottomPanel = sections?.querySelector(".cashier-settlement-panel");
+    if (!sections || !splitter || !topPanel || !bottomPanel) return;
+    if (document.body.classList.contains("cashier-tablet-portrait") || window.matchMedia("(max-width: 680px)").matches) {
+      sections.style.removeProperty("grid-template-rows");
+      return;
+    }
+    if (sections.dataset.workspaceReady === "1") return;
+    sections.dataset.workspaceReady = "1";
+    const storageKey = `${window.location.pathname}:cashier-right-split-v1`;
+    const minPanelHeight = 220;
+    const splitterHeight = 14;
+
+    const applyHeights = (topHeight) => {
+      const total = sections.clientHeight;
+      if (!total) return;
+      const maxTop = Math.max(minPanelHeight, total - minPanelHeight - splitterHeight);
+      const safeTop = Math.min(Math.max(topHeight, minPanelHeight), maxTop);
+      sections.style.gridTemplateRows = `${safeTop}px ${splitterHeight}px minmax(${minPanelHeight}px, 1fr)`;
+      try { localStorage.setItem(storageKey, String(Math.round(safeTop))); } catch (e) {}
+    };
+
+    let storedTop = 0;
+    try { storedTop = Number(localStorage.getItem(storageKey) || 0); } catch (e) {}
+    window.requestAnimationFrame(() => {
+      const fallbackTop = Math.max(minPanelHeight, Math.round(sections.clientHeight * 0.56));
+      applyHeights(storedTop || fallbackTop);
+    });
+
+    let startY = 0;
+    let startTop = 0;
+
+    const pointerY = (event) => ("touches" in event ? (event.touches[0]?.clientY || 0) : event.clientY);
+    const onPointerMove = (event) => {
+      const nextTop = startTop + (pointerY(event) - startY);
+      applyHeights(nextTop);
+    };
+
+    const onPointerUp = () => {
+      sections.classList.remove("is-resizing");
+      window.removeEventListener("pointermove", onPointerMove);
+      window.removeEventListener("pointerup", onPointerUp);
+      window.removeEventListener("touchmove", onPointerMove);
+      window.removeEventListener("touchend", onPointerUp);
+    };
+
+    const startResize = (event) => {
+      event.preventDefault();
+      sections.classList.add("is-resizing");
+      startY = pointerY(event);
+      startTop = topPanel.getBoundingClientRect().height;
+      window.addEventListener("pointermove", onPointerMove);
+      window.addEventListener("pointerup", onPointerUp);
+      window.addEventListener("touchmove", onPointerMove, { passive: false });
+      window.addEventListener("touchend", onPointerUp, { passive: true });
+    };
+
+    if (splitter.dataset.bound !== "1") {
+      splitter.dataset.bound = "1";
+      splitter.addEventListener("pointerdown", startResize);
+      splitter.addEventListener("touchstart", startResize, { passive: false });
+    }
+
+    window.__bbCashierWorkspaceResizeHandler = window.__bbCashierWorkspaceResizeHandler || (() => {
+      const liveSections = document.getElementById("cashier-selected-sections");
+      if (!liveSections) return;
+      if (document.body.classList.contains("cashier-tablet-portrait") || window.matchMedia("(max-width: 680px)").matches) {
+        liveSections.style.removeProperty("grid-template-rows");
+        return;
+      }
+      let latest = 0;
+      try { latest = Number(localStorage.getItem(storageKey) || 0); } catch (e) {}
+      const fallback = Math.max(minPanelHeight, Math.round(liveSections.clientHeight * 0.56));
+      applyHeights(latest || fallback);
+    });
+    if (!window.__bbCashierWorkspaceResizeBound) {
+      window.__bbCashierWorkspaceResizeBound = true;
+      window.addEventListener("resize", window.__bbCashierWorkspaceResizeHandler);
+    }
+  }
+
+  function initCashierRailResize(root = document) {
+    const workspace = root.querySelector ? root.querySelector(".cashier-workspace") : document.querySelector(".cashier-workspace");
+    const splitter = root.getElementById ? root.getElementById("cashier-rail-splitter") : document.getElementById("cashier-rail-splitter");
+    const tablePanel = root.querySelector ? root.querySelector(".cashier-table-panel") : document.querySelector(".cashier-table-panel");
+    if (!workspace || !splitter || !tablePanel) return;
+    if (document.body.classList.contains("cashier-tablet-portrait") || window.matchMedia("(max-width: 680px)").matches) {
+      workspace.style.removeProperty("--cashier-rail-width");
+      return;
+    }
+    const storageKey = `${window.location.pathname}:cashier-rail-width-v1`;
+    const getViewportWidth = () => {
+      const vvWidth = Math.round(window.visualViewport?.width || 0);
+      return vvWidth || window.innerWidth || document.documentElement.clientWidth || 0;
+    };
+    const applyWidth = (width) => {
+      const viewportWidth = getViewportWidth();
+      const hostWidth = Math.round(
+        workspace.parentElement?.getBoundingClientRect().width ||
+        workspace.getBoundingClientRect().width ||
+        viewportWidth
+      );
+      const isTabletLandscape = document.body.classList.contains("cashier-tablet-landscape");
+      const minWidth = isTabletLandscape ? 220 : 280;
+      const desiredMax = isTabletLandscape ? 360 : 620;
+      const viewportRatioCap = Math.round(viewportWidth * (isTabletLandscape ? 0.33 : 0.4));
+      const minRightPane = isTabletLandscape ? 520 : 640;
+      const splitterAllowance = 30;
+      const availableWidth = hostWidth - minRightPane - splitterAllowance;
+      const maxWidth = Math.max(minWidth, Math.min(desiredMax, viewportRatioCap, availableWidth));
+      const safeWidth = Math.round(Math.min(Math.max(width, minWidth), maxWidth));
+      workspace.style.setProperty("--cashier-rail-width", `${safeWidth}px`);
+      try { localStorage.setItem(storageKey, String(safeWidth)); } catch (e) {}
+    };
+
+    let initial = 390;
+    try { initial = Number(localStorage.getItem(storageKey) || 390); } catch (e) {}
+    window.requestAnimationFrame(() => applyWidth(initial));
+
+    let startX = 0;
+    let startWidth = 0;
+    const pointerX = (event) => ("touches" in event ? (event.touches[0]?.clientX || 0) : event.clientX);
+    const onPointerMove = (event) => {
+      applyWidth(startWidth + (pointerX(event) - startX));
+    };
+    const onPointerUp = () => {
+      document.body.classList.remove("cashier-rail-resizing");
+      window.removeEventListener("pointermove", onPointerMove);
+      window.removeEventListener("pointerup", onPointerUp);
+      window.removeEventListener("touchmove", onPointerMove);
+      window.removeEventListener("touchend", onPointerUp);
+    };
+
+    if (splitter.dataset.bound === "1") return;
+    splitter.dataset.bound = "1";
+    const startResize = (event) => {
+      event.preventDefault();
+      document.body.classList.add("cashier-rail-resizing");
+      startX = pointerX(event);
+      startWidth = tablePanel.getBoundingClientRect().width;
+      window.addEventListener("pointermove", onPointerMove);
+      window.addEventListener("pointerup", onPointerUp);
+      window.addEventListener("touchmove", onPointerMove, { passive: false });
+      window.addEventListener("touchend", onPointerUp, { passive: true });
+    };
+    splitter.addEventListener("pointerdown", startResize);
+    splitter.addEventListener("touchstart", startResize, { passive: false });
+
+    if (!window.__bbCashierRailResizeBound) {
+      window.__bbCashierRailResizeBound = true;
+      window.addEventListener("resize", () => {
+        if (document.body.classList.contains("cashier-tablet-portrait") || window.matchMedia("(max-width: 680px)").matches) {
+          workspace.style.removeProperty("--cashier-rail-width");
+          return;
+        }
+        let saved = 390;
+        try { saved = Number(localStorage.getItem(storageKey) || 390); } catch (e) {}
+        applyWidth(saved);
+      });
     }
   }
 
@@ -802,5 +1043,17 @@
   loadNotifs();
   renderNotifs();
   bindDecisionForms();
+  applyCashierDeviceMode();
+  initCashierRailResize(document);
+  initCashierWorkspace(document);
+  window.addEventListener("resize", applyCashierDeviceMode);
+  window.visualViewport?.addEventListener("resize", applyCashierDeviceMode);
+  window.addEventListener("orientationchange", () => {
+    window.setTimeout(() => {
+      applyCashierDeviceMode();
+      initCashierRailResize(document);
+      initCashierWorkspace(document);
+    }, 80);
+  });
 </script>
 {% endblock %}

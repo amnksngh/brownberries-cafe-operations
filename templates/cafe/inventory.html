@@ -20,6 +20,7 @@
     <a href="{{ url_for('cafe.inventory', section='stock_levels') }}" class="{% if section=='stock_levels' %}active{% endif %}">Stock Levels</a>
     <a href="{{ url_for('cafe.inventory', section='purchases') }}" class="{% if section=='purchases' %}active{% endif %}">Purchases</a>
     <a href="{{ url_for('cafe.inventory', section='vendors') }}" class="{% if section=='vendors' %}active{% endif %}">Vendors</a>
+    <a href="{{ url_for('cafe.inventory', section='to_purchase') }}" class="{% if section=='to_purchase' %}active{% endif %}">To Purchase</a>
     <a href="{{ url_for('cafe.inventory', section='recipes') }}" class="{% if section=='recipes' %}active{% endif %}">Recipes</a>
     <a href="{{ url_for('cafe.inventory', section='wastage') }}" class="{% if section=='wastage' %}active{% endif %}">Wastage</a>
     <a href="{{ url_for('cafe.inventory', section='analytics') }}" class="{% if section=='analytics' %}active{% endif %}">Analytics</a>
@@ -37,24 +38,146 @@
       <article class="inventory-kpi"><h4>Today Spend</h4><p>₹{{ "%.2f"|format(inventory_analytics.today_purchase_spend) }}</p></article>
       <article class="inventory-kpi"><h4>Today Wastage</h4><p>₹{{ "%.2f"|format(inventory_analytics.today_wastage_value) }}</p></article>
       <article class="inventory-kpi"><h4>Daily Consumption</h4><p>{{ "%.2f"|format(inventory_analytics.today_consumption) }}</p></article>
+      <article class="inventory-kpi"><h4>To Purchase</h4><p>{{ inventory_analytics.to_purchase_count }}</p></article>
     </section>
 
     {% if section == "dashboard" %}
+    <section class="panel">
+      <div class="split-head" style="gap:1rem;align-items:flex-start;">
+        <div>
+          <h3>Quick Inventory Tracking</h3>
+          <p class="muted">Log daily inventory spend in seconds, then review category trends and compare cost against cafe earnings.</p>
+        </div>
+        <form method="get" class="grid inventory-inline-form" style="min-width:min(100%, 480px);">
+          <input type="hidden" name="section" value="dashboard" />
+          <label>Period
+            <select name="period">
+              {% for value, label in inventory_period_options %}
+              <option value="{{ value }}" {% if inventory_period == value %}selected{% endif %}>{{ label }}</option>
+              {% endfor %}
+            </select>
+          </label>
+          <label>Category
+            <select name="track_category_id">
+              <option value="0">All Categories</option>
+              {% for c in categories %}
+              <option value="{{ c.id }}" {% if inventory_tracking_category_id == c.id %}selected{% endif %}>{{ c.name }}</option>
+              {% endfor %}
+            </select>
+          </label>
+          <button type="submit">Refresh</button>
+        </form>
+      </div>
+      <p class="muted">Showing {{ inventory_period_start.strftime("%d %b %Y") }} to {{ inventory_period_end.strftime("%d %b %Y") }}</p>
+    </section>
+
+    <section class="inventory-two-col inventory-main-grid">
+      <article class="panel">
+        <h3>Log Inventory Expense</h3>
+        <form method="post" class="grid inventory-form-grid">
+          <input type="hidden" name="action" value="log_expense" />
+          <label>Category
+            <select name="category_id" required>
+              <option value="">Select category</option>
+              {% for c in categories %}
+              <option value="{{ c.id }}">{{ c.name }}</option>
+              {% endfor %}
+            </select>
+          </label>
+          <label>Vendor
+            <select name="vendor_id" required>
+              {% for v in vendors %}
+              <option value="{{ v.id }}" {% if v.name|lower == 'other' %}selected{% endif %}>{{ v.name }}</option>
+              {% endfor %}
+            </select>
+          </label>
+          <label>Expense Date <input type="date" name="entry_date" value="{{ closing_date.isoformat() }}" required /></label>
+          <label>Transaction Mode
+            <select name="transaction_mode" required>
+              <option value="qr">QR</option>
+              <option value="cash">Cash</option>
+              <option value="card">Card</option>
+            </select>
+          </label>
+          <label>Amount <input type="number" name="amount" min="0" step="0.01" placeholder="0.00" required /></label>
+          <label class="full">Note <input name="note" placeholder="Vendor bill, refill, emergency purchase..." /></label>
+          <button type="submit">Save Expense</button>
+        </form>
+      </article>
+
+      <article class="panel">
+        <h3>Financial Snapshot</h3>
+        <div class="inventory-card-grid">
+          <article class="inventory-kpi"><h4>Total Expense</h4><p>₹{{ "%.2f"|format(expense_vs_earning.expense) }}</p></article>
+          <article class="inventory-kpi"><h4>Total Earnings</h4><p>₹{{ "%.2f"|format(expense_vs_earning.revenue) }}</p></article>
+          <article class="inventory-kpi"><h4>Net Gap</h4><p>₹{{ "%.2f"|format(expense_vs_earning.difference) }}</p></article>
+          <article class="inventory-kpi"><h4>Avg Daily Expense</h4><p>₹{{ "%.2f"|format(average_daily_expense) }}</p></article>
+        </div>
+      </article>
+    </section>
+
     <section class="inventory-two-col">
       <article class="panel">
-        <h3>Category Overview</h3>
-        <div class="inventory-category-grid">
-          {% for row in category_stats %}
-          <article class="inventory-category-chip">
+        <h3>Expense by Category</h3>
+        <div class="inventory-alert-list">
+          {% for row in category_spend_rows %}
+          {% if row.amount > 0 or inventory_tracking_category_id == row.category.id %}
+          <div style="display:grid;gap:0.35rem;margin-bottom:0.85rem;">
             <div class="split-head">
-              <h4>{{ row.category.name }}</h4>
-              <span class="category-dot" style="background:{{ row.category.color or '#b08968' }}"></span>
+              <strong>{{ row.category.name }}</strong>
+              <span>₹{{ "%.2f"|format(row.amount) }}</span>
             </div>
-            <p>{{ row.item_count }} items</p>
-            <p>₹{{ "%.2f"|format(row.stock_value) }}</p>
-          </article>
+            <div style="height:10px;background:#f2e8df;border-radius:999px;overflow:hidden;">
+              <div style="height:100%;width:{{ (row.amount / max_category_spend * 100) if max_category_spend else 0 }}%;background:{{ row.category.color or '#7a4b2f' }};"></div>
+            </div>
+            <span class="muted">{{ row.entry_count }} log entr{{ 'y' if row.entry_count == 1 else 'ies' }}</span>
+          </div>
+          {% endif %}
+          {% else %}
+          <p class="muted">No category spending logged for this period yet.</p>
           {% endfor %}
         </div>
+      </article>
+
+      <article class="panel">
+        <h3>Expense Timeline</h3>
+        <div class="inventory-alert-list">
+          {% for row in timeline_rows %}
+          <div style="display:grid;gap:0.35rem;margin-bottom:0.85rem;">
+            <div class="split-head">
+              <strong>{{ row.date.strftime("%d %b") }}</strong>
+              <span>₹{{ "%.2f"|format(row.amount) }}</span>
+            </div>
+            <div style="height:10px;background:#f2e8df;border-radius:999px;overflow:hidden;">
+              <div style="height:100%;width:{{ (row.amount / max_timeline_amount * 100) if max_timeline_amount else 0 }}%;background:#4e8f76;"></div>
+            </div>
+          </div>
+          {% else %}
+          <p class="muted">No timeline data available yet.</p>
+          {% endfor %}
+        </div>
+      </article>
+    </section>
+
+    <section class="inventory-two-col">
+      <article class="panel">
+        <h3>Recent Inventory Logs</h3>
+        <table>
+          <tr><th>Expense Date</th><th>Category</th><th>Vendor</th><th>Mode</th><th>Amount</th><th>Logged By</th><th>Logged At (IST)</th></tr>
+          {% for row in recent_expense_logs %}
+          <tr>
+            <td>{{ row.expense_date }}</td>
+            <td>{{ row.category_name }}</td>
+            <td>{{ row.vendor_name }}</td>
+            <td>{{ row.transaction_mode }}</td>
+            <td>₹{{ "%.2f"|format(row.amount) }}</td>
+            <td>{{ row.logged_by }}</td>
+            <td>{{ row.logged_at_ist }}</td>
+          </tr>
+          {% else %}
+          <tr><td colspan="7">No inventory expenses logged yet.</td></tr>
+          {% endfor %}
+        </table>
       </article>
       <article class="panel">
         <h3>Priority Alerts</h3>
@@ -71,37 +194,92 @@
         </div>
       </article>
     </section>
-    <section class="inventory-two-col">
+    {% endif %}
+
+    {% if section == "to_purchase" %}
+    <section class="inventory-two-col inventory-main-grid">
       <article class="panel">
-        <h3>Highest Value Stock</h3>
-        <table>
-          <tr><th>Item</th><th>Area</th><th>Value</th></tr>
-          {% for item in top_stock_value_items %}
-          <tr>
-            <td>{{ item.name }}</td>
-            <td>{{ item.area.title() }}</td>
-            <td>₹{{ "%.2f"|format((item.current_amount or 0) * (item.purchase_price or 0)) }}</td>
-          </tr>
-          {% else %}
-          <tr><td colspan="3">No stock items yet.</td></tr>
-          {% endfor %}
-        </table>
+        <div class="split-head">
+          <div>
+            <h3>To Purchase</h3>
+            <p class="muted">Build a shared buying list, tick items as purchased, and keep the remaining items visible at a glance.</p>
+          </div>
+          <form method="post">
+            <input type="hidden" name="action" value="clear_to_purchase" />
+            <button type="submit" {% if not purchase_todos_active %}disabled{% endif %}>Clear Whole List</button>
+          </form>
+        </div>
+        <form method="post" class="grid inventory-form-grid">
+          <input type="hidden" name="action" value="add_to_purchase" />
+          <label>Item Name <input name="item_name" placeholder="Milk, tissue rolls, coffee beans..." required /></label>
+          <label>Category
+            <select name="category_id">
+              <option value="">Optional category</option>
+              {% for c in categories %}
+              <option value="{{ c.id }}">{{ c.name }}</option>
+              {% endfor %}
+            </select>
+          </label>
+          <label>Quantity / Qty Note <input name="quantity_note" placeholder="5 kg, 2 packs, 1 crate..." /></label>
+          <label class="full">Note <input name="note" placeholder="Brand preference, store, urgent, etc." /></label>
+          <button type="submit">Add to List</button>
+        </form>
       </article>
+
       <article class="panel">
-        <h3>Recent Purchase Lines</h3>
-        <table>
-          <tr><th>Item</th><th>Qty</th><th>Rate</th></tr>
-          {% for line in recent_purchase_lines %}
-          <tr>
-            <td>{{ line.item.name if line.item else "-" }}</td>
-            <td>{{ line.quantity }}</td>
-            <td>₹{{ "%.2f"|format(line.unit_price) }}</td>
-          </tr>
+        <h3>Active Purchase List</h3>
+        <div class="inventory-alert-list">
+          {% for row in purchase_todos_active %}
+          <div class="inventory-alert-row neutral" style="display:grid;grid-template-columns:auto 1fr auto;align-items:flex-start;gap:0.8rem;">
+            <form method="post" style="margin:0;">
+              <input type="hidden" name="action" value="toggle_to_purchase" />
+              <input type="hidden" name="todo_id" value="{{ row.id }}" />
+              <input type="checkbox" {% if row.status == 'purchased' %}checked{% endif %} onchange="this.form.submit()" />
+            </form>
+            <div>
+              <strong style="{% if row.status == 'purchased' %}text-decoration:line-through;opacity:0.7;{% endif %}">{{ row.item_name }}</strong>
+              <div class="muted">
+                {% if row.category_name %}{{ row.category_name }}{% endif %}
+                {% if row.quantity_note %}{% if row.category_name %} | {% endif %}{{ row.quantity_note }}{% endif %}
+              </div>
+              {% if row.note %}<div class="muted">{{ row.note }}</div>{% endif %}
+              <div class="muted">
+                Added by {{ row.created_by_name }} on {{ row.created_at_ist }}
+                {% if row.status == "purchased" and row.completed_by_name %}
+                <br />Purchased by {{ row.completed_by_name }} on {{ row.completed_at_ist }}
+                {% endif %}
+              </div>
+            </div>
+            <form method="post" style="margin:0;">
+              <input type="hidden" name="action" value="remove_to_purchase" />
+              <input type="hidden" name="todo_id" value="{{ row.id }}" />
+              <button type="submit">Remove</button>
+            </form>
+          </div>
           {% else %}
-          <tr><td colspan="3">No recent purchases.</td></tr>
+          <p class="muted">No active purchase items right now.</p>
           {% endfor %}
-        </table>
+        </div>
       </article>
+    </section>
+
+    <section class="panel">
+      <h3>Purchase List History</h3>
+      <table>
+        <tr><th>Item</th><th>Category</th><th>Status</th><th>Added By</th><th>Closed By</th><th>Closed At</th></tr>
+        {% for row in purchase_todos_history %}
+        <tr>
+          <td>{{ row.item_name }}{% if row.quantity_note %}<br /><small>{{ row.quantity_note }}</small>{% endif %}</td>
+          <td>{{ row.category_name }}</td>
+          <td>{{ row.status }}</td>
+          <td>{{ row.created_by_name }}</td>
+          <td>{{ row.closed_by_name }}</td>
+          <td>{{ row.closed_at_ist }}</td>
+        </tr>
+        {% else %}
+        <tr><td colspan="6">No purchase history yet.</td></tr>
+        {% endfor %}
+      </table>
     </section>
     {% endif %}
 
@@ -498,6 +676,49 @@
     {% endif %}
 
     {% if section == "analytics" %}
+    <section class="panel">
+      <div class="split-head" style="gap:1rem;align-items:flex-start;">
+        <div>
+          <h3>Inventory Analytics</h3>
+          <p class="muted">Use the same time window across spend, stock pressure, and menu-linked consumption.</p>
+        </div>
+        <form method="get" class="grid inventory-inline-form">
+          <input type="hidden" name="section" value="analytics" />
+          <label>Period
+            <select name="period">
+              {% for value, label in inventory_period_options %}
+              <option value="{{ value }}" {% if inventory_period == value %}selected{% endif %}>{{ label }}</option>
+              {% endfor %}
+            </select>
+          </label>
+          <button type="submit">Refresh</button>
+        </form>
+      </div>
+    </section>
+    <section class="inventory-two-col">
+      <article class="panel">
+        <h3>Expense vs Earnings</h3>
+        <div class="inventory-alert-list">
+          <div style="display:grid;gap:0.35rem;margin-bottom:0.85rem;">
+            <div class="split-head"><strong>Expenses</strong><span>₹{{ "%.2f"|format(expense_vs_earning.expense) }}</span></div>
+            <div style="height:12px;background:#f2e8df;border-radius:999px;overflow:hidden;"><div style="height:100%;width:{{ ((expense_vs_earning.expense / [expense_vs_earning.expense, expense_vs_earning.revenue]|max) * 100) if ([expense_vs_earning.expense, expense_vs_earning.revenue]|max) else 0 }}%;background:#a15c38;"></div></div>
+          </div>
+          <div style="display:grid;gap:0.35rem;">
+            <div class="split-head"><strong>Earnings</strong><span>₹{{ "%.2f"|format(expense_vs_earning.revenue) }}</span></div>
+            <div style="height:12px;background:#f2e8df;border-radius:999px;overflow:hidden;"><div style="height:100%;width:{{ ((expense_vs_earning.revenue / [expense_vs_earning.expense, expense_vs_earning.revenue]|max) * 100) if ([expense_vs_earning.expense, expense_vs_earning.revenue]|max) else 0 }}%;background:#4e8f76;"></div></div>
+          </div>
+        </div>
+      </article>
+      <article class="panel">
+        <h3>Operational Risk</h3>
+        <div class="inventory-alert-list">
+          <div class="inventory-alert-row low"><strong>Low Stock Items</strong><span>{{ low_stock_items|length }}</span></div>
+          <div class="inventory-alert-row overstock"><strong>Overstock Items</strong><span>{{ overstock_items|length }}</span></div>
+          <div class="inventory-alert-row neutral"><strong>Items Without Vendor</strong><span>{{ items_without_vendor|length }}</span></div>
+          <div class="inventory-alert-row neutral"><strong>Recipe Mappings</strong><span>{{ recipes|length }}</span></div>
+        </div>
+      </article>
+    </section>
     <section class="inventory-two-col">
       <article class="panel">
         <h3>Consumption Drivers</h3>
@@ -515,13 +736,19 @@
         </table>
       </article>
       <article class="panel">
-        <h3>Operational Risk</h3>
-        <div class="inventory-alert-list">
-          <div class="inventory-alert-row low"><strong>Low Stock Items</strong><span>{{ low_stock_items|length }}</span></div>
-          <div class="inventory-alert-row overstock"><strong>Overstock Items</strong><span>{{ overstock_items|length }}</span></div>
-          <div class="inventory-alert-row neutral"><strong>Items Without Vendor</strong><span>{{ items_without_vendor|length }}</span></div>
-          <div class="inventory-alert-row neutral"><strong>Recipe Mappings</strong><span>{{ recipes|length }}</span></div>
-        </div>
+        <h3>Best Value Categories</h3>
+        <table>
+          <tr><th>Category</th><th>Spend</th><th>Entries</th></tr>
+          {% for row in category_spend_rows[:8] %}
+          <tr>
+            <td>{{ row.category.name }}</td>
+            <td>₹{{ "%.2f"|format(row.amount) }}</td>
+            <td>{{ row.entry_count }}</td>
+          </tr>
+          {% else %}
+          <tr><td colspan="3">No category spend recorded yet.</td></tr>
+          {% endfor %}
+        </table>
       </article>
     </section>
     {% endif %}

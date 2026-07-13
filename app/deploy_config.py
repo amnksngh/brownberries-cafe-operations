@@ -35,6 +35,10 @@ def load_deployment_config(instance_path: str) -> dict:
         "QR_ORDER_CUTOFF_TIME": "QR_ORDER_CUTOFF_TIME",
         "STAFF_ORDER_CUTOFF_TIME": "STAFF_ORDER_CUTOFF_TIME",
         "KDS_KIOSK_TOKEN": "KDS_KIOSK_TOKEN",
+        "RECEPTION_KIOSK_TOKEN": "RECEPTION_KIOSK_TOKEN",
+        "ATTENDANCE_CAFE_LAT": "ATTENDANCE_CAFE_LAT",
+        "ATTENDANCE_CAFE_LNG": "ATTENDANCE_CAFE_LNG",
+        "ATTENDANCE_RADIUS_METERS": "ATTENDANCE_RADIUS_METERS",
     }
     for key, env_name in env_map.items():
         val = os.getenv(env_name, "").strip()

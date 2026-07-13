@@ -6,6 +6,7 @@
     <p class="muted">Welcome back</p>
     <h2>Sign In</h2>
     <form method="post" class="grid">
+      {% if next_url %}<input type="hidden" name="next" value="{{ next_url }}" />{% endif %}
       <label>Email <input type="email" name="email" required /></label>
       <label>Password <input type="password" name="password" required /></label>
       <button type="submit">Login</button>

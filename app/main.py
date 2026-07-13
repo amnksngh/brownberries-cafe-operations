@@ -1,13 +1,15 @@
 import json
 import os
 import calendar
+import math
+import re
 from datetime import date, datetime, time
 from io import BytesIO
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
 import qrcode
-from flask import Blueprint, Response, current_app, flash, g, redirect, render_template, request, session, url_for
+from flask import Blueprint, Response, current_app, flash, g, redirect, render_template, request, send_file, session, url_for
 from sqlalchemy.orm import joinedload
 from werkzeug.security import check_password_hash, generate_password_hash
 from werkzeug.utils import secure_filename
@@ -25,7 +27,7 @@ from .attendance_logic import (
     refresh_attendance_row,
     worked_hours_for_row,
 )
-from .auth_helpers import login_required, roles_required
+from .auth_helpers import login_required, roles_required, user_has_any_role, user_has_permission
 from .extensions import socketio
 from .extensions import db
 from .deploy_config import load_deployment_config
@@ -35,6 +37,9 @@ from .models import (
     CafeTable,
     LibraryLoan,
     LibraryPayment,
+    JobApplication,
+    JobApplicationTimeline,
+    JobOpening,
     MenuCategory,
     MenuItem,
     Customer,
@@ -53,12 +58,156 @@ PROTECTED_ADMIN_EMAIL = "admin@brownberries.local"
 PROTECTED_MENU_CATEGORY_NAMES = {"other", "utility"}
 IST_TZ = ZoneInfo("Asia/Kolkata")
 UTC_TZ = ZoneInfo("UTC")
+DEFAULT_ATTENDANCE_CAFE_LAT = 25.207989477704068
+DEFAULT_ATTENDANCE_CAFE_LNG = 80.87374457551877
+DEFAULT_ATTENDANCE_RADIUS_METERS = 120.0
+JOB_APPLICATION_STATUSES = [
+    "applied",
+    "resume_screening",
+    "phone_call",
+    "interview_scheduled",
+    "interview_completed",
+    "selected",
+    "offer_sent",
+    "accepted",
+    "joined",
+    "rejected",
+]
+JOB_EMPLOYMENT_TYPES = ["Full Time", "Part Time", "Intern", "Contract"]
+JOB_LOCATION_TYPES = ["Brownberries Cafe", "Remote", "Hybrid"]
+JOB_PRIORITY_TYPES = ["Urgent", "Normal", "Future Hiring"]
+JOB_EDUCATION_TYPES = ["Any", "10th", "12th", "Graduate"]
+JOB_EXPERIENCE_TYPES = ["0 Years", "1 Year", "2 Years", "3+ Years"]
+RECRUITMENT_SKILL_OPTIONS = [
+    "Coffee", "Espresso", "Latte Art", "POS", "Communication", "Customer Service",
+    "Cleaning", "South Indian", "North Indian", "Chinese", "Pizza", "Pasta",
+    "Cash Handling", "Milk Steaming", "Inventory", "Delivery", "Book Handling",
+]
+PUBLIC_JOB_DEPARTMENTS = [
+    "Barista", "Kitchen", "Service", "Cashier", "Library", "Inventory", "Housekeeping", "Delivery",
+]
 
 
 def _is_cafe_admin(user: User) -> bool:
     return user.email == PROTECTED_ADMIN_EMAIL or (
-        user.role == "admin" and user.full_name.strip().lower() == "cafe admin"
+        user_has_any_role(user, "admin") and user.full_name.strip().lower() == "cafe admin"
     )
+
+
+def _slugify_text(value: str) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "-", (value or "").strip().lower()).strip("-")
+    return slug or f"job-{uuid4().hex[:8]}"
+
+
+def _json_list(value) -> list[str]:
+    if not value:
+        return []
+    if isinstance(value, list):
+        raw = value
+    else:
+        try:
+            raw = json.loads(value)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return []
+    out: list[str] = []
+    for item in raw:
+        text = str(item or "").strip()
+        if text and text not in out:
+            out.append(text)
+    return out
+
+
+def _set_json_list(items: list[str]) -> str:
+    cleaned: list[str] = []
+    for item in items or []:
+        text = str(item or "").strip()
+        if text and text not in cleaned:
+            cleaned.append(text)
+    return json.dumps(cleaned)
+
+
+def _job_skills(job: JobOpening) -> list[str]:
+    return _json_list(job.skills_json)
+
+
+def _application_skills(application: JobApplication) -> list[str]:
+    return _json_list(application.skills_json)
+
+
+def _job_salary_text(job: JobOpening) -> str:
+    if (job.salary_display or "").strip():
+        return job.salary_display.strip()
+    if job.salary_min is not None and job.salary_max is not None:
+        return f"₹{int(job.salary_min):,} - ₹{int(job.salary_max):,}"
+    if job.salary_min is not None:
+        return f"From ₹{int(job.salary_min):,}"
+    if job.salary_max is not None:
+        return f"Up to ₹{int(job.salary_max):,}"
+    return "Salary discussed at interview"
+
+
+def _job_is_publicly_open(job: JobOpening) -> bool:
+    if not job or job.status != "published":
+        return False
+    now = datetime.utcnow()
+    if job.archived_at:
+        return False
+    if job.auto_close_days and job.published_at:
+        days_live = (now - job.published_at).days
+        if days_live >= max(1, int(job.auto_close_days)):
+            return False
+    if job.max_applicants:
+        if "applications" in job.__dict__:
+            active_count = sum(1 for app in (job.applications or []) if app.status != "rejected")
+        else:
+            active_count = JobApplication.query.filter(
+                JobApplication.job_id == job.id,
+                JobApplication.status != "rejected",
+            ).count()
+        if active_count >= max(1, int(job.max_applicants)):
+            return False
+    return True
+
+
+def _job_status_label(status: str) -> str:
+    return str(status or "").replace("_", " ").title()
+
+
+def _job_application_code(application_id: int, created_at: datetime | None = None) -> str:
+    ref_dt = created_at or datetime.utcnow()
+    return f"BBC-{ref_dt.year}-{int(application_id):06d}"
+
+
+def _append_application_timeline(application: JobApplication, status: str, note: str | None = None, changed_by: User | None = None):
+    db.session.add(
+        JobApplicationTimeline(
+            application_id=application.id,
+            status=status,
+            note=(note or "").strip() or None,
+            changed_by_user_id=changed_by.id if changed_by else None,
+        )
+    )
+
+
+def _job_card_payload(job: JobOpening) -> dict:
+    return {
+        "id": job.id,
+        "title": job.title,
+        "department": job.department,
+        "employment_type": job.employment_type,
+        "location_type": job.location_type,
+        "salary_text": _job_salary_text(job),
+        "vacancies": job.vacancies,
+        "priority": job.priority,
+        "experience_required": job.experience_required or "Flexible",
+        "education_required": job.education_required or "Flexible",
+        "skills": _job_skills(job),
+        "career_slug": job.career_slug,
+        "status": job.status,
+        "published_at": job.published_at,
+        "is_open": _job_is_publicly_open(job),
+        "application_count": len(job.applications),
+    }
 
 
 def _query_arg_case_insensitive(name: str, default: str = "") -> str:
@@ -186,6 +335,81 @@ def _is_public_menu_item(item: MenuItem, category_name_by_id: dict[int, str]) ->
     return len(_public_menu_category_ids(item, category_name_by_id)) > 0
 
 
+def _attendance_settings():
+    cfg = load_deployment_config(current_app.instance_path)
+    try:
+        cafe_lat = float(cfg.get("ATTENDANCE_CAFE_LAT") or DEFAULT_ATTENDANCE_CAFE_LAT)
+    except (TypeError, ValueError):
+        cafe_lat = DEFAULT_ATTENDANCE_CAFE_LAT
+    try:
+        cafe_lng = float(cfg.get("ATTENDANCE_CAFE_LNG") or DEFAULT_ATTENDANCE_CAFE_LNG)
+    except (TypeError, ValueError):
+        cafe_lng = DEFAULT_ATTENDANCE_CAFE_LNG
+    try:
+        radius_m = float(cfg.get("ATTENDANCE_RADIUS_METERS") or DEFAULT_ATTENDANCE_RADIUS_METERS)
+    except (TypeError, ValueError):
+        radius_m = DEFAULT_ATTENDANCE_RADIUS_METERS
+    return {
+        "cafe_lat": cafe_lat,
+        "cafe_lng": cafe_lng,
+        "radius_m": max(20.0, radius_m),
+    }
+
+
+def _attendance_haversine_m(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
+    radius_m = 6371000.0
+    d_lat = math.radians(lat2 - lat1)
+    d_lng = math.radians(lng2 - lng1)
+    a = (
+        math.sin(d_lat / 2) ** 2
+        + math.cos(math.radians(lat1))
+        * math.cos(math.radians(lat2))
+        * math.sin(d_lng / 2) ** 2
+    )
+    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+    return radius_m * c
+
+
+def _attendance_distance_from_cafe(lat: float | None, lng: float | None) -> float | None:
+    if lat is None or lng is None:
+        return None
+    settings = _attendance_settings()
+    return _attendance_haversine_m(settings["cafe_lat"], settings["cafe_lng"], float(lat), float(lng))
+
+
+def _active_attendance_session_for_user(user_id: int):
+    return (
+        StaffAttendance.query.filter(
+            StaffAttendance.user_id == user_id,
+            StaffAttendance.check_in_at.is_not(None),
+            StaffAttendance.check_out_at.is_(None),
+        )
+        .order_by(StaffAttendance.attendance_date.desc(), StaffAttendance.check_in_at.desc())
+        .first()
+    )
+
+
+def _attendance_elapsed_text(row) -> str:
+    if not row or not row.check_in_at:
+        return "-"
+    end_time = row.check_out_at or datetime.now()
+    seconds = max(0, int((end_time - row.check_in_at).total_seconds()))
+    hours = seconds // 3600
+    minutes = (seconds % 3600) // 60
+    return f"{hours:02d}h {minutes:02d}m"
+
+
+def _attendance_source_label(row) -> str:
+    method = ((getattr(row, "check_in_method", "") or "").strip().lower())
+    if method == "qr_geofence":
+        return "QR Check-In"
+    if method == "admin_override":
+        return "Admin Override"
+    if method == "profile_manual":
+        return "Manual"
+    return "Manual"
+
+
 def _visible_categories_for_available_menu() -> list[MenuCategory]:
     all_categories = MenuCategory.query.order_by(MenuCategory.name.asc()).all()
     category_name_by_id = {c.id: c.name for c in all_categories}
@@ -204,17 +428,20 @@ def _visible_categories_for_available_menu() -> list[MenuCategory]:
 
 @bp.route("/login", methods=["GET", "POST"])
 def login():
+    next_url = (request.args.get("next") or request.form.get("next") or "").strip()
     if request.method == "POST":
         email = request.form["email"].strip().lower()
         password = request.form["password"]
         user = User.query.filter_by(email=email, active=True).first()
         if not user or not check_password_hash(user.password_hash, password):
             flash("Invalid credentials.", "error")
-            return render_template("login.html")
+            return render_template("login.html", next_url=next_url)
         session.permanent = True
         session["user_id"] = user.id
+        if next_url.startswith("/") and not next_url.startswith("//"):
+            return redirect(next_url)
         return redirect(url_for("main.dashboard"))
-    return render_template("login.html")
+    return render_template("login.html", next_url=next_url)
 
 
 @bp.route("/staff-login")
@@ -243,14 +470,184 @@ def public_home():
     cfg = load_deployment_config(current_app.instance_path)
     notice_text = (cfg.get("PUBLIC_NOTICE_TEXT", "") or "").strip()
     notice_enabled = cfg.get("PUBLIC_NOTICE_ENABLED", "0") in [1, "1", True, "true", "True"]
+    open_jobs = [
+        _job_card_payload(job)
+        for job in JobOpening.query.options(joinedload(JobOpening.applications)).filter_by(status="published")
+        .order_by(JobOpening.priority.asc(), JobOpening.published_at.desc(), JobOpening.created_at.desc())
+        .limit(6)
+        .all()
+        if _job_is_publicly_open(job)
+    ]
     return render_template(
         "public_home.html",
         map_url=map_url,
         review_url=review_url,
         slots=slots,
         upcoming_bookings=upcoming,
+        open_jobs=open_jobs,
         public_notice_text=notice_text,
         public_notice_enabled=notice_enabled and bool(notice_text),
+        hide_staff_nav=True,
+    )
+
+
+@bp.route("/careers")
+def careers():
+    q = (request.args.get("q") or "").strip()
+    department = (request.args.get("department") or "").strip()
+    employment_type = (request.args.get("employment_type") or "").strip()
+    location_type = (request.args.get("location_type") or "").strip()
+    sort_by = (request.args.get("sort") or "newest").strip().lower()
+    query = JobOpening.query.options(joinedload(JobOpening.applications)).filter_by(status="published").order_by(JobOpening.published_at.desc(), JobOpening.created_at.desc())
+    if q:
+        q_like = f"%{q}%"
+        query = query.filter(
+            db.or_(
+                JobOpening.title.ilike(q_like),
+                JobOpening.department.ilike(q_like),
+                JobOpening.description.ilike(q_like),
+                JobOpening.skills_json.ilike(q_like),
+            )
+        )
+    if department:
+        query = query.filter(JobOpening.department == department)
+    if employment_type:
+        query = query.filter(JobOpening.employment_type == employment_type)
+    if location_type:
+        query = query.filter(JobOpening.location_type == location_type)
+    jobs = [job for job in query.all() if _job_is_publicly_open(job)]
+    if sort_by == "highest_salary":
+        jobs.sort(key=lambda job: float(job.salary_max or job.salary_min or 0), reverse=True)
+    elif sort_by == "popular":
+        jobs.sort(key=lambda job: len(job.applications), reverse=True)
+    return render_template(
+        "careers.html",
+        jobs=[_job_card_payload(job) for job in jobs],
+        filters={
+            "q": q,
+            "department": department,
+            "employment_type": employment_type,
+            "location_type": location_type,
+            "sort": sort_by,
+        },
+        departments=PUBLIC_JOB_DEPARTMENTS,
+        employment_types=JOB_EMPLOYMENT_TYPES,
+        location_types=JOB_LOCATION_TYPES,
+        hide_staff_nav=True,
+    )
+
+
+@bp.route("/careers/<string:career_slug>", methods=["GET", "POST"])
+def career_detail(career_slug: str):
+    job = JobOpening.query.filter_by(career_slug=career_slug).first_or_404()
+    if not _job_is_publicly_open(job):
+        flash("This job is not currently accepting applications.", "error")
+        return redirect(url_for("main.careers"))
+    if request.method == "POST":
+        full_name = (request.form.get("full_name") or "").strip()
+        mobile = (request.form.get("mobile") or "").strip()
+        if not full_name or not mobile:
+            flash("Full name and mobile number are required.", "error")
+            return redirect(url_for("main.career_detail", career_slug=career_slug))
+        resume_file = request.files.get("resume_file")
+        photo_file = request.files.get("photo_file")
+        aadhaar_file = request.files.get("aadhaar_file")
+        driving_license_file = request.files.get("driving_license_file")
+        certificates_file = request.files.get("certificates_file")
+        if job.require_resume and (not resume_file or not resume_file.filename):
+            flash("Resume is required for this role.", "error")
+            return redirect(url_for("main.career_detail", career_slug=career_slug))
+        if job.require_photograph and (not photo_file or not photo_file.filename):
+            flash("Photograph is required for this role.", "error")
+            return redirect(url_for("main.career_detail", career_slug=career_slug))
+        if job.require_aadhaar and (not aadhaar_file or not aadhaar_file.filename):
+            flash("Aadhaar document is required for this role.", "error")
+            return redirect(url_for("main.career_detail", career_slug=career_slug))
+        if job.require_driving_license and (not driving_license_file or not driving_license_file.filename):
+            flash("Driving license is required for this role.", "error")
+            return redirect(url_for("main.career_detail", career_slug=career_slug))
+        if job.require_cover_letter and not (request.form.get("cover_letter") or "").strip():
+            flash("Cover letter is required for this role.", "error")
+            return redirect(url_for("main.career_detail", career_slug=career_slug))
+        if not request.form.get("declaration_confirmed"):
+            flash("Please confirm that the information provided is correct.", "error")
+            return redirect(url_for("main.career_detail", career_slug=career_slug))
+
+        selected_skills = []
+        for skill in request.form.getlist("skills"):
+            text = (skill or "").strip()
+            if text and text not in selected_skills:
+                selected_skills.append(text)
+        other_skills = [s.strip() for s in (request.form.get("other_skills") or "").split(",") if s.strip()]
+        for skill in other_skills:
+            if skill not in selected_skills:
+                selected_skills.append(skill)
+
+        application = JobApplication(
+            job_id=job.id,
+            application_code="PENDING",
+            status="applied",
+            source="Public Website",
+            full_name=full_name,
+            gender=(request.form.get("gender") or "").strip() or None,
+            dob=date.fromisoformat(request.form["dob"]) if request.form.get("dob") else None,
+            mobile=mobile,
+            whatsapp=(request.form.get("whatsapp") or "").strip() or None,
+            email=(request.form.get("email") or "").strip() or None,
+            address=(request.form.get("address") or "").strip() or None,
+            city=(request.form.get("city") or "").strip() or None,
+            state=(request.form.get("state") or "").strip() or None,
+            pincode=(request.form.get("pincode") or "").strip() or None,
+            highest_qualification=(request.form.get("highest_qualification") or "").strip() or None,
+            school_college=(request.form.get("school_college") or "").strip() or None,
+            passing_year=(request.form.get("passing_year") or "").strip() or None,
+            percentage=(request.form.get("percentage") or "").strip() or None,
+            currently_working=True if request.form.get("currently_working") else False,
+            previous_employer=(request.form.get("previous_employer") or "").strip() or None,
+            current_salary=(request.form.get("current_salary") or "").strip() or None,
+            expected_salary=(request.form.get("expected_salary") or "").strip() or None,
+            notice_period=(request.form.get("notice_period") or "").strip() or None,
+            experience=(request.form.get("experience") or "").strip() or None,
+            skills_json=_set_json_list(selected_skills),
+            immediate_joining=True if request.form.get("immediate_joining") else False,
+            available_from=date.fromisoformat(request.form["available_from"]) if request.form.get("available_from") else None,
+            cover_letter=(request.form.get("cover_letter") or "").strip() or None,
+            declaration_confirmed=True if request.form.get("declaration_confirmed") else False,
+        )
+        db.session.add(application)
+        db.session.flush()
+        application.application_code = _job_application_code(application.id, application.created_at)
+        if resume_file and resume_file.filename:
+            application.resume_file_path = _save_profile_file(resume_file, "recruitment", f"resume-{application.id}")
+        if photo_file and photo_file.filename:
+            application.photo_file_path = _save_profile_file(photo_file, "recruitment", f"photo-{application.id}")
+        if aadhaar_file and aadhaar_file.filename:
+            application.aadhaar_file_path = _save_profile_file(aadhaar_file, "recruitment", f"aadhaar-{application.id}")
+        if driving_license_file and driving_license_file.filename:
+            application.driving_license_file_path = _save_profile_file(driving_license_file, "recruitment", f"license-{application.id}")
+        if certificates_file and certificates_file.filename:
+            application.certificates_file_path = _save_profile_file(certificates_file, "recruitment", f"certificates-{application.id}")
+        _append_application_timeline(application, "applied", "Application submitted from public careers page.")
+        db.session.commit()
+        return redirect(url_for("main.career_thank_you", application_code=application.application_code))
+
+    return render_template(
+        "career_detail.html",
+        job=job,
+        job_card=_job_card_payload(job),
+        job_skills=_job_skills(job),
+        skill_options=RECRUITMENT_SKILL_OPTIONS,
+        hide_staff_nav=True,
+    )
+
+
+@bp.route("/careers/application/<string:application_code>")
+def career_thank_you(application_code: str):
+    application = JobApplication.query.filter_by(application_code=application_code).first_or_404()
+    return render_template(
+        "career_thank_you.html",
+        application=application,
+        status_label=_job_status_label(application.status),
         hide_staff_nav=True,
     )
 
@@ -331,6 +728,255 @@ def book_table():
     )
     flash("Table booking request submitted successfully.", "success")
     return redirect(url_for("main.public_home"))
+
+
+@bp.route("/recruitment", methods=["GET"])
+@roles_required("admin", "manager")
+def recruitment():
+    section = (request.args.get("section") or "jobs").strip().lower()
+    if section not in {"jobs", "applications"}:
+        section = "jobs"
+    edit_job_id = request.args.get("edit_job_id", type=int)
+    jobs = JobOpening.query.options(joinedload(JobOpening.applications)).order_by(
+        db.case((JobOpening.status == "published", 0), else_=1),
+        JobOpening.created_at.desc(),
+    ).all()
+    applications = JobApplication.query.options(
+        joinedload(JobApplication.job),
+        joinedload(JobApplication.timeline_entries),
+    ).order_by(JobApplication.created_at.desc()).all()
+    application_cards = []
+    for application in applications:
+        application_cards.append(
+            {
+                "application": application,
+                "skills": _application_skills(application),
+                "files": {
+                    "resume": bool(application.resume_file_path),
+                    "photo": bool(application.photo_file_path),
+                    "aadhaar": bool(application.aadhaar_file_path),
+                    "license": bool(application.driving_license_file_path),
+                    "certificates": bool(application.certificates_file_path),
+                },
+            }
+        )
+    editing_job = JobOpening.query.get(edit_job_id) if edit_job_id else None
+    today = datetime.now(IST_TZ).date()
+    stats = {
+        "open_jobs": sum(1 for job in jobs if _job_is_publicly_open(job)),
+        "applicants_today": sum(1 for app in applications if (app.created_at or datetime.utcnow()).date() == today),
+        "interviews_today": sum(1 for app in applications if app.status in {"interview_scheduled", "interview_completed"}),
+        "offers_pending": sum(1 for app in applications if app.status == "offer_sent"),
+        "joining_today": sum(1 for app in applications if app.status == "joined"),
+        "rejected": sum(1 for app in applications if app.status == "rejected"),
+    }
+    return render_template(
+        "recruitment.html",
+        section=section,
+        jobs=jobs,
+        applications=applications,
+        application_cards=application_cards,
+        job_cards=[_job_card_payload(job) for job in jobs],
+        editing_job=editing_job,
+        editing_job_skills=_job_skills(editing_job) if editing_job else [],
+        stats=stats,
+        employment_types=JOB_EMPLOYMENT_TYPES,
+        location_types=JOB_LOCATION_TYPES,
+        priority_types=JOB_PRIORITY_TYPES,
+        education_types=JOB_EDUCATION_TYPES,
+        experience_types=JOB_EXPERIENCE_TYPES,
+        departments=PUBLIC_JOB_DEPARTMENTS,
+        skill_options=RECRUITMENT_SKILL_OPTIONS,
+        status_options=JOB_APPLICATION_STATUSES,
+        status_label=_job_status_label,
+    )
+
+
+@bp.route("/recruitment/jobs/save", methods=["POST"])
+@roles_required("admin", "manager")
+def save_recruitment_job():
+    job_id = request.form.get("job_id", type=int)
+    title = (request.form.get("title") or "").strip()
+    department = (request.form.get("department") or "").strip()
+    if not title or not department:
+        flash("Job title and department are required.", "error")
+        target = url_for("main.recruitment", section="jobs")
+        if job_id:
+            target = url_for("main.recruitment", section="jobs", edit_job_id=job_id)
+        return redirect(target)
+    job = JobOpening.query.get(job_id) if job_id else JobOpening(career_slug="")
+    if not job:
+        flash("Job not found.", "error")
+        return redirect(url_for("main.recruitment", section="jobs"))
+    skill_values = []
+    for skill in request.form.getlist("skills"):
+        if (skill or "").strip():
+            skill_values.append(skill.strip())
+    for extra in (request.form.get("extra_skills") or "").split(","):
+        if extra.strip():
+            skill_values.append(extra.strip())
+    salary_min_raw = (request.form.get("salary_min") or "").strip()
+    salary_max_raw = (request.form.get("salary_max") or "").strip()
+    try:
+        salary_min = float(salary_min_raw) if salary_min_raw else None
+        salary_max = float(salary_max_raw) if salary_max_raw else None
+    except ValueError:
+        flash("Salary values must be valid numbers.", "error")
+        target = url_for("main.recruitment", section="jobs")
+        if job_id:
+            target = url_for("main.recruitment", section="jobs", edit_job_id=job_id)
+        return redirect(target)
+    slug_source = (request.form.get("career_slug") or title).strip()
+    career_slug = _slugify_text(slug_source)
+    existing_slug = JobOpening.query.filter(JobOpening.career_slug == career_slug, JobOpening.id != (job.id or 0)).first()
+    if existing_slug:
+        career_slug = f"{career_slug}-{uuid4().hex[:4]}"
+    job.title = title
+    job.department = department
+    job.employment_type = (request.form.get("employment_type") or "Full Time").strip()
+    job.location_type = (request.form.get("location_type") or "Brownberries Cafe").strip()
+    job.salary_min = salary_min
+    job.salary_max = salary_max
+    job.salary_display = (request.form.get("salary_display") or "").strip() or None
+    job.vacancies = max(1, request.form.get("vacancies", type=int) or 1)
+    job.priority = (request.form.get("priority") or "Normal").strip()
+    job.experience_required = (request.form.get("experience_required") or "").strip() or None
+    job.education_required = (request.form.get("education_required") or "").strip() or None
+    job.description = (request.form.get("description") or "").strip() or None
+    job.responsibilities = (request.form.get("responsibilities") or "").strip() or None
+    job.requirements = (request.form.get("requirements") or "").strip() or None
+    job.benefits = (request.form.get("benefits") or "").strip() or None
+    job.working_hours = (request.form.get("working_hours") or "").strip() or None
+    job.weekly_off = (request.form.get("weekly_off") or "").strip() or None
+    job.perks = (request.form.get("perks") or "").strip() or None
+    job.growth_opportunities = (request.form.get("growth_opportunities") or "").strip() or None
+    job.skills_json = _set_json_list(skill_values)
+    job.require_resume = True if request.form.get("require_resume") else False
+    job.require_cover_letter = True if request.form.get("require_cover_letter") else False
+    job.require_photograph = True if request.form.get("require_photograph") else False
+    job.require_aadhaar = True if request.form.get("require_aadhaar") else False
+    job.require_driving_license = True if request.form.get("require_driving_license") else False
+    job.auto_close_days = request.form.get("auto_close_days", type=int) or None
+    job.max_applicants = request.form.get("max_applicants", type=int) or None
+    job.status = (request.form.get("status") or "draft").strip().lower()
+    job.career_slug = career_slug
+    job.meta_title = (request.form.get("meta_title") or "").strip() or None
+    job.meta_description = (request.form.get("meta_description") or "").strip() or None
+    if job.status == "published" and not job.published_at:
+        job.published_at = datetime.utcnow()
+    if job.status != "published":
+        job.archived_at = datetime.utcnow() if job.status == "archived" else None
+    db.session.add(job)
+    db.session.commit()
+    flash("Job listing saved.", "success")
+    return redirect(url_for("main.recruitment", section="jobs"))
+
+
+@bp.route("/recruitment/jobs/<int:job_id>/action", methods=["POST"])
+@roles_required("admin", "manager")
+def recruitment_job_action(job_id: int):
+    job = JobOpening.query.get_or_404(job_id)
+    action = (request.form.get("action") or "").strip().lower()
+    if action == "publish":
+        job.status = "published"
+        job.archived_at = None
+        job.published_at = job.published_at or datetime.utcnow()
+        flash("Job published.", "success")
+    elif action == "hide":
+        job.status = "hidden"
+        flash("Job hidden from public listings.", "success")
+    elif action == "archive":
+        job.status = "archived"
+        job.archived_at = datetime.utcnow()
+        flash("Job archived.", "success")
+    elif action == "duplicate":
+        copy = JobOpening(
+            title=f"{job.title} Copy",
+            department=job.department,
+            employment_type=job.employment_type,
+            location_type=job.location_type,
+            salary_min=job.salary_min,
+            salary_max=job.salary_max,
+            salary_display=job.salary_display,
+            vacancies=job.vacancies,
+            priority=job.priority,
+            experience_required=job.experience_required,
+            education_required=job.education_required,
+            description=job.description,
+            responsibilities=job.responsibilities,
+            requirements=job.requirements,
+            benefits=job.benefits,
+            working_hours=job.working_hours,
+            weekly_off=job.weekly_off,
+            perks=job.perks,
+            growth_opportunities=job.growth_opportunities,
+            skills_json=job.skills_json,
+            require_resume=job.require_resume,
+            require_cover_letter=job.require_cover_letter,
+            require_photograph=job.require_photograph,
+            require_aadhaar=job.require_aadhaar,
+            require_driving_license=job.require_driving_license,
+            auto_close_days=job.auto_close_days,
+            max_applicants=job.max_applicants,
+            status="draft",
+            career_slug=_slugify_text(f"{job.title}-copy-{uuid4().hex[:4]}"),
+            meta_title=job.meta_title,
+            meta_description=job.meta_description,
+        )
+        db.session.add(copy)
+        flash("Job duplicated as draft.", "success")
+    elif action == "delete":
+        if job.applications:
+            flash("This job already has applications, so it was archived instead of deleted.", "error")
+            job.status = "archived"
+            job.archived_at = datetime.utcnow()
+        else:
+            db.session.delete(job)
+            flash("Job deleted.", "success")
+    db.session.commit()
+    return redirect(url_for("main.recruitment", section="jobs"))
+
+
+@bp.route("/recruitment/applications/<int:application_id>/update", methods=["POST"])
+@roles_required("admin", "manager")
+def recruitment_application_update(application_id: int):
+    application = JobApplication.query.options(joinedload(JobApplication.job)).get_or_404(application_id)
+    status = (request.form.get("status") or application.status).strip().lower()
+    note = (request.form.get("admin_notes") or "").strip()
+    if status not in JOB_APPLICATION_STATUSES:
+        status = application.status
+    status_changed = status != application.status
+    application.status = status
+    application.admin_notes = note or None
+    if status_changed:
+        _append_application_timeline(application, status, note, g.current_user)
+    elif note:
+        _append_application_timeline(application, application.status, f"Note updated: {note}", g.current_user)
+    db.session.commit()
+    flash("Application updated.", "success")
+    return redirect(url_for("main.recruitment", section="applications"))
+
+
+@bp.route("/recruitment/applications/<int:application_id>/file/<string:file_kind>")
+@roles_required("admin", "manager")
+def recruitment_application_file(application_id: int, file_kind: str):
+    application = JobApplication.query.get_or_404(application_id)
+    mapping = {
+        "resume": application.resume_file_path,
+        "photo": application.photo_file_path,
+        "aadhaar": application.aadhaar_file_path,
+        "license": application.driving_license_file_path,
+        "certificates": application.certificates_file_path,
+    }
+    rel_path = mapping.get(file_kind)
+    if not rel_path:
+        flash("Requested file was not found.", "error")
+        return redirect(url_for("main.recruitment", section="applications"))
+    full_path = os.path.join(current_app.config["UPLOADS_ROOT"], rel_path)
+    if not os.path.exists(full_path):
+        flash("Requested file is missing from storage.", "error")
+        return redirect(url_for("main.recruitment", section="applications"))
+    return send_file(full_path, as_attachment=True, download_name=os.path.basename(full_path))
 
 
 @bp.route("/dashboard")
@@ -616,9 +1262,7 @@ def _save_profile_file(file_obj, subdir: str, prefix: str):
 def profile():
     current_user = g.current_user
     target_user_id = request.args.get("user_id", type=int)
-    can_admin_view = current_user.role in ["admin", "manager"] or (
-        current_user.user_type and current_user.user_type.can_view_staff_profiles
-    )
+    can_admin_view = user_has_any_role(current_user, "admin", "manager") or user_has_permission(current_user, "can_view_staff_profiles")
     if target_user_id and can_admin_view:
         user = User.query.get_or_404(target_user_id)
     else:
@@ -714,40 +1358,18 @@ def profile():
         if action == "check_in":
             if current_user.id != user.id:
                 return redirect(url_for("main.profile"))
-            today = date.today()
-            row = StaffAttendance.query.filter_by(user_id=user.id, attendance_date=today).first()
-            if row and row.check_in_at and not row.check_out_at:
-                flash("You are already checked in for today.", "error")
-                return redirect(url_for("main.profile", section="attendance"))
-            if row and row.check_in_at and row.check_out_at:
-                flash("Today's attendance is already completed. Ask admin to correct it if needed.", "error")
-                return redirect(url_for("main.profile", section="attendance"))
-            if not row:
-                row = StaffAttendance(user_id=user.id, attendance_date=today)
-                db.session.add(row)
-            row.check_in_at = datetime.now()
-            row.check_out_at = None
-            row.manager_override = False
-            refresh_attendance_row(row)
-            db.session.commit()
-            flash("Check-in recorded.", "success")
+            flash("Please use the staff attendance QR to check in from the cafe premises.", "error")
             return redirect(url_for("main.profile", section="attendance"))
 
         if action == "check_out":
             if current_user.id != user.id:
                 return redirect(url_for("main.profile"))
-            today = date.today()
-            row = StaffAttendance.query.filter_by(user_id=user.id, attendance_date=today).first()
-            if not row:
-                flash("Please check-in first.", "error")
-                return redirect(url_for("main.profile", section="attendance"))
-            if not row.check_in_at:
-                flash("Please check-in first.", "error")
-                return redirect(url_for("main.profile", section="attendance"))
-            if row.check_out_at:
-                flash("You are already checked out for today.", "error")
+            row = _active_attendance_session_for_user(user.id)
+            if not row or not row.check_in_at:
+                flash("No active check-in session found.", "error")
                 return redirect(url_for("main.profile", section="attendance"))
             row.check_out_at = datetime.now()
+            row.check_out_method = "profile"
             refresh_attendance_row(row)
             db.session.commit()
             flash("Check-out recorded.", "success")
@@ -795,9 +1417,9 @@ def profile():
                     doc_type=request.form.get("doc_type", "Other").strip() or "Other",
                     doc_number=request.form.get("doc_number", "").strip() or None,
                     file_path=file_path,
-                    released_by_admin=True if current_user.role in ["admin", "manager"] else False,
-                    verification_status="verified" if current_user.role in ["admin", "manager"] else "pending",
-                    verification_note="Uploaded by admin/manager" if current_user.role in ["admin", "manager"] else None,
+                    released_by_admin=True if user_has_any_role(current_user, "admin", "manager") else False,
+                    verification_status="verified" if user_has_any_role(current_user, "admin", "manager") else "pending",
+                    verification_note="Uploaded by admin/manager" if user_has_any_role(current_user, "admin", "manager") else None,
                 )
             )
             db.session.commit()
@@ -819,7 +1441,7 @@ def profile():
             return redirect(url_for("main.profile", section="documents", user_id=user.id))
 
         if action == "upload_salary_receipt":
-            if not (current_user.role in ["admin", "manager"] or (current_user.user_type and current_user.user_type.can_upload_salary)):
+            if not (user_has_any_role(current_user, "admin", "manager") or user_has_permission(current_user, "can_upload_salary")):
                 return redirect(url_for("main.profile"))
             receipt_file = request.files.get("receipt_file")
             target_id = int(request.form["target_user_id"])
@@ -886,7 +1508,7 @@ def profile():
     )
     library_payments = (
         LibraryPayment.query.order_by(LibraryPayment.created_at.desc()).limit(20).all()
-        if user.role in ["admin", "manager", "librarian"]
+        if user_has_any_role(user, "admin", "manager", "librarian")
         else []
     )
     salary_receipts = (
@@ -922,11 +1544,12 @@ def profile():
         .all()
     )
     today_attendance = next((row for row in attendance_logs if row.attendance_date == date.today()), None)
+    active_attendance_session = _active_attendance_session_for_user(user.id)
     next_attendance_action = "completed"
-    if not today_attendance or not today_attendance.check_in_at:
-        next_attendance_action = "check_in"
-    elif today_attendance.check_in_at and not today_attendance.check_out_at:
+    if active_attendance_session and active_attendance_session.check_in_at and not active_attendance_session.check_out_at:
         next_attendance_action = "check_out"
+    elif not today_attendance or not today_attendance.check_in_at:
+        next_attendance_action = "check_in"
     return render_template(
         "profile.html",
         profile_user=user,
@@ -950,11 +1573,70 @@ def profile():
         attendance_flags_for_row=attendance_flags_for_row,
         worked_hours_for_row=worked_hours_for_row,
         today_attendance=today_attendance,
+        active_attendance_session=active_attendance_session,
+        attendance_elapsed_text=_attendance_elapsed_text,
+        attendance_source_label=_attendance_source_label,
         next_attendance_action=next_attendance_action,
         late_penalty_days=late_penalty_days,
         active_section=active_section,
         summary_month=summary_month,
         summary_year=summary_year,
+    )
+
+
+@bp.route("/staff/attendance/check-in", methods=["GET", "POST"])
+@login_required
+def staff_attendance_check_in():
+    user = g.current_user
+    existing_active = _active_attendance_session_for_user(user.id)
+    settings = _attendance_settings()
+    if request.method == "POST":
+        if existing_active and existing_active.check_in_at and not existing_active.check_out_at:
+            flash("You already have an active check-in session. Please check out from your profile.", "error")
+            return redirect(url_for("main.profile", section="attendance"))
+        today = date.today()
+        completed_today = StaffAttendance.query.filter_by(user_id=user.id, attendance_date=today).first()
+        if completed_today and completed_today.check_in_at and completed_today.check_out_at:
+            flash("Today's attendance is already completed. Ask admin if a correction is needed.", "error")
+            return redirect(url_for("main.profile", section="attendance"))
+        try:
+            check_in_lat = float((request.form.get("check_in_lat") or "").strip())
+            check_in_lng = float((request.form.get("check_in_lng") or "").strip())
+        except (TypeError, ValueError):
+            flash("Location could not be captured. Please allow location access and try again.", "error")
+            return redirect(url_for("main.staff_attendance_check_in"))
+        distance_m = _attendance_distance_from_cafe(check_in_lat, check_in_lng)
+        if distance_m is None or distance_m > settings["radius_m"]:
+            flash(
+                f"You need to be inside the cafe geofence to check in. Current distance: {distance_m:.0f} m."
+                if distance_m is not None
+                else "You need to be inside the cafe geofence to check in.",
+                "error",
+            )
+            return redirect(url_for("main.staff_attendance_check_in"))
+        row = completed_today
+        if not row:
+            row = StaffAttendance(user_id=user.id, attendance_date=today)
+            db.session.add(row)
+        row.check_in_at = datetime.now()
+        row.check_out_at = None
+        row.manager_override = False
+        row.check_in_lat = check_in_lat
+        row.check_in_lng = check_in_lng
+        row.check_in_distance_m = round(distance_m, 2)
+        row.check_in_method = "qr_geofence"
+        row.check_out_method = None
+        refresh_attendance_row(row)
+        db.session.commit()
+        flash("Check-in recorded from cafe premises.", "success")
+        return redirect(url_for("main.profile", section="attendance"))
+    return render_template(
+        "staff_attendance_qr.html",
+        active_attendance_session=existing_active,
+        attendance_elapsed_text=_attendance_elapsed_text,
+        cafe_lat=settings["cafe_lat"],
+        cafe_lng=settings["cafe_lng"],
+        attendance_radius_m=settings["radius_m"],
     )
 
 
@@ -964,9 +1646,7 @@ def profile_document(doc_type):
     current_user = g.current_user
     doc_id = request.args.get("doc_id", type=int)
     receipt_id = request.args.get("receipt_id", type=int)
-    can_admin_view = current_user.role in ["admin", "manager"] or (
-        current_user.user_type and current_user.user_type.can_view_staff_profiles
-    )
+    can_admin_view = user_has_any_role(current_user, "admin", "manager") or user_has_permission(current_user, "can_view_staff_profiles")
 
     rel_path = None
     if doc_type == "staff_doc" and doc_id:

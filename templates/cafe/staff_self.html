@@ -33,12 +33,45 @@
       <div class="flash success"><strong>Status:</strong> {{ attendance_status_label(today_attendance.status) if today_attendance else "Not Started" }}</div>
       <div class="flash success"><strong>Check-In:</strong> {{ today_attendance.check_in_at.strftime("%I:%M:%S %p") if today_attendance and today_attendance.check_in_at else "-" }}</div>
       <div class="flash success"><strong>Check-Out:</strong> {{ today_attendance.check_out_at.strftime("%I:%M:%S %p") if today_attendance and today_attendance.check_out_at else "-" }}</div>
-      <div class="flash success"><strong>Worked:</strong> {{ "%.2f"|format(worked_hours_for_row(today_attendance) or 0) }} hrs</div>
+      <div class="flash success"><strong>Worked:</strong> <span id="staff-live-worked-hours">{{ "%.2f"|format(worked_hours_for_row(today_attendance) or 0) }}</span> hrs</div>
     </div>
+    {% if active_attendance_session and active_attendance_session.check_in_at and not active_attendance_session.check_out_at %}
+    <div
+      class="flash success"
+      style="margin-bottom:0.8rem;"
+      id="staff-active-attendance-session"
+      data-checkin-at="{{ active_attendance_session.check_in_at.strftime('%Y-%m-%dT%H:%M:%S') }}"
+    >
+      Active session from {{ active_attendance_session.check_in_at.strftime("%I:%M:%S %p") }} on {{ active_attendance_session.attendance_date }}.
+      <span id="staff-live-session-elapsed"></span>
+    </div>
+    <script>
+      (() => {
+        const sessionEl = document.getElementById("staff-active-attendance-session");
+        const elapsedEl = document.getElementById("staff-live-session-elapsed");
+        const workedEl = document.getElementById("staff-live-worked-hours");
+        const rawStart = sessionEl?.dataset?.checkinAt || "";
+        if (!sessionEl || !elapsedEl || !workedEl || !rawStart) return;
+        const start = new Date(rawStart);
+        if (Number.isNaN(start.getTime())) return;
+
+        const render = () => {
+          const seconds = Math.max(0, Math.floor((Date.now() - start.getTime()) / 1000));
+          const hours = Math.floor(seconds / 3600);
+          const minutes = Math.floor((seconds % 3600) / 60);
+          elapsedEl.textContent = ` • ${String(hours).padStart(2, "0")}h ${String(minutes).padStart(2, "0")}m`;
+          workedEl.textContent = (seconds / 3600).toFixed(2);
+        };
+
+        render();
+        window.setInterval(render, 1000);
+      })();
+    </script>
+    {% endif %}
     <form method="post" class="grid">
       <input type="hidden" name="action" value="{{ next_attendance_action if next_attendance_action in ['check_in', 'check_out'] else 'check_in' }}" />
       {% if next_attendance_action == "check_in" %}
-      <button type="submit">Check-In Now</button>
+      <a class="button-link" href="{{ url_for('main.staff_attendance_check_in') }}">Open QR Check-In</a>
       {% elif next_attendance_action == "check_out" %}
       <button type="submit">Check-Out Now</button>
       {% else %}

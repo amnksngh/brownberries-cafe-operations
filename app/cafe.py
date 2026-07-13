@@ -31,7 +31,7 @@ from .attendance_logic import (
     refresh_attendance_row,
     worked_hours_for_row,
 )
-from .auth_helpers import login_required, roles_required
+from .auth_helpers import login_required, roles_required, user_has_any_role, user_has_permission
 from .deploy_config import load_deployment_config, save_deployment_config
 from .extensions import db, socketio
 from .models import (
@@ -39,12 +39,14 @@ from .models import (
     CafeOrderItem,
     CafeTable,
     InventoryCategory,
+    InventoryExpenseLog,
     InventoryItem,
     InventoryDailyClosing,
     InventoryPurchase,
     InventoryPurchaseLine,
     InventoryRecipe,
     InventoryRecipeItem,
+    InventoryToPurchase,
     InventoryVendor,
     InventoryWastage,
     MenuCategory,
@@ -82,10 +84,38 @@ IST_TZ = ZoneInfo("Asia/Kolkata")
 UTC_TZ = ZoneInfo("UTC")
 PROTECTED_MENU_CATEGORY_NAMES = {"other", "utility"}
 ITEM_PREP_STATUSES = ("pending", "preparing", "ready", "served")
+DEFAULT_ATTENDANCE_CAFE_LAT = 25.207989477704068
+DEFAULT_ATTENDANCE_CAFE_LNG = 80.87374457551877
+DEFAULT_ATTENDANCE_RADIUS_METERS = 120.0
 
 
 def _kiosk_token():
     return (load_deployment_config(current_app.instance_path).get("KDS_KIOSK_TOKEN") or "").strip()
+
+
+def _reception_kiosk_token():
+    return (load_deployment_config(current_app.instance_path).get("RECEPTION_KIOSK_TOKEN") or "").strip()
+
+
+def _attendance_settings():
+    cfg = load_deployment_config(current_app.instance_path)
+    try:
+        cafe_lat = float(cfg.get("ATTENDANCE_CAFE_LAT") or DEFAULT_ATTENDANCE_CAFE_LAT)
+    except (TypeError, ValueError):
+        cafe_lat = DEFAULT_ATTENDANCE_CAFE_LAT
+    try:
+        cafe_lng = float(cfg.get("ATTENDANCE_CAFE_LNG") or DEFAULT_ATTENDANCE_CAFE_LNG)
+    except (TypeError, ValueError):
+        cafe_lng = DEFAULT_ATTENDANCE_CAFE_LNG
+    try:
+        radius_m = float(cfg.get("ATTENDANCE_RADIUS_METERS") or DEFAULT_ATTENDANCE_RADIUS_METERS)
+    except (TypeError, ValueError):
+        radius_m = DEFAULT_ATTENDANCE_RADIUS_METERS
+    return {
+        "cafe_lat": cafe_lat,
+        "cafe_lng": cafe_lng,
+        "radius_m": max(20.0, radius_m),
+    }
 
 
 def _has_valid_kiosk_access(token: str | None) -> bool:
@@ -94,8 +124,52 @@ def _has_valid_kiosk_access(token: str | None) -> bool:
     return bool(configured and supplied and secrets.compare_digest(configured, supplied))
 
 
+def _has_valid_reception_kiosk_access(token: str | None) -> bool:
+    configured = _reception_kiosk_token()
+    supplied = (token or "").strip()
+    return bool(configured and supplied and secrets.compare_digest(configured, supplied))
+
+
 def _kiosk_display_url(token: str, station: str = "kitchen") -> str:
     return url_for("cafe.kiosk_display", access_key=token, station=station)
+
+
+def _reception_kiosk_url(token: str) -> str:
+    return url_for("cafe.reception_kiosk", access_key=token)
+
+
+def _reception_manifest_payload(access_key: str):
+    scope = f"/cafe/reception/{access_key}"
+    return {
+        "name": "Brownberries Reception",
+        "short_name": "Reception",
+        "description": "Brownberries Cafe reception cashier kiosk.",
+        "id": scope,
+        "start_url": scope,
+        "scope": scope,
+        "display": "standalone",
+        "orientation": "any",
+        "background_color": "#fbf8f3",
+        "theme_color": "#3a2419",
+        "icons": [
+            {
+                "src": "/static/images/pwa-icon-192.png",
+                "sizes": "192x192",
+                "type": "image/png",
+            },
+            {
+                "src": "/static/images/pwa-icon-512.png",
+                "sizes": "512x512",
+                "type": "image/png",
+            },
+            {
+                "src": "/static/images/pwa-icon-512-maskable.png",
+                "sizes": "512x512",
+                "type": "image/png",
+                "purpose": "maskable",
+            },
+        ],
+    }
 
 
 def _order_local_date(order: CafeOrder | None) -> date:
@@ -450,7 +524,7 @@ def _emit_ops_notification(message: str, kind: str = "order", payload: dict | No
 
 
 def _is_staff_user(user: User) -> bool:
-    return user.role in _get_role_options() and user.email != "qr.guest@brownberries.local"
+    return bool(set(user.assigned_roles()) & set(_get_role_options())) and user.email != "qr.guest@brownberries.local"
 
 
 def _ensure_staff_profile(user: User) -> StaffProfile:
@@ -464,7 +538,7 @@ def _ensure_staff_profile(user: User) -> StaffProfile:
 
 def _is_protected_admin(user: User) -> bool:
     return user.email == "admin@brownberries.local" or (
-        user.role == "admin" and user.full_name.strip().lower() == "cafe admin"
+        user_has_any_role(user, "admin") and user.full_name.strip().lower() == "cafe admin"
     )
 
 
@@ -473,6 +547,19 @@ def _get_role_options():
     names.update({(ut.name or "").strip() for ut in UserType.query.all() if (ut.name or "").strip()})
     names.update({(u.role or "").strip() for u in User.query.all() if (u.role or "").strip()})
     return tuple(sorted(names))
+
+
+def _parse_roles_from_form():
+    selected = []
+    for value in request.form.getlist("roles"):
+        role_name = (value or "").strip().lower()
+        if role_name and role_name not in selected and role_name in {r.lower(): r for r in _get_role_options()}:
+            selected.append(role_name)
+    if not selected:
+        fallback = (request.form.get("role") or "staff").strip().lower()
+        if fallback:
+            selected.append(fallback)
+    return selected or ["staff"]
 
 
 def _ensure_role_templates_exist():
@@ -493,9 +580,10 @@ def _ensure_role_templates_exist():
 
 
 def _assign_user_type_from_role(user: User):
-    if not user.role:
+    primary_role = (user.role or "").strip()
+    if not primary_role:
         return
-    ut = UserType.query.filter(db.func.lower(UserType.name) == user.role.lower()).first()
+    ut = UserType.query.filter(db.func.lower(UserType.name) == primary_role.lower()).first()
     user.user_type_id = ut.id if ut else None
 
 
@@ -641,7 +729,7 @@ def _build_staff_id_card(user: User, profile: StaffProfile):
         canvas.paste(logo, (50, 42), logo)
     draw.text((220, 58), "Brownberries Cafe Staff ID", fill="#2b1d13", font=title_font)
     draw.text((220, 95), f"Name: {user.full_name}", fill="#2b1d13", font=text_font)
-    draw.text((220, 122), f"Role: {user.role.replace('_', ' ').title()}", fill="#2b1d13", font=text_font)
+    draw.text((220, 122), f"Role: {user.display_roles()}", fill="#2b1d13", font=text_font)
     draw.text((220, 149), f"Email: {user.email}", fill="#2b1d13", font=text_font)
     draw.text((220, 176), f"Phone: {profile.phone or '-'}", fill="#2b1d13", font=text_font)
     draw.text((220, 203), f"DOB: {profile.dob or '-'}", fill="#2b1d13", font=text_font)
@@ -872,6 +960,146 @@ def _parse_line_items_from_request():
     return line_items
 
 
+def _find_default_water_menu_item():
+    item = (
+        MenuItem.query.filter(
+            db.func.lower(MenuItem.name) == "water",
+            MenuItem.is_deleted.is_(False),
+        )
+        .order_by(MenuItem.available.desc(), MenuItem.id.asc())
+        .first()
+    )
+    if item:
+        return item
+    return (
+        MenuItem.query.filter(
+            db.func.lower(MenuItem.name).like("water%"),
+            MenuItem.is_deleted.is_(False),
+        )
+        .order_by(MenuItem.available.desc(), MenuItem.id.asc())
+        .first()
+    )
+
+
+def _append_auto_water_if_needed(table_id: int, line_items, force_first_cycle: bool = False):
+    if not line_items:
+        return line_items
+    table = CafeTable.query.get(table_id)
+    if not table or (table.name or "").strip().upper() == "DL":
+        return line_items
+    if not force_first_cycle:
+        has_active_orders = db.session.query(CafeOrder.id).filter(
+            CafeOrder.table_id == table_id,
+            CafeOrder.status.notin_(["paid", "cancelled"]),
+        ).first()
+        if has_active_orders:
+            return line_items
+    water_item = _find_default_water_menu_item()
+    if not water_item:
+        return line_items
+    updated_items = list(line_items or [])
+    if water_item.has_size_variants and water_item.size_pricing_json:
+        try:
+            variants = json.loads(water_item.size_pricing_json)
+            if isinstance(variants, list) and variants:
+                first = variants[0] if isinstance(variants[0], dict) else {}
+                size_label = (first.get("size") or "").strip() or None
+                unit_price = float(first.get("price")) if first.get("price") is not None else float(water_item.price)
+                updated_items.append((water_item, 1, False, size_label, unit_price))
+                return updated_items
+        except (TypeError, ValueError, json.JSONDecodeError):
+            pass
+    updated_items.append((water_item, 1, False, None, float(water_item.price)))
+    return updated_items
+
+
+def _normalized_line_item_signature(line_items) -> list[tuple[int, int, int, str, float]]:
+    signature = []
+    for row in line_items or []:
+        if len(row) == 5:
+            menu_item, qty, is_parcel, size_label, unit_price = row
+        elif len(row) == 3:
+            menu_item, qty, is_parcel = row
+            size_label = None
+            unit_price = None
+        else:
+            menu_item, qty = row
+            is_parcel = False
+            size_label = None
+            unit_price = None
+        signature.append(
+            (
+                int(menu_item.id),
+                int(qty or 0),
+                1 if is_parcel else 0,
+                (size_label or "").strip(),
+                round(float(unit_price if unit_price is not None else menu_item.price or 0), 2),
+            )
+        )
+    signature.sort()
+    return signature
+
+
+def _order_signature(order: CafeOrder) -> list[tuple[int, int, int, str, float]]:
+    signature = []
+    for item in order.order_items:
+        signature.append(
+            (
+                int(item.menu_item_id),
+                int(item.quantity or 0),
+                1 if item.is_parcel else 0,
+                (item.size_label or "").strip(),
+                round(float(item.unit_price or 0), 2),
+            )
+        )
+    signature.sort()
+    return signature
+
+
+def _cancel_orphan_active_orders(table_id: int):
+    candidate_orders = (
+        CafeOrder.query.options(joinedload(CafeOrder.order_items))
+        .filter(
+            CafeOrder.table_id == table_id,
+            CafeOrder.status.notin_(["paid", "cancelled"]),
+        )
+        .all()
+    )
+    changed = False
+    for order in candidate_orders:
+        if order.order_items:
+            continue
+        order.status = "cancelled"
+        changed = True
+    if changed:
+        db.session.commit()
+
+
+def _find_recent_duplicate_order(table_id: int, ordered_by_user_id: int, status: str, allowed_signatures, window_seconds: int = 2):
+    if not allowed_signatures:
+        return None
+    created_after = datetime.utcnow() - timedelta(seconds=window_seconds)
+    candidates = (
+        CafeOrder.query.options(joinedload(CafeOrder.order_items))
+        .filter(
+            CafeOrder.table_id == table_id,
+            CafeOrder.ordered_by_user_id == ordered_by_user_id,
+            CafeOrder.status == status,
+            CafeOrder.created_at >= created_after,
+        )
+        .order_by(CafeOrder.created_at.desc())
+        .all()
+    )
+    for order in candidates:
+        if not order.order_items:
+            order.status = "cancelled"
+            db.session.commit()
+            continue
+        if tuple(_order_signature(order)) in allowed_signatures:
+            return order
+    return None
+
+
 def _haversine_km(lat1, lng1, lat2, lng2):
     radius_km = 6371.0
     d_lat = math.radians(lat2 - lat1)
@@ -885,9 +1113,18 @@ def _haversine_km(lat1, lng1, lat2, lng2):
 
 
 def _create_order(table_id: int, ordered_by_user_id: int, status: str, payment_type, payment_reference):
-    line_items = _parse_line_items_from_request()
-    if not line_items:
+    raw_line_items = _parse_line_items_from_request()
+    if not raw_line_items:
         return None
+    _cancel_orphan_active_orders(table_id)
+    allowed_signatures = {
+        tuple(_normalized_line_item_signature(raw_line_items)),
+        tuple(_normalized_line_item_signature(_append_auto_water_if_needed(table_id, raw_line_items, force_first_cycle=True))),
+    }
+    duplicate_order = _find_recent_duplicate_order(table_id, ordered_by_user_id, status, allowed_signatures)
+    if duplicate_order:
+        return duplicate_order
+    line_items = _append_auto_water_if_needed(table_id, raw_line_items)
     return create_cafe_order(
         table_id=table_id,
         ordered_by_user_id=ordered_by_user_id,
@@ -1119,6 +1356,7 @@ def create_cafe_order(
 def home():
     cfg = load_deployment_config(current_app.instance_path)
     public_base = (current_app.config.get("PUBLIC_BASE_URL") or request.host_url.rstrip("/")).rstrip("/")
+    attendance_settings = _attendance_settings()
     today_start, today_end = _current_ist_day_bounds()
     sms_enabled = str(cfg.get("SMS_ENABLED", "0")).strip() in ["1", "true", "True"]
     sms_provider = (cfg.get("SMS_PROVIDER") or "twilio").strip().lower() or "twilio"
@@ -1132,6 +1370,7 @@ def home():
     qr_order_cutoff_time = _format_cutoff_value(cfg.get("QR_ORDER_CUTOFF_TIME"))
     staff_order_cutoff_time = _format_cutoff_value(cfg.get("STAFF_ORDER_CUTOFF_TIME"))
     kiosk_token = (cfg.get("KDS_KIOSK_TOKEN") or "").strip()
+    reception_kiosk_token = (cfg.get("RECEPTION_KIOSK_TOKEN") or "").strip()
     return render_template(
         "cafe/home.html",
         tables=CafeTable.query.count(),
@@ -1166,6 +1405,13 @@ def home():
         kiosk_token=kiosk_token,
         kiosk_kitchen_url=f"{public_base}{_kiosk_display_url(kiosk_token, 'kitchen')}" if kiosk_token else "",
         kiosk_barista_url=f"{public_base}{_kiosk_display_url(kiosk_token, 'barista')}" if kiosk_token else "",
+        reception_kiosk_token=reception_kiosk_token,
+        reception_kiosk_url=f"{public_base}{_reception_kiosk_url(reception_kiosk_token)}" if reception_kiosk_token else "",
+        attendance_cafe_lat=attendance_settings["cafe_lat"],
+        attendance_cafe_lng=attendance_settings["cafe_lng"],
+        attendance_radius_m=attendance_settings["radius_m"],
+        staff_attendance_qr_url=f"{public_base}{url_for('main.staff_attendance_check_in')}",
+        staff_attendance_qr_png_url=url_for("cafe.staff_attendance_qr_png"),
     )
 
 
@@ -1229,6 +1475,55 @@ def update_order_cutoff_settings():
     return redirect(url_for("cafe.home"))
 
 
+@bp.route("/attendance-settings", methods=["POST"])
+@roles_required("admin", "manager")
+def update_attendance_settings():
+    raw_lat = (request.form.get("attendance_cafe_lat") or "").strip()
+    raw_lng = (request.form.get("attendance_cafe_lng") or "").strip()
+    raw_radius = (request.form.get("attendance_radius_m") or "").strip()
+    try:
+        cafe_lat = float(raw_lat)
+        cafe_lng = float(raw_lng)
+        radius_m = float(raw_radius)
+    except (TypeError, ValueError):
+        flash("Attendance geofence settings must be valid numbers.", "error")
+        return redirect(url_for("cafe.home"))
+    if radius_m < 20 or radius_m > 10000:
+        flash("Attendance geofence radius must be between 20 and 10000 meters.", "error")
+        return redirect(url_for("cafe.home"))
+    save_deployment_config(
+        current_app.instance_path,
+        {
+            "ATTENDANCE_CAFE_LAT": str(cafe_lat),
+            "ATTENDANCE_CAFE_LNG": str(cafe_lng),
+            "ATTENDANCE_RADIUS_METERS": str(radius_m),
+        },
+    )
+    flash("Attendance geofence settings saved.", "success")
+    return redirect(url_for("cafe.home"))
+
+
+@bp.route("/attendance-checkin-qr.png")
+@roles_required("admin", "manager")
+def staff_attendance_qr_png():
+    public_base = (current_app.config.get("PUBLIC_BASE_URL") or request.host_url.rstrip("/")).rstrip("/")
+    qr_url = f"{public_base}{url_for('main.staff_attendance_check_in')}"
+    qr = qrcode.QRCode(border=3, box_size=10)
+    qr.add_data(qr_url)
+    qr.make(fit=True)
+    image = qr.make_image(fill_color="black", back_color="white")
+    output = BytesIO()
+    image.save(output, format="PNG")
+    output.seek(0)
+    return Response(
+        output.getvalue(),
+        headers={
+            "Content-Type": "image/png",
+            "Content-Disposition": 'inline; filename="brownberries-staff-attendance-qr.png"',
+        },
+    )
+
+
 @bp.route("/kiosk-settings", methods=["POST"])
 @roles_required("admin", "manager")
 def update_kiosk_settings():
@@ -1242,6 +1537,22 @@ def update_kiosk_settings():
         },
     )
     flash("Kitchen and barista kiosk URL updated.", "success")
+    return redirect(url_for("cafe.home"))
+
+
+@bp.route("/reception-kiosk-settings", methods=["POST"])
+@roles_required("admin", "manager")
+def update_reception_kiosk_settings():
+    raw_token = (request.form.get("reception_kiosk_token") or "").strip()
+    if not raw_token:
+        raw_token = secrets.token_urlsafe(18)
+    save_deployment_config(
+        current_app.instance_path,
+        {
+            "RECEPTION_KIOSK_TOKEN": raw_token,
+        },
+    )
+    flash("Reception kiosk URL updated.", "success")
     return redirect(url_for("cafe.home"))
 
 
@@ -1724,23 +2035,35 @@ def restore_menu_item(item_id):
 @bp.route("/orders", methods=["GET", "POST"])
 @login_required
 def orders():
+    return _render_orders_view(kiosk_mode=False)
+
+
+def _render_orders_view(kiosk_mode: bool = False, access_key: str = ""):
+    if kiosk_mode and not _has_valid_reception_kiosk_access(access_key):
+        return Response("Invalid reception kiosk access key.", status=403)
     if request.method == "POST":
         selected_table_id = int(request.form["table_id"])
         cutoff_message = _order_cutoff_message("staff")
         if cutoff_message:
             flash(cutoff_message, "error")
+            if kiosk_mode:
+                return redirect(url_for("cafe.reception_kiosk_orders", access_key=access_key, table_id=selected_table_id))
             return redirect(url_for("cafe.orders", table_id=selected_table_id))
         order = _create_order(
             table_id=selected_table_id,
-            ordered_by_user_id=g.current_user.id,
+            ordered_by_user_id=g.current_user.id if getattr(g, "current_user", None) else _get_qr_guest_user_id(),
             status="pending_approval",
             payment_type=None,
             payment_reference=None,
         )
         if not order:
             flash("Please add at least one menu item in cart.", "error")
+            if kiosk_mode:
+                return redirect(url_for("cafe.reception_kiosk_orders", access_key=access_key, table_id=selected_table_id))
             return redirect(url_for("cafe.orders", table_id=selected_table_id))
         flash("Order created.", "success")
+        if kiosk_mode:
+            return redirect(url_for("cafe.reception_kiosk_orders", access_key=access_key, table_id=selected_table_id))
         return redirect(url_for("cafe.orders", table_id=selected_table_id))
 
     table_id = request.args.get("table_id", type=int)
@@ -1817,7 +2140,26 @@ def orders():
         .all()
         if table_id
         else [],
+        hide_staff_nav=kiosk_mode,
+        topbar_home_url=(
+            url_for("cafe.reception_kiosk", access_key=access_key)
+            if kiosk_mode
+            else url_for("main.dashboard")
+        ),
+        manifest_url=(
+            url_for("cafe.reception_kiosk_manifest", access_key=access_key)
+            if kiosk_mode
+            else url_for("static", filename="manifest.webmanifest")
+        ),
+        web_app_title="Brownberries Reception" if kiosk_mode else "Brownberries Café",
+        kiosk_mode=kiosk_mode,
+        kiosk_access_key=access_key,
     )
+
+
+@bp.route("/reception/<string:access_key>/orders", methods=["GET", "POST"])
+def reception_kiosk_orders(access_key):
+    return _render_orders_view(kiosk_mode=True, access_key=access_key)
 
 
 @bp.route("/orders/<int:order_id>/mark-paid", methods=["POST"])
@@ -1860,21 +2202,26 @@ def mark_order_paid(order_id):
 @bp.route("/orders/<int:order_id>/approve", methods=["POST"])
 @roles_required("admin", "manager", "cashier", "librarian", "staff")
 def approve_order(order_id):
+    next_url = request.form.get("next", "").strip() or request.args.get("next", "").strip()
+    return _approve_order_impl(order_id, next_url)
+
+
+def _approve_order_impl(order_id: int, next_url: str = ""):
     order = CafeOrder.query.get(order_id)
     if not order:
         flash("Order not found. It may have already been updated on another screen.", "error")
-        return redirect(request.form.get("next") or url_for("cafe.cashier"))
+        return redirect(next_url or url_for("cafe.cashier"))
     decision = (request.form.get("decision") or "approve").strip().lower()
     if decision not in ["approve", "reject"]:
         decision = "approve"
     pending_items = [oi for oi in order.order_items if (oi.approval_status or "pending") == "pending"]
     if not pending_items:
         flash("No pending items left for action.", "error")
-        return redirect(request.form.get("next") or url_for("cafe.cashier", table_id=order.table_id))
+        return redirect(next_url or url_for("cafe.cashier", table_id=order.table_id))
     selected_ids = {int(v) for v in request.form.getlist("pending_item_ids") if str(v).isdigit()}
     if not selected_ids:
         flash("Select at least one pending item.", "error")
-        return redirect(request.form.get("next") or url_for("cafe.cashier", table_id=order.table_id))
+        return redirect(next_url or url_for("cafe.cashier", table_id=order.table_id))
     approved_names = []
     rejected_names = []
     for oi in pending_items:
@@ -1906,24 +2253,27 @@ def approve_order(order_id):
         },
     )
     flash(f"Order #{_format_pickup_number(order)}: selected items {decision}d.", "success")
-    return redirect(request.form.get("next") or url_for("cafe.cashier", table_id=order.table_id))
+    return redirect(next_url or url_for("cafe.cashier", table_id=order.table_id))
 
 
 @bp.route("/tables/<int:table_id>/clear-orders", methods=["POST"])
 @roles_required("admin", "manager", "cashier")
 def clear_table_orders(table_id):
+    next_url = request.form.get("next", "").strip() or request.args.get("next", "").strip()
+    return _clear_table_orders_impl(table_id, next_url)
+
+
+def _clear_table_orders_impl(table_id: int, next_url: str = ""):
     table = CafeTable.query.get_or_404(table_id)
     split_rows, split_error = _parse_split_payment_rows()
     if split_error:
         flash(split_error, "error")
-        next_url = request.form.get("next", "").strip() or request.args.get("next", "").strip()
         return redirect(next_url or url_for("cafe.cashier", table_id=table.id, tab="running"))
     selected_order_ids = {
         int(value) for value in request.form.getlist("order_ids") if str(value).isdigit()
     }
     if not selected_order_ids:
         flash("Select at least one order to settle.", "error")
-        next_url = request.form.get("next", "").strip() or request.args.get("next", "").strip()
         return redirect(next_url or url_for("cafe.cashier", table_id=table.id, tab="running"))
     orders = CafeOrder.query.filter(
         CafeOrder.table_id == table.id,
@@ -1936,13 +2286,11 @@ def clear_table_orders(table_id):
     ]
     if not payable_orders:
         flash("Select at least one approved order to settle.", "error")
-        next_url = request.form.get("next", "").strip() or request.args.get("next", "").strip()
         return redirect(next_url or url_for("cafe.cashier", table_id=table.id, tab="running"))
     selected_total = round(sum(float(order.total_amount or 0) for order in payable_orders), 2)
     split_total = round(sum(float(row["amount"]) for row in split_rows), 2)
     if abs(split_total - selected_total) > 0.01:
         flash(f"Payment split total ₹{split_total:.2f} must match selected orders total ₹{selected_total:.2f}.", "error")
-        next_url = request.form.get("next", "").strip() or request.args.get("next", "").strip()
         return redirect(next_url or url_for("cafe.cashier", table_id=table.id, tab="running"))
     count = 0
     paid_now = datetime.utcnow()
@@ -1963,15 +2311,91 @@ def clear_table_orders(table_id):
         count += 1
     db.session.commit()
     flash(f"Settled {count} order(s) for {table.name}.", "success")
-    next_url = request.form.get("next", "").strip() or request.args.get("next", "").strip()
     if next_url:
         return redirect(next_url)
     return redirect(url_for("cafe.cashier", table_id=table.id))
 
 
+@bp.route("/tables/<int:table_id>/move-orders", methods=["POST"])
+@roles_required("admin", "manager", "cashier")
+def move_table_orders(table_id):
+    next_url = request.form.get("next", "").strip() or request.args.get("next", "").strip()
+    return _move_table_orders_impl(table_id, next_url)
+
+
+def _move_table_orders_impl(table_id: int, next_url: str = ""):
+    source_table = CafeTable.query.get_or_404(table_id)
+    target_table_id = request.form.get("target_table_id", type=int)
+    selected_order_ids = {
+        int(value) for value in request.form.getlist("order_ids") if str(value).isdigit()
+    }
+    if not selected_order_ids:
+        flash("Select at least one active order to move.", "error")
+        return redirect(next_url or url_for("cafe.cashier", table_id=source_table.id, tab="running"))
+    if not target_table_id:
+        flash("Select the destination table.", "error")
+        return redirect(next_url or url_for("cafe.cashier", table_id=source_table.id, tab="running"))
+    if target_table_id == source_table.id:
+        flash("Choose a different table to move the order(s).", "error")
+        return redirect(next_url or url_for("cafe.cashier", table_id=source_table.id, tab="running"))
+    target_table = CafeTable.query.filter_by(id=target_table_id, active=True).first()
+    if not target_table:
+        flash("Destination table was not found.", "error")
+        return redirect(next_url or url_for("cafe.cashier", table_id=source_table.id, tab="running"))
+
+    orders = (
+        CafeOrder.query.options(
+            joinedload(CafeOrder.table),
+            joinedload(CafeOrder.order_items).joinedload(CafeOrderItem.menu_item),
+        )
+        .filter(
+            CafeOrder.id.in_(selected_order_ids),
+            CafeOrder.table_id == source_table.id,
+            CafeOrder.status.notin_(["paid", "cancelled"]),
+        )
+        .order_by(CafeOrder.created_at.asc())
+        .all()
+    )
+    if not orders:
+        flash("No movable active orders were found for the selected table.", "error")
+        return redirect(next_url or url_for("cafe.cashier", table_id=source_table.id, tab="running"))
+
+    moved_refs = []
+    for order in orders:
+        order.table_id = target_table.id
+        order.table = target_table
+        moved_refs.append(order.display_code or _format_internal_order_code(order))
+    db.session.commit()
+
+    for order in orders:
+        payload = _serialize_order(order)
+        socketio.emit("order_updated", payload, namespace="/kitchen")
+        socketio.emit("order_updated", payload, namespace="/table")
+
+    _emit_ops_notification(
+        f"Moved {len(orders)} order(s) from {source_table.name} to {target_table.name}",
+        kind="order_move",
+        payload={
+            "source_table": source_table.name,
+            "target_table": target_table.name,
+            "table_id": target_table.id,
+            "moved_orders": moved_refs,
+        },
+    )
+    flash(
+        f"Moved {len(orders)} active order(s) from {source_table.name} to {target_table.name}.",
+        "success",
+    )
+    return redirect(next_url or url_for("cafe.cashier", table_id=target_table.id, tab="running"))
+
+
 @bp.route("/cashier")
 @roles_required("admin", "manager", "cashier")
 def cashier():
+    return _render_cashier_view(kiosk_mode=False)
+
+
+def _render_cashier_view(kiosk_mode: bool = False, access_key: str = ""):
     tab = (request.args.get("tab") or "running").strip().lower()
     if tab not in ["running", "all_orders"]:
         tab = "running"
@@ -2043,6 +2467,7 @@ def cashier():
         running_table_ids = [t.id for t in tables if running_map.get(t.id, {}).get("count", 0) > 0]
         table_id = running_table_ids[0] if running_table_ids else tables[0].id
     selected_table = CafeTable.query.get(table_id) if table_id else None
+    target_tables = [table for table in tables if not selected_table or table.id != selected_table.id]
     total_sale_today = (
         db.session.query(db.func.coalesce(db.func.sum(CafeOrder.total_amount), 0))
         .filter(
@@ -2143,12 +2568,14 @@ def cashier():
             }
         )
     years = list(range(max(2024, date.today().year - 2), date.today().year + 3))
+    current_cashier_url = request.url
     return render_template(
         "cafe/cashier.html",
         tab=tab,
         tables=tables,
         running_map=running_map,
         selected_table=selected_table,
+        target_tables=target_tables,
         unpaid_orders=unpaid_orders,
         payable_order_id_map=payable_order_id_map,
         pending_order_item_map=pending_order_item_map,
@@ -2163,6 +2590,38 @@ def cashier():
         sel_month=sel_month,
         sel_day=sel_day,
         years=years,
+        kiosk_mode=kiosk_mode,
+        kiosk_access_key=access_key,
+        current_cashier_url=current_cashier_url,
+        hide_staff_nav=True,
+        topbar_home_url=(
+            url_for("cafe.reception_kiosk_orders", access_key=access_key)
+            if kiosk_mode
+            else url_for("main.dashboard")
+        ),
+        manifest_url=(
+            url_for("cafe.reception_kiosk_manifest", access_key=access_key)
+            if kiosk_mode
+            else url_for("static", filename="manifest.webmanifest")
+        ),
+        web_app_title="Brownberries Reception" if kiosk_mode else "Brownberries Café",
+    )
+
+
+@bp.route("/reception/<string:access_key>")
+def reception_kiosk(access_key):
+    if not _has_valid_reception_kiosk_access(access_key):
+        return Response("Invalid reception kiosk access key.", status=403)
+    return _render_cashier_view(kiosk_mode=True, access_key=access_key)
+
+
+@bp.route("/reception/<string:access_key>/manifest.webmanifest")
+def reception_kiosk_manifest(access_key):
+    if not _has_valid_reception_kiosk_access(access_key):
+        return Response("Invalid reception kiosk access key.", status=403)
+    return Response(
+        json.dumps(_reception_manifest_payload(access_key)),
+        mimetype="application/manifest+json",
     )
 
 
@@ -2189,6 +2648,10 @@ def public_receipt(order_id):
 @bp.route("/orders/<int:order_id>/send-receipt-sms", methods=["POST"])
 @roles_required("admin", "manager", "cashier")
 def send_order_receipt_sms(order_id):
+    return _send_order_receipt_sms_impl(order_id)
+
+
+def _send_order_receipt_sms_impl(order_id: int):
     order = CafeOrder.query.options(joinedload(CafeOrder.table)).get_or_404(order_id)
     country_code = (request.form.get("country_code") or "+91").strip()
     mobile = (request.form.get("mobile") or "").strip()
@@ -2208,10 +2671,15 @@ def send_order_receipt_sms(order_id):
 @bp.route("/orders/<int:order_id>/edit-items", methods=["POST"])
 @roles_required("admin", "manager", "cashier")
 def edit_order_items(order_id):
+    next_url = request.form.get("next", "").strip() or request.args.get("next", "").strip()
+    return _edit_order_items_impl(order_id, next_url)
+
+
+def _edit_order_items_impl(order_id: int, next_url: str = ""):
     order = CafeOrder.query.get_or_404(order_id)
     if order.status in ["paid", "cancelled"]:
         flash("Paid/cancelled orders cannot be edited.", "error")
-        return redirect(request.form.get("next") or url_for("cafe.cashier", table_id=order.table_id, tab="running"))
+        return redirect(next_url or url_for("cafe.cashier", table_id=order.table_id, tab="running"))
     rows = list(order.order_items)
     kept = 0
     for oi in rows:
@@ -2237,7 +2705,7 @@ def edit_order_items(order_id):
     socketio.emit("order_updated", payload, namespace="/kitchen")
     socketio.emit("order_updated", payload, namespace="/table")
     flash("Order updated.", "success")
-    return redirect(request.form.get("next") or url_for("cafe.cashier", table_id=order.table_id, tab="running"))
+    return redirect(next_url or url_for("cafe.cashier", table_id=order.table_id, tab="running"))
 
 
 @bp.route("/table-order", methods=["POST"])
@@ -2339,6 +2807,45 @@ def call_staff_for_table():
         payload={"table_id": table.id, "table_name": table.name},
     )
     return jsonify({"ok": True, "message": f"Staff has been notified for {table.name}."})
+
+
+@bp.route("/reception/<string:access_key>/orders/<int:order_id>/approve", methods=["POST"])
+def reception_kiosk_approve_order(access_key, order_id):
+    if not _has_valid_reception_kiosk_access(access_key):
+        return Response("Invalid reception kiosk access key.", status=403)
+    next_url = request.form.get("next", "").strip() or request.args.get("next", "").strip() or _reception_kiosk_url(access_key)
+    return _approve_order_impl(order_id, next_url)
+
+
+@bp.route("/reception/<string:access_key>/tables/<int:table_id>/clear-orders", methods=["POST"])
+def reception_kiosk_clear_table_orders(access_key, table_id):
+    if not _has_valid_reception_kiosk_access(access_key):
+        return Response("Invalid reception kiosk access key.", status=403)
+    next_url = request.form.get("next", "").strip() or request.args.get("next", "").strip() or _reception_kiosk_url(access_key)
+    return _clear_table_orders_impl(table_id, next_url)
+
+
+@bp.route("/reception/<string:access_key>/tables/<int:table_id>/move-orders", methods=["POST"])
+def reception_kiosk_move_table_orders(access_key, table_id):
+    if not _has_valid_reception_kiosk_access(access_key):
+        return Response("Invalid reception kiosk access key.", status=403)
+    next_url = request.form.get("next", "").strip() or request.args.get("next", "").strip() or _reception_kiosk_url(access_key)
+    return _move_table_orders_impl(table_id, next_url)
+
+
+@bp.route("/reception/<string:access_key>/orders/<int:order_id>/edit-items", methods=["POST"])
+def reception_kiosk_edit_order_items(access_key, order_id):
+    if not _has_valid_reception_kiosk_access(access_key):
+        return Response("Invalid reception kiosk access key.", status=403)
+    next_url = request.form.get("next", "").strip() or request.args.get("next", "").strip() or _reception_kiosk_url(access_key)
+    return _edit_order_items_impl(order_id, next_url)
+
+
+@bp.route("/reception/<string:access_key>/orders/<int:order_id>/send-receipt-sms", methods=["POST"])
+def reception_kiosk_send_order_receipt_sms(access_key, order_id):
+    if not _has_valid_reception_kiosk_access(access_key):
+        return jsonify({"ok": False, "message": "Invalid reception kiosk access key."}), 403
+    return _send_order_receipt_sms_impl(order_id)
 
 
 def _render_kitchen_display(station: str = "kitchen", kiosk_mode: bool = False, access_key: str = ""):
@@ -2642,19 +3149,273 @@ def _inventory_filtered_items(items, search_text: str, area_filter: str, categor
     return filtered
 
 
+def _inventory_period_bounds(period_key: str, today: date | None = None) -> tuple[date, date]:
+    today = today or date.today()
+    period = (period_key or "today").strip().lower()
+    if period == "yesterday":
+        target = today - timedelta(days=1)
+        return target, target
+    if period == "week":
+        start = today - timedelta(days=today.weekday())
+        return start, today
+    if period == "last_week":
+        end = today - timedelta(days=today.weekday() + 1)
+        start = end - timedelta(days=6)
+        return start, end
+    if period == "month":
+        start = today.replace(day=1)
+        return start, today
+    if period == "last_month":
+        this_month_start = today.replace(day=1)
+        end = this_month_start - timedelta(days=1)
+        start = end.replace(day=1)
+        return start, end
+    if period == "quarter":
+        quarter_start_month = ((today.month - 1) // 3) * 3 + 1
+        start = date(today.year, quarter_start_month, 1)
+        return start, today
+    if period == "last_quarter":
+        quarter_start_month = ((today.month - 1) // 3) * 3 + 1
+        this_quarter_start = date(today.year, quarter_start_month, 1)
+        prev_quarter_end = this_quarter_start - timedelta(days=1)
+        prev_quarter_start_month = ((prev_quarter_end.month - 1) // 3) * 3 + 1
+        start = date(prev_quarter_end.year, prev_quarter_start_month, 1)
+        return start, prev_quarter_end
+    if period == "year":
+        start = date(today.year, 1, 1)
+        return start, today
+    return today, today
+
+
+def _inventory_period_options() -> list[tuple[str, str]]:
+    return [
+        ("today", "Today"),
+        ("yesterday", "Yesterday"),
+        ("week", "This Week"),
+        ("last_week", "Last Week"),
+        ("month", "This Month"),
+        ("last_month", "Last Month"),
+        ("quarter", "This Quarter"),
+        ("last_quarter", "Last Quarter"),
+        ("year", "This Year"),
+    ]
+
+
+def _purchase_todo_payloads():
+    active_rows = (
+        InventoryToPurchase.query.options(
+            joinedload(InventoryToPurchase.category),
+            joinedload(InventoryToPurchase.created_by),
+            joinedload(InventoryToPurchase.completed_by),
+            joinedload(InventoryToPurchase.closed_by),
+        )
+        .filter_by(active=True)
+        .order_by(
+            db.case((InventoryToPurchase.status == "purchased", 1), else_=0).asc(),
+            InventoryToPurchase.created_at.asc(),
+        )
+        .all()
+    )
+    history_rows = (
+        InventoryToPurchase.query.options(
+            joinedload(InventoryToPurchase.category),
+            joinedload(InventoryToPurchase.created_by),
+            joinedload(InventoryToPurchase.completed_by),
+            joinedload(InventoryToPurchase.closed_by),
+        )
+        .filter_by(active=False)
+        .order_by(InventoryToPurchase.closed_at.desc(), InventoryToPurchase.updated_at.desc())
+        .limit(30)
+        .all()
+    )
+    active_payload = [
+        {
+            "id": row.id,
+            "item_name": row.item_name,
+            "category_name": row.category.name if row.category else "",
+            "quantity_note": row.quantity_note or "",
+            "note": row.note or "",
+            "status": row.status,
+            "created_by_name": row.created_by.full_name if row.created_by else "-",
+            "created_at_ist": _format_ist(row.created_at, "%d %b %Y, %I:%M %p"),
+            "completed_by_name": row.completed_by.full_name if row.completed_by else "",
+            "completed_at_ist": _format_ist(row.completed_at, "%d %b %Y, %I:%M %p") if row.completed_at else "",
+        }
+        for row in active_rows
+    ]
+    history_payload = [
+        {
+            "item_name": row.item_name,
+            "category_name": row.category.name if row.category else "-",
+            "quantity_note": row.quantity_note or "",
+            "status": row.status.replace("_", " ").title(),
+            "created_by_name": row.created_by.full_name if row.created_by else "-",
+            "closed_by_name": row.closed_by.full_name if row.closed_by else "-",
+            "closed_at_ist": _format_ist(row.closed_at, "%d %b %Y, %I:%M %p") if row.closed_at else "-",
+        }
+        for row in history_rows
+    ]
+    return active_payload, history_payload
+
+
+def _dedupe_active_purchase_todos():
+    rows = (
+        InventoryToPurchase.query.filter_by(active=True)
+        .order_by(InventoryToPurchase.created_at.asc(), InventoryToPurchase.id.asc())
+        .all()
+    )
+    seen: set[tuple[str, str]] = set()
+    changed = False
+    for row in rows:
+        key = (
+            (row.item_name or "").strip().lower(),
+            (row.quantity_note or "").strip().lower(),
+        )
+        if not key[0]:
+            continue
+        if key in seen:
+            row.active = False
+            row.status = "removed"
+            row.closed_at = row.closed_at or datetime.utcnow()
+            changed = True
+            continue
+        seen.add(key)
+    if changed:
+        db.session.commit()
+
+
+@bp.route("/to-purchase", methods=["GET", "POST"])
+@roles_required("owner", "admin", "manager", "accountant", "cashier", "staff", "server", "barista", "chef", "inventory_manager", "cleaner", "librarian", "delivery_partner")
+def to_purchase():
+    if request.method == "POST":
+        action = (request.form.get("action") or "add_batch_to_purchase").strip().lower()
+
+        if action == "add_batch_to_purchase":
+            item_names = request.form.getlist("item_name[]")
+            quantities = request.form.getlist("quantity_note[]")
+            added = 0
+            for idx, raw_name in enumerate(item_names):
+                item_name = (raw_name or "").strip()
+                quantity_note = (quantities[idx] if idx < len(quantities) else "").strip()
+                if not item_name or not quantity_note:
+                    continue
+                existing = InventoryToPurchase.query.filter(
+                    InventoryToPurchase.active.is_(True),
+                    db.func.lower(db.func.trim(InventoryToPurchase.item_name)) == item_name.lower(),
+                    db.func.lower(db.func.trim(db.func.coalesce(InventoryToPurchase.quantity_note, ""))) == quantity_note.lower(),
+                ).first()
+                if existing:
+                    continue
+                db.session.add(
+                    InventoryToPurchase(
+                        item_name=item_name,
+                        quantity_note=quantity_note,
+                        status="open",
+                        active=True,
+                        created_by_user_id=g.current_user.id if g.current_user else None,
+                    )
+                )
+                added += 1
+            if added == 0:
+                flash("Please enter at least one item with quantity.", "error")
+                return redirect(url_for("cafe.to_purchase"))
+            db.session.commit()
+            flash(f"Added {added} item(s) to purchase list.", "success")
+            return redirect(url_for("cafe.to_purchase"))
+
+        if action == "toggle_to_purchase":
+            row = InventoryToPurchase.query.get_or_404(_safe_int(request.form.get("todo_id"), 0))
+            if row.status == "purchased":
+                row.status = "open"
+                row.completed_at = None
+                row.completed_by_user_id = None
+            else:
+                row.status = "purchased"
+                row.completed_at = datetime.utcnow()
+                row.completed_by_user_id = g.current_user.id if g.current_user else None
+            db.session.commit()
+            flash("Purchase item updated.", "success")
+            return redirect(url_for("cafe.to_purchase"))
+
+        if action == "remove_to_purchase":
+            row = InventoryToPurchase.query.get_or_404(_safe_int(request.form.get("todo_id"), 0))
+            row.active = False
+            row.status = "removed"
+            row.closed_at = datetime.utcnow()
+            row.closed_by_user_id = g.current_user.id if g.current_user else None
+            db.session.commit()
+            flash("Purchase item removed.", "success")
+            return redirect(url_for("cafe.to_purchase"))
+
+        if action == "clear_to_purchase":
+            active_rows = InventoryToPurchase.query.filter_by(active=True).all()
+            now_utc = datetime.utcnow()
+            changed = 0
+            for row in active_rows:
+                row.active = False
+                if row.status not in {"purchased", "removed"}:
+                    row.status = "cleared"
+                row.closed_at = now_utc
+                row.closed_by_user_id = g.current_user.id if g.current_user else None
+                changed += 1
+            db.session.commit()
+            flash(f"Cleared {changed} purchase item(s).", "success")
+            return redirect(url_for("cafe.to_purchase"))
+
+    _dedupe_active_purchase_todos()
+    purchase_todos_active, purchase_todos_history = _purchase_todo_payloads()
+    return render_template(
+        "cafe/to_purchase.html",
+        purchase_todos_active=purchase_todos_active,
+        purchase_todos_history=purchase_todos_history,
+    )
+
+
 @bp.route("/inventory", methods=["GET", "POST"])
 @roles_required("owner", "admin", "manager", "accountant", "barista", "inventory_manager")
 def inventory():
     section = (request.args.get("section") or "dashboard").strip().lower()
     allowed_sections = {
         "dashboard", "daily_closing", "stock_levels", "purchases", "vendors",
-        "recipes", "wastage", "analytics", "categories", "settings"
+        "recipes", "wastage", "analytics", "categories", "settings", "to_purchase"
     }
     if section not in allowed_sections:
         section = "dashboard"
 
     if request.method == "POST":
         action = (request.form.get("action") or "").strip().lower()
+        if action == "log_expense":
+            category_id = _safe_int(request.form.get("category_id"), 0)
+            vendor_id = _safe_int(request.form.get("vendor_id"), 0) or None
+            amount = _safe_float(request.form.get("amount"), 0)
+            transaction_mode = (request.form.get("transaction_mode") or "qr").strip().lower()
+            if transaction_mode not in {"cash", "card", "qr"}:
+                transaction_mode = "qr"
+            entry_date_raw = (request.form.get("entry_date") or "").strip()
+            try:
+                entry_date = date.fromisoformat(entry_date_raw) if entry_date_raw else date.today()
+            except ValueError:
+                entry_date = date.today()
+            if category_id <= 0:
+                flash("Please select an inventory category.", "error")
+                return redirect(url_for("cafe.inventory", section="dashboard"))
+            if amount <= 0:
+                flash("Please enter a valid inventory amount.", "error")
+                return redirect(url_for("cafe.inventory", section="dashboard"))
+            log_row = InventoryExpenseLog(
+                entry_date=entry_date,
+                category_id=category_id,
+                vendor_id=vendor_id,
+                amount=round(amount, 2),
+                transaction_mode=transaction_mode,
+                note=(request.form.get("note") or "").strip() or None,
+                created_by_user_id=g.current_user.id if g.current_user else None,
+            )
+            db.session.add(log_row)
+            db.session.commit()
+            flash("Inventory expense logged.", "success")
+            return redirect(url_for("cafe.inventory", section="dashboard", period=request.args.get("period") or "today"))
+
         if action == "add_item":
             item = InventoryItem(
                 item_code=(request.form.get("item_code") or "").strip() or None,
@@ -2794,6 +3555,64 @@ def inventory():
             flash("Vendor updated.", "success")
             return redirect(url_for("cafe.inventory", section="vendors", edit_vendor_id=vendor.id))
 
+        if action == "add_to_purchase":
+            item_name = (request.form.get("item_name") or "").strip()
+            if not item_name:
+                flash("Please enter an item to purchase.", "error")
+                return redirect(url_for("cafe.inventory", section="to_purchase"))
+            row = InventoryToPurchase(
+                item_name=item_name,
+                category_id=_safe_int(request.form.get("category_id"), 0) or None,
+                quantity_note=(request.form.get("quantity_note") or "").strip() or None,
+                note=(request.form.get("note") or "").strip() or None,
+                status="open",
+                active=True,
+                created_by_user_id=g.current_user.id if g.current_user else None,
+            )
+            db.session.add(row)
+            db.session.commit()
+            flash("Added to purchase list.", "success")
+            return redirect(url_for("cafe.inventory", section="to_purchase"))
+
+        if action == "toggle_to_purchase":
+            row = InventoryToPurchase.query.get_or_404(_safe_int(request.form.get("todo_id"), 0))
+            if row.status == "purchased":
+                row.status = "open"
+                row.completed_at = None
+                row.completed_by_user_id = None
+            else:
+                row.status = "purchased"
+                row.completed_at = datetime.utcnow()
+                row.completed_by_user_id = g.current_user.id if g.current_user else None
+            db.session.commit()
+            flash("Purchase item updated.", "success")
+            return redirect(url_for("cafe.inventory", section="to_purchase"))
+
+        if action == "remove_to_purchase":
+            row = InventoryToPurchase.query.get_or_404(_safe_int(request.form.get("todo_id"), 0))
+            row.active = False
+            row.status = "removed"
+            row.closed_at = datetime.utcnow()
+            row.closed_by_user_id = g.current_user.id if g.current_user else None
+            db.session.commit()
+            flash("Purchase item removed.", "success")
+            return redirect(url_for("cafe.inventory", section="to_purchase"))
+
+        if action == "clear_to_purchase":
+            active_rows = InventoryToPurchase.query.filter_by(active=True).all()
+            now_utc = datetime.utcnow()
+            changed = 0
+            for row in active_rows:
+                row.active = False
+                if row.status not in {"purchased", "removed"}:
+                    row.status = "cleared"
+                row.closed_at = now_utc
+                row.closed_by_user_id = g.current_user.id if g.current_user else None
+                changed += 1
+            db.session.commit()
+            flash(f"Cleared {changed} purchase item(s).", "success")
+            return redirect(url_for("cafe.inventory", section="to_purchase"))
+
         if action == "add_purchase":
             purchase = InventoryPurchase(
                 purchase_date=date.fromisoformat(request.form.get("purchase_date") or date.today().isoformat()),
@@ -2928,6 +3747,11 @@ def inventory():
 
     closing_date = date.fromisoformat(request.args.get("closing_date") or date.today().isoformat())
     inventory_search = (request.args.get("q") or "").strip()
+    inventory_period = (request.args.get("period") or "today").strip().lower()
+    if inventory_period not in {key for key, _ in _inventory_period_options()}:
+        inventory_period = "today"
+    inventory_period_start, inventory_period_end = _inventory_period_bounds(inventory_period)
+    inventory_tracking_category_id = request.args.get("track_category_id", type=int) or 0
     inventory_area = (request.args.get("area") or "all").strip().lower()
     if inventory_area not in ["all", "kitchen", "barista", "cafe"]:
         inventory_area = "all"
@@ -2938,6 +3762,21 @@ def inventory():
     categories = InventoryCategory.query.filter_by(active=True).order_by(InventoryCategory.name.asc()).all()
     vendors = InventoryVendor.query.filter_by(active=True).order_by(InventoryVendor.name.asc()).all()
     items = InventoryItem.query.order_by(InventoryItem.category_name.asc(), InventoryItem.name.asc()).all()
+    expense_logs = (
+        InventoryExpenseLog.query.options(
+            joinedload(InventoryExpenseLog.category),
+            joinedload(InventoryExpenseLog.vendor),
+            joinedload(InventoryExpenseLog.created_by),
+        )
+        .filter(
+            InventoryExpenseLog.entry_date >= inventory_period_start,
+            InventoryExpenseLog.entry_date <= inventory_period_end,
+        )
+        .order_by(InventoryExpenseLog.entry_date.desc(), InventoryExpenseLog.id.desc())
+        .all()
+    )
+    if inventory_tracking_category_id:
+        expense_logs = [row for row in expense_logs if row.category_id == inventory_tracking_category_id]
     filtered_items = _inventory_filtered_items(items, inventory_search, inventory_area, inventory_category_filter, inventory_status_filter)
     purchases = InventoryPurchase.query.order_by(InventoryPurchase.purchase_date.desc(), InventoryPurchase.id.desc()).limit(80).all()
     wastage_rows = InventoryWastage.query.order_by(InventoryWastage.wastage_date.desc(), InventoryWastage.id.desc()).limit(120).all()
@@ -2949,6 +3788,7 @@ def inventory():
         .order_by(InventoryRecipe.id.desc())
         .all()
     )
+    purchase_todos_active, purchase_todos_history = _purchase_todo_payloads()
     menu_items = MenuItem.query.filter_by(available=True, is_deleted=False).order_by(MenuItem.name.asc()).all()
     menu_item_meta = {
         item.id: {
@@ -3072,7 +3912,70 @@ def inventory():
         "today_purchase_spend": today_purchase_spend,
         "today_wastage_value": today_wastage_value,
         "today_consumption": round(today_consumption, 2),
+        "to_purchase_count": len([row for row in purchase_todos_active if row["status"] != "purchased"]),
     }
+
+    category_spend_map = {cat.id: 0.0 for cat in categories}
+    category_entry_count_map = {cat.id: 0 for cat in categories}
+    timeline_map: dict[date, float] = {}
+    for log_row in expense_logs:
+        category_spend_map[log_row.category_id] = round(category_spend_map.get(log_row.category_id, 0.0) + float(log_row.amount or 0), 2)
+        category_entry_count_map[log_row.category_id] = category_entry_count_map.get(log_row.category_id, 0) + 1
+        timeline_map[log_row.entry_date] = round(timeline_map.get(log_row.entry_date, 0.0) + float(log_row.amount or 0), 2)
+
+    category_spend_rows = []
+    for cat in categories:
+        total = round(category_spend_map.get(cat.id, 0.0), 2)
+        if inventory_tracking_category_id and cat.id != inventory_tracking_category_id:
+            continue
+        category_spend_rows.append(
+            {
+                "category": cat,
+                "amount": total,
+                "entry_count": category_entry_count_map.get(cat.id, 0),
+            }
+        )
+    category_spend_rows.sort(key=lambda row: row["amount"], reverse=True)
+    max_category_spend = max([row["amount"] for row in category_spend_rows], default=0.0)
+
+    timeline_rows = []
+    cursor = inventory_period_start
+    while cursor <= inventory_period_end:
+        timeline_rows.append({"date": cursor, "amount": round(timeline_map.get(cursor, 0.0), 2)})
+        cursor += timedelta(days=1)
+    max_timeline_amount = max([row["amount"] for row in timeline_rows], default=0.0)
+
+    paid_orders = CafeOrder.query.filter(CafeOrder.status == "paid").all()
+    period_revenue = 0.0
+    for order in paid_orders:
+        revenue_dt = order.paid_at or order.created_at
+        revenue_local = _ist_from_utc_naive(revenue_dt)
+        if not revenue_local:
+            continue
+        revenue_date = revenue_local.date()
+        if inventory_period_start <= revenue_date <= inventory_period_end:
+            period_revenue = round(period_revenue + float(order.total_amount or 0), 2)
+
+    total_period_expense = round(sum(float(row.amount or 0) for row in expense_logs), 2)
+    expense_vs_earning = {
+        "expense": total_period_expense,
+        "revenue": period_revenue,
+        "difference": round(period_revenue - total_period_expense, 2),
+    }
+    average_daily_expense = round(total_period_expense / max((inventory_period_end - inventory_period_start).days + 1, 1), 2)
+    recent_expense_logs = [
+        {
+            "expense_date": row.entry_date.strftime("%d %b %Y"),
+            "category_name": row.category.name if row.category else "-",
+            "vendor_name": row.vendor.name if row.vendor else "Other",
+            "amount": round(float(row.amount or 0), 2),
+            "transaction_mode": ((row.transaction_mode or "qr").strip().title() if (row.transaction_mode or "").strip() else "QR"),
+            "logged_by": row.created_by.full_name if row.created_by else "-",
+            "logged_at_ist": _format_ist(row.created_at, "%d %b %Y, %I:%M:%S %p"),
+            "note": row.note or "",
+        }
+        for row in expense_logs[:12]
+    ]
 
     return render_template(
         "cafe/inventory.html",
@@ -3098,6 +4001,11 @@ def inventory():
         selected_vendor=selected_vendor,
         selected_category=selected_category,
         inventory_search=inventory_search,
+        inventory_period=inventory_period,
+        inventory_period_options=_inventory_period_options(),
+        inventory_period_start=inventory_period_start,
+        inventory_period_end=inventory_period_end,
+        inventory_tracking_category_id=inventory_tracking_category_id,
         inventory_area=inventory_area,
         inventory_category_filter=inventory_category_filter,
         inventory_status_filter=inventory_status_filter,
@@ -3106,6 +4014,16 @@ def inventory():
         vendor_purchase_map=vendor_purchase_map,
         menu_item_meta=menu_item_meta,
         recipe_payload_map=recipe_payload_map,
+        expense_logs=expense_logs,
+        recent_expense_logs=recent_expense_logs,
+        purchase_todos_active=purchase_todos_active,
+        purchase_todos_history=purchase_todos_history,
+        category_spend_rows=category_spend_rows,
+        max_category_spend=max_category_spend,
+        timeline_rows=timeline_rows,
+        max_timeline_amount=max_timeline_amount,
+        expense_vs_earning=expense_vs_earning,
+        average_daily_expense=average_daily_expense,
     )
 
 
@@ -4104,17 +5022,16 @@ def staff():
             if existing:
                 flash("A user with this email already exists.", "error")
                 return _staff_redirect("add_new_staff")
-            role = request.form.get("role", "staff")
-            if role not in _get_role_options():
-                role = "staff"
+            roles = _parse_roles_from_form()
 
             new_user = User(
                 full_name=request.form["full_name"].strip(),
                 email=email,
                 password_hash=generate_password_hash(request.form["password"]),
-                role=role,
+                role=roles[0],
                 active=True,
             )
+            new_user.set_assigned_roles(roles)
             _assign_user_type_from_role(new_user)
             db.session.add(new_user)
             db.session.flush()
@@ -4148,9 +5065,8 @@ def staff():
             if duplicate:
                 flash("Another user already has this email.", "error")
                 return _staff_redirect("active_staff")
-            user.role = request.form.get("role", user.role)
-            if user.role not in _get_role_options():
-                user.role = "staff"
+            roles = _parse_roles_from_form()
+            user.set_assigned_roles(roles)
             _assign_user_type_from_role(user)
             user.active = True if request.form.get("active") else False
             new_password = request.form.get("password", "").strip()
@@ -4207,7 +5123,7 @@ def staff():
 
         if action == "archive":
             user = User.query.get_or_404(int(request.form["user_id"]))
-            if user.role == "admin" and user.email == "admin@brownberries.local":
+            if user_has_any_role(user, "admin") and user.email == "admin@brownberries.local":
                 flash("Cafe Admin cannot be archived.", "error")
                 return _staff_redirect("active_staff")
             profile = _ensure_staff_profile(user)
@@ -4275,6 +5191,61 @@ def staff():
             flash("Attendance override saved for selected staff member.", "success")
             return _staff_redirect("attendance_entry", attendance_user_id=target_user_id)
 
+        if action == "checkout_active_session":
+            attendance_id = int(request.form["attendance_id"])
+            existing = StaffAttendance.query.get_or_404(attendance_id)
+            if not existing.check_in_at or existing.check_out_at:
+                flash("This session is already closed.", "error")
+                return _staff_redirect("attendance_entry", attendance_user_id=existing.user_id)
+            checkout_time = attendance_datetime_for(
+                existing.attendance_date,
+                request.form.get("check_out_time"),
+            ) or datetime.now()
+            if checkout_time < existing.check_in_at:
+                checkout_time = existing.check_in_at
+            existing.check_out_at = checkout_time
+            existing.check_out_method = "admin_override"
+            existing.manager_override = True
+            admin_note = f"Checked out by {g.current_user.full_name}"
+            existing.notes = (
+                f"{existing.notes} | {admin_note}"[:255]
+                if existing.notes
+                else admin_note
+            )
+            refresh_attendance_row(existing)
+            db.session.commit()
+            flash("Active session checked out.", "success")
+            return _staff_redirect("attendance_entry", attendance_user_id=existing.user_id)
+
+        if action == "checkout_all_active_sessions":
+            rows = StaffAttendance.query.filter(
+                StaffAttendance.check_in_at.is_not(None),
+                StaffAttendance.check_out_at.is_(None),
+            ).all()
+            if not rows:
+                flash("There are no active sessions to close.", "error")
+                return _staff_redirect("attendance_entry")
+            raw_time = request.form.get("bulk_check_out_time")
+            for existing in rows:
+                checkout_time = attendance_datetime_for(existing.attendance_date, raw_time)
+                if not checkout_time:
+                    checkout_time = datetime.now() if existing.attendance_date == date.today() else datetime.combine(existing.attendance_date, time(18, 0))
+                if checkout_time < existing.check_in_at:
+                    checkout_time = existing.check_in_at
+                existing.check_out_at = checkout_time
+                existing.check_out_method = "admin_bulk_checkout"
+                existing.manager_override = True
+                admin_note = f"Bulk checked out by {g.current_user.full_name}"
+                existing.notes = (
+                    f"{existing.notes} | {admin_note}"[:255]
+                    if existing.notes
+                    else admin_note
+                )
+                refresh_attendance_row(existing)
+            db.session.commit()
+            flash(f"Closed {len(rows)} active session(s).", "success")
+            return _staff_redirect("attendance_entry")
+
     excluded_staff_emails = ["qr.guest@brownberries.local", "delivery.guest@brownberries.local"]
     staff_users = (
         User.query.filter(~User.email.in_(excluded_staff_emails))
@@ -4309,6 +5280,17 @@ def staff():
         StaffLeaveRequest.query.join(User, StaffLeaveRequest.user_id == User.id)
         .order_by(StaffLeaveRequest.created_at.desc())
         .limit(80)
+        .all()
+    )
+    active_attendance_sessions = (
+        StaffAttendance.query.join(User, StaffAttendance.user_id == User.id)
+        .options(joinedload(StaffAttendance.user))
+        .filter(
+            User.active.is_(True),
+            StaffAttendance.check_in_at.is_not(None),
+            StaffAttendance.check_out_at.is_(None),
+        )
+        .order_by(StaffAttendance.check_in_at.asc())
         .all()
     )
 
@@ -4403,6 +5385,7 @@ def staff():
         user_types=UserType.query.order_by(UserType.name.asc()).all(),
         active_staff_section=active_staff_section,
         attendance_status_options=ATTENDANCE_STATUS_OPTIONS,
+        active_attendance_sessions=active_attendance_sessions,
         payroll_rows=payroll_rows,
         payroll_month=payroll_month,
         payroll_year=payroll_year,
@@ -4584,39 +5567,24 @@ def my_staff():
     if request.method == "POST":
         action = request.form.get("action")
         if action == "check_in":
-            attendance_date = date.today()
-            existing = StaffAttendance.query.filter_by(
-                user_id=user.id, attendance_date=attendance_date
-            ).first()
-            if existing and existing.check_in_at and not existing.check_out_at:
-                flash("You are already checked in for today.", "error")
-                return redirect(url_for("cafe.my_staff"))
-            if existing and existing.check_in_at and existing.check_out_at:
-                flash("Today's attendance is already completed. Contact admin for corrections.", "error")
-                return redirect(url_for("cafe.my_staff"))
-            if not existing:
-                existing = StaffAttendance(user_id=user.id, attendance_date=attendance_date)
-                db.session.add(existing)
-            existing.check_in_at = datetime.now()
-            existing.check_out_at = None
-            existing.manager_override = False
-            refresh_attendance_row(existing)
-            flash("Check-in recorded.", "success")
-            db.session.commit()
-            return redirect(url_for("cafe.my_staff"))
+            flash("Please use the staff attendance QR to check in from the cafe premises.", "error")
+            return redirect(url_for("main.staff_attendance_check_in"))
 
         if action == "check_out":
-            attendance_date = date.today()
-            existing = StaffAttendance.query.filter_by(
-                user_id=user.id, attendance_date=attendance_date
-            ).first()
+            existing = (
+                StaffAttendance.query.filter(
+                    StaffAttendance.user_id == user.id,
+                    StaffAttendance.check_in_at.is_not(None),
+                    StaffAttendance.check_out_at.is_(None),
+                )
+                .order_by(StaffAttendance.attendance_date.desc(), StaffAttendance.check_in_at.desc())
+                .first()
+            )
             if not existing or not existing.check_in_at:
-                flash("Please check in first.", "error")
-                return redirect(url_for("cafe.my_staff"))
-            if existing.check_out_at:
-                flash("You are already checked out for today.", "error")
+                flash("No active check-in session found.", "error")
                 return redirect(url_for("cafe.my_staff"))
             existing.check_out_at = datetime.now()
+            existing.check_out_method = "profile"
             existing.manager_override = False
             refresh_attendance_row(existing)
             flash("Check-out recorded.", "success")
@@ -4685,11 +5653,12 @@ def my_staff():
     month_logs = [row for row in attendance_logs if row.attendance_date >= month_start]
     attendance_summary = build_attendance_summary(month_logs)
     today_attendance = next((row for row in attendance_logs if row.attendance_date == date.today()), None)
+    active_attendance_session = next((row for row in attendance_logs if row.check_in_at and not row.check_out_at), None)
     next_attendance_action = "completed"
-    if not today_attendance or not today_attendance.check_in_at:
-        next_attendance_action = "check_in"
-    elif today_attendance.check_in_at and not today_attendance.check_out_at:
+    if active_attendance_session:
         next_attendance_action = "check_out"
+    elif not today_attendance or not today_attendance.check_in_at:
+        next_attendance_action = "check_in"
     return render_template(
         "cafe/staff_self.html",
         profile=profile,
@@ -4697,6 +5666,7 @@ def my_staff():
         leave_logs=leave_logs,
         attendance_summary=attendance_summary,
         today_attendance=today_attendance,
+        active_attendance_session=active_attendance_session,
         next_attendance_action=next_attendance_action,
         attendance_status_label=attendance_status_label,
         attendance_flags_for_row=attendance_flags_for_row,

@@ -3,12 +3,25 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Brownberries Café</title>
+    <title>{{ web_app_title|default("Brownberries Café") }}</title>
+    <meta name="theme-color" content="#3a2419" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <meta name="apple-mobile-web-app-title" content="{{ web_app_title|default('Brownberries Café') }}" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <link rel="manifest" href="{{ manifest_url|default(url_for('static', filename='manifest.webmanifest')) }}" />
+    <link rel="icon" type="image/png" sizes="192x192" href="{{ url_for('static', filename='images/pwa-icon-192.png') }}" />
+    <link rel="icon" type="image/png" sizes="512x512" href="{{ url_for('static', filename='images/pwa-icon-512.png') }}" />
+    <link rel="apple-touch-icon" sizes="180x180" href="{{ url_for('static', filename='images/pwa-icon-180.png') }}" />
     <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}" />
   </head>
-  <body>
+  <body class="{% block body_class %}{% endblock %}">
     <header class="topbar">
+      {% if topbar_home_url %}
+      <a class="brand-wrap brand-link-wrap" href="{{ topbar_home_url }}">
+      {% else %}
       <div class="brand-wrap">
+      {% endif %}
         <img
           src="{{ url_for('static', filename='images/cafe-logo.png') }}"
           alt="Brownberries Café Logo"
@@ -19,12 +32,18 @@
           <h1>Brownberries Café</h1>
           <p>Food | Beverages | Books | Workstations</p>
         </div>
+      {% if topbar_home_url %}
+      </a>
+      {% else %}
       </div>
+      {% endif %}
+      {% block topbar_extra %}{% endblock %}
       {% if g.current_user and not hide_staff_nav|default(false) %}
       <nav>
-        {% if g.current_user.role == "staff" %}
+        {% if user_has_any_role(g.current_user, "staff") and not user_has_any_role(g.current_user, "admin", "manager", "cashier", "inventory_manager", "accountant", "owner", "barista", "chef", "librarian", "server", "delivery_partner") %}
         <a href="{{ url_for('main.profile') }}">Profile</a>
         <a href="{{ url_for('cafe.orders') }}">Table Ordering</a>
+        <a href="{{ url_for('cafe.to_purchase') }}">To Purchase</a>
         <a href="{{ url_for('cafe.items_availability') }}">Items Availability</a>
         <a href="{{ url_for('library.home') }}">Library</a>
         <a href="{{ url_for('main.logout') }}">Logout</a>
@@ -32,12 +51,16 @@
         <a href="{{ url_for('main.dashboard') }}">Home</a>
         <a href="{{ url_for('cafe.home') }}">Cafe</a>
         <a href="{{ url_for('cafe.orders') }}">Table Ordering</a>
+        <a href="{{ url_for('cafe.to_purchase') }}">To Purchase</a>
         <a href="{{ url_for('cafe.items_availability') }}">Items Availability</a>
-        {% if g.current_user.role == "cashier" %}
+        {% if user_has_any_role(g.current_user, "inventory_manager") or user_has_permission(g.current_user, "can_manage_inventory") %}
+        <a href="{{ url_for('cafe.inventory') }}">Inventory</a>
+        {% endif %}
+        {% if user_has_any_role(g.current_user, "cashier") or user_has_permission(g.current_user, "can_manage_cashier") %}
         <a href="{{ url_for('cafe.cashier') }}">Cashier</a>
         {% endif %}
         <a href="{{ url_for('cafe.kitchen_display') }}">Kitchen Display</a>
-        {% if g.current_user.role == "admin" %}
+        {% if user_has_any_role(g.current_user, "admin") %}
         <a href="{{ url_for('cafe.staff') }}">Staff</a>
         {% endif %}
         <a href="{{ url_for('library.home') }}">Library</a>
@@ -46,7 +69,7 @@
       </nav>
       {% endif %}
     </header>
-    <main class="container">
+    <main class="container {% block main_class %}{% endblock %}">
       {% with messages = get_flashed_messages(with_categories=true) %}
       {% if messages %}
       <div class="flash-wrap">
@@ -58,7 +81,14 @@
       {% endwith %}
       {% block content %}{% endblock %}
     </main>
-    {% if g.current_user and not hide_staff_nav|default(false) and (g.current_user.role == "cashier" or (g.current_user.user_type and g.current_user.user_type.can_manage_cashier)) %}
+    <script>
+      if ("serviceWorker" in navigator) {
+        window.addEventListener("load", () => {
+          navigator.serviceWorker.register("{{ url_for('static', filename='sw.js') }}").catch(() => {});
+        });
+      }
+    </script>
+    {% if g.current_user and not hide_staff_nav|default(false) and (user_has_any_role(g.current_user, "cashier") or user_has_permission(g.current_user, "can_manage_cashier")) %}
     <script src="{{ url_for('static', filename='js/socket.io.min.js') }}"></script>
     <script>
       window.__bbGlobalNotifierInstalled = true;

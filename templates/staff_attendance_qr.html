@@ -1,0 +1,85 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="login-shell">
+  <article class="login-visual" style="background-image:url('{{ url_for('static', filename='images/cafe-interior-2.jpeg') }}')"></article>
+  <section class="panel narrow">
+    <p class="muted">Staff Attendance QR Check-In</p>
+    <h2>Allow Location to Check In</h2>
+    {% if active_attendance_session and active_attendance_session.check_in_at and not active_attendance_session.check_out_at %}
+    <div class="flash success" style="margin-bottom:0.8rem;">
+      You already have an active check-in session from {{ active_attendance_session.check_in_at.strftime("%I:%M:%S %p") }}.
+      Current duration: {{ attendance_elapsed_text(active_attendance_session) }}.
+    </div>
+    <p><a class="button-link" href="{{ url_for('main.profile', section='attendance') }}">Open Attendance in Profile</a></p>
+    {% else %}
+    <p class="muted">Once you allow location on your phone, we will verify that you are inside Brownberries Cafe and then record your check-in.</p>
+    <form method="post" id="staff-qr-checkin-form" class="grid">
+      <input type="hidden" name="check_in_lat" id="staff-checkin-lat" />
+      <input type="hidden" name="check_in_lng" id="staff-checkin-lng" />
+      <button type="button" id="staff-location-btn">Use Current Location to Check In</button>
+      <div id="staff-location-status" class="muted">Cafe geofence radius: {{ "%.0f"|format(attendance_radius_m) }} m</div>
+      <div id="staff-location-debug" class="muted"></div>
+    </form>
+    <p class="muted">Cafe reference point: {{ "%.6f"|format(cafe_lat) }}, {{ "%.6f"|format(cafe_lng) }}</p>
+    <script>
+      const checkInBtn = document.getElementById("staff-location-btn");
+      const checkInForm = document.getElementById("staff-qr-checkin-form");
+      const latField = document.getElementById("staff-checkin-lat");
+      const lngField = document.getElementById("staff-checkin-lng");
+      const statusEl = document.getElementById("staff-location-status");
+      const debugEl = document.getElementById("staff-location-debug");
+      const cafeLat = {{ cafe_lat|tojson }};
+      const cafeLng = {{ cafe_lng|tojson }};
+      const allowedRadius = {{ attendance_radius_m|tojson }};
+
+      function setStatus(message) {
+        if (statusEl) statusEl.textContent = message;
+      }
+
+      function setDebug(message) {
+        if (debugEl) debugEl.textContent = message;
+      }
+
+      function directDistanceMeters(lat1, lng1, lat2, lng2) {
+        const radius = 6371000;
+        const toRad = (value) => (value * Math.PI) / 180;
+        const dLat = toRad(lat2 - lat1);
+        const dLng = toRad(lng2 - lng1);
+        const a =
+          Math.sin(dLat / 2) ** 2 +
+          Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLng / 2) ** 2;
+        const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+        return radius * c;
+      }
+
+      checkInBtn?.addEventListener("click", () => {
+        if (!navigator.geolocation) {
+          setStatus("Location is not supported on this device.");
+          return;
+        }
+        checkInBtn.disabled = true;
+        setStatus("Getting your current location...");
+        navigator.geolocation.getCurrentPosition(
+          (position) => {
+            const lat = Number(position.coords.latitude || 0);
+            const lng = Number(position.coords.longitude || 0);
+            const accuracy = Number(position.coords.accuracy || 0);
+            const distance = directDistanceMeters(cafeLat, cafeLng, lat, lng);
+            latField.value = String(lat);
+            lngField.value = String(lng);
+            setDebug(`Your location: ${lat.toFixed(6)}, ${lng.toFixed(6)} | Direct distance: ${distance.toFixed(0)} m | GPS accuracy: ${accuracy.toFixed(0)} m | Allowed radius: ${allowedRadius.toFixed(0)} m`);
+            setStatus("Location captured. Verifying cafe premises...");
+            checkInForm.submit();
+          },
+          (error) => {
+            checkInBtn.disabled = false;
+            setStatus(error?.message || "Could not capture your location.");
+          },
+          { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 }
+        );
+      });
+    </script>
+    {% endif %}
+  </section>
+</section>
+{% endblock %}

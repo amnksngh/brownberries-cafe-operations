@@ -1,3 +1,4 @@
+import json
 from datetime import date, datetime
 
 from .extensions import db
@@ -16,9 +17,48 @@ class User(TimestampMixin, db.Model):
     email = db.Column(db.String(120), unique=True, nullable=False)
     password_hash = db.Column(db.String(255), nullable=False)
     role = db.Column(db.String(50), nullable=False, default="staff")
+    roles_json = db.Column(db.Text, nullable=True)
     user_type_id = db.Column(db.Integer, db.ForeignKey("user_type.id"), nullable=True)
     active = db.Column(db.Boolean, default=True, nullable=False)
     user_type = db.relationship("UserType", backref="users")
+
+    def assigned_roles(self) -> list[str]:
+        roles: list[str] = []
+        if self.roles_json:
+            try:
+                raw = json.loads(self.roles_json)
+                if isinstance(raw, list):
+                    for value in raw:
+                        role_name = str(value or "").strip().lower()
+                        if role_name and role_name not in roles:
+                            roles.append(role_name)
+            except (TypeError, ValueError, json.JSONDecodeError):
+                pass
+        primary = (self.role or "").strip().lower()
+        if primary and primary not in roles:
+            roles.insert(0, primary)
+        return roles or ["staff"]
+
+    def set_assigned_roles(self, roles: list[str] | tuple[str, ...]):
+        normalized: list[str] = []
+        for value in roles or []:
+            role_name = str(value or "").strip().lower()
+            if role_name and role_name not in normalized:
+                normalized.append(role_name)
+        if not normalized:
+            normalized = ["staff"]
+        self.role = normalized[0]
+        self.roles_json = json.dumps(normalized)
+
+    def has_role(self, role_name: str) -> bool:
+        return str(role_name or "").strip().lower() in self.assigned_roles()
+
+    def has_any_role(self, *role_names: str) -> bool:
+        assigned = set(self.assigned_roles())
+        return any(str(role_name or "").strip().lower() in assigned for role_name in role_names)
+
+    def display_roles(self) -> str:
+        return ", ".join(role.replace("_", " ").title() for role in self.assigned_roles())
 
 
 class UserType(TimestampMixin, db.Model):
@@ -251,6 +291,39 @@ class InventoryWastage(TimestampMixin, db.Model):
     item = db.relationship("InventoryItem", backref="wastage_rows")
 
 
+class InventoryExpenseLog(TimestampMixin, db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    entry_date = db.Column(db.Date, nullable=False, default=date.today)
+    category_id = db.Column(db.Integer, db.ForeignKey("inventory_category.id"), nullable=False)
+    vendor_id = db.Column(db.Integer, db.ForeignKey("inventory_vendor.id"), nullable=True)
+    amount = db.Column(db.Float, nullable=False, default=0)
+    transaction_mode = db.Column(db.String(20), nullable=True)
+    note = db.Column(db.String(255), nullable=True)
+    created_by_user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=True)
+    category = db.relationship("InventoryCategory", backref="expense_logs")
+    vendor = db.relationship("InventoryVendor", backref="expense_logs")
+    created_by = db.relationship("User", backref="inventory_expense_logs")
+
+
+class InventoryToPurchase(TimestampMixin, db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    item_name = db.Column(db.String(120), nullable=False)
+    category_id = db.Column(db.Integer, db.ForeignKey("inventory_category.id"), nullable=True)
+    quantity_note = db.Column(db.String(80), nullable=True)
+    note = db.Column(db.String(255), nullable=True)
+    status = db.Column(db.String(20), nullable=False, default="open")
+    active = db.Column(db.Boolean, default=True, nullable=False)
+    created_by_user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=True)
+    completed_at = db.Column(db.DateTime, nullable=True)
+    completed_by_user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=True)
+    closed_at = db.Column(db.DateTime, nullable=True)
+    closed_by_user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=True)
+    category = db.relationship("InventoryCategory", backref="purchase_todos")
+    created_by = db.relationship("User", foreign_keys=[created_by_user_id], backref="created_inventory_purchase_todos")
+    completed_by = db.relationship("User", foreign_keys=[completed_by_user_id], backref="completed_inventory_purchase_todos")
+    closed_by = db.relationship("User", foreign_keys=[closed_by_user_id], backref="closed_inventory_purchase_todos")
+
+
 class StaffProfile(TimestampMixin, db.Model):
     id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False, unique=True)
@@ -286,6 +359,11 @@ class StaffAttendance(TimestampMixin, db.Model):
     check_in_at = db.Column(db.DateTime, nullable=True)
     check_out_at = db.Column(db.DateTime, nullable=True)
     manager_override = db.Column(db.Boolean, default=False, nullable=False)
+    check_in_lat = db.Column(db.Float, nullable=True)
+    check_in_lng = db.Column(db.Float, nullable=True)
+    check_in_distance_m = db.Column(db.Float, nullable=True)
+    check_in_method = db.Column(db.String(40), nullable=True)
+    check_out_method = db.Column(db.String(40), nullable=True)
     notes = db.Column(db.String(255), nullable=True)
     user = db.relationship("User", backref="attendance_logs")
 
@@ -424,3 +502,90 @@ class TableBooking(TimestampMixin, db.Model):
     end_hour = db.Column(db.Integer, nullable=False)  # 9..22
     note = db.Column(db.String(255), nullable=True)
     status = db.Column(db.String(20), nullable=False, default="booked")
+
+
+class JobOpening(TimestampMixin, db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    title = db.Column(db.String(140), nullable=False)
+    department = db.Column(db.String(80), nullable=False)
+    employment_type = db.Column(db.String(40), nullable=False, default="Full Time")
+    location_type = db.Column(db.String(40), nullable=False, default="Brownberries Cafe")
+    salary_min = db.Column(db.Float, nullable=True)
+    salary_max = db.Column(db.Float, nullable=True)
+    salary_display = db.Column(db.String(120), nullable=True)
+    vacancies = db.Column(db.Integer, nullable=False, default=1)
+    priority = db.Column(db.String(30), nullable=False, default="Normal")
+    experience_required = db.Column(db.String(40), nullable=True)
+    education_required = db.Column(db.String(80), nullable=True)
+    description = db.Column(db.Text, nullable=True)
+    responsibilities = db.Column(db.Text, nullable=True)
+    requirements = db.Column(db.Text, nullable=True)
+    benefits = db.Column(db.Text, nullable=True)
+    working_hours = db.Column(db.Text, nullable=True)
+    weekly_off = db.Column(db.Text, nullable=True)
+    perks = db.Column(db.Text, nullable=True)
+    growth_opportunities = db.Column(db.Text, nullable=True)
+    skills_json = db.Column(db.Text, nullable=True)
+    require_resume = db.Column(db.Boolean, default=True, nullable=False)
+    require_cover_letter = db.Column(db.Boolean, default=False, nullable=False)
+    require_photograph = db.Column(db.Boolean, default=False, nullable=False)
+    require_aadhaar = db.Column(db.Boolean, default=False, nullable=False)
+    require_driving_license = db.Column(db.Boolean, default=False, nullable=False)
+    auto_close_days = db.Column(db.Integer, nullable=True)
+    max_applicants = db.Column(db.Integer, nullable=True)
+    status = db.Column(db.String(20), nullable=False, default="draft")
+    career_slug = db.Column(db.String(160), nullable=False, unique=True)
+    meta_title = db.Column(db.String(160), nullable=True)
+    meta_description = db.Column(db.String(255), nullable=True)
+    published_at = db.Column(db.DateTime, nullable=True)
+    archived_at = db.Column(db.DateTime, nullable=True)
+
+
+class JobApplication(TimestampMixin, db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    job_id = db.Column(db.Integer, db.ForeignKey("job_opening.id"), nullable=False)
+    application_code = db.Column(db.String(30), nullable=False, unique=True)
+    status = db.Column(db.String(40), nullable=False, default="applied")
+    source = db.Column(db.String(80), nullable=True, default="Public Website")
+    full_name = db.Column(db.String(120), nullable=False)
+    gender = db.Column(db.String(20), nullable=True)
+    dob = db.Column(db.Date, nullable=True)
+    mobile = db.Column(db.String(20), nullable=False)
+    whatsapp = db.Column(db.String(20), nullable=True)
+    email = db.Column(db.String(120), nullable=True)
+    address = db.Column(db.String(255), nullable=True)
+    city = db.Column(db.String(80), nullable=True)
+    state = db.Column(db.String(80), nullable=True)
+    pincode = db.Column(db.String(20), nullable=True)
+    highest_qualification = db.Column(db.String(80), nullable=True)
+    school_college = db.Column(db.String(160), nullable=True)
+    passing_year = db.Column(db.String(20), nullable=True)
+    percentage = db.Column(db.String(20), nullable=True)
+    currently_working = db.Column(db.Boolean, default=False, nullable=False)
+    previous_employer = db.Column(db.String(160), nullable=True)
+    current_salary = db.Column(db.String(80), nullable=True)
+    expected_salary = db.Column(db.String(80), nullable=True)
+    notice_period = db.Column(db.String(80), nullable=True)
+    experience = db.Column(db.String(80), nullable=True)
+    skills_json = db.Column(db.Text, nullable=True)
+    immediate_joining = db.Column(db.Boolean, default=False, nullable=False)
+    available_from = db.Column(db.Date, nullable=True)
+    cover_letter = db.Column(db.Text, nullable=True)
+    declaration_confirmed = db.Column(db.Boolean, default=False, nullable=False)
+    resume_file_path = db.Column(db.String(255), nullable=True)
+    photo_file_path = db.Column(db.String(255), nullable=True)
+    aadhaar_file_path = db.Column(db.String(255), nullable=True)
+    driving_license_file_path = db.Column(db.String(255), nullable=True)
+    certificates_file_path = db.Column(db.String(255), nullable=True)
+    admin_notes = db.Column(db.Text, nullable=True)
+    job = db.relationship("JobOpening", backref="applications")
+
+
+class JobApplicationTimeline(TimestampMixin, db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    application_id = db.Column(db.Integer, db.ForeignKey("job_application.id"), nullable=False)
+    status = db.Column(db.String(40), nullable=False)
+    note = db.Column(db.String(255), nullable=True)
+    changed_by_user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=True)
+    application = db.relationship("JobApplication", backref="timeline_entries")
+    changed_by = db.relationship("User", backref="job_application_timeline_entries")

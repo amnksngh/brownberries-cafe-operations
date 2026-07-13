@@ -147,7 +147,7 @@
     </div>
     <p class="muted section-note">Use this section to clear dues and keep cashier in sync.</p>
   </div>
-  {% if g.current_user.role in ["admin", "manager", "cashier"] and selected_table_id %}
+  {% if user_has_any_role(g.current_user, "admin", "manager", "cashier") and selected_table_id %}
   <form method="post" action="{{ url_for('cafe.clear_table_orders', table_id=selected_table_id) }}" class="grid grid-4" style="margin-bottom:0.6rem;">
     <label>Payment Type
       <select name="payment_type">
@@ -177,7 +177,7 @@
       <td>{{ "%.2f"|format(order.total_amount) }}</td>
       <td>
         {% set pending_items = order.order_items | selectattr("approval_status", "equalto", "pending") | list %}
-        {% if pending_items and g.current_user.role in ["admin", "manager", "cashier", "librarian", "staff"] %}
+        {% if pending_items and user_has_any_role(g.current_user, "admin", "manager", "cashier", "librarian", "staff") %}
         <form method="post" action="{{ url_for('cafe.approve_order', order_id=order.id) }}" class="grid">
           <input type="hidden" name="next" value="{{ url_for('cafe.orders', table_id=selected_table_id) }}" />
           <div class="grid">
@@ -190,7 +190,7 @@
             <button type="submit" name="decision" value="reject" class="decision-btn">Reject</button>
           </div>
         </form>
-        {% elif g.current_user.role in ["admin", "manager", "cashier"] %}
+        {% elif user_has_any_role(g.current_user, "admin", "manager", "cashier") %}
         <form method="post" action="{{ url_for('cafe.mark_order_paid', order_id=order.id) }}" class="grid">
           <label>Type
             <select name="payment_type">
@@ -239,6 +239,7 @@
   const emptyResults = document.getElementById("staff-empty-results");
   let toastTimer = null;
   let activeStaffCat = "all";
+  let orderSubmitLocked = false;
 
   function normalizeQty(value) {
     const num = Number(value);
@@ -571,6 +572,10 @@
   makeDraggable(staffFloatingCart);
 
   orderForm.addEventListener("submit", (event) => {
+    if (orderSubmitLocked) {
+      event.preventDefault();
+      return;
+    }
     if (!selectedTableInput.value) {
       event.preventDefault();
       alert("Please select a table first.");
@@ -581,6 +586,12 @@
       alert("Please add at least one item to cart.");
       return;
     }
+    orderSubmitLocked = true;
+    orderForm.querySelectorAll('button[type="submit"]').forEach((btn) => {
+      btn.disabled = true;
+      if (!btn.dataset.originalLabel) btn.dataset.originalLabel = btn.textContent;
+      btn.textContent = "Placing...";
+    });
     try { window.sessionStorage.removeItem(CART_STORAGE_KEY); } catch (_) {}
   });
 

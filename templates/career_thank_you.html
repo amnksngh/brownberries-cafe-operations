@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="panel career-thankyou">
+  <h2>Thank you!</h2>
+  <p>Your application has been received.</p>
+  <div class="stats">
+    <article class="metric">
+      <h3>Application ID</h3>
+      <p>{{ application.application_code }}</p>
+    </article>
+    <article class="metric">
+      <h3>Status</h3>
+      <p>{{ status_label }}</p>
+    </article>
+    <article class="metric">
+      <h3>Applied Job</h3>
+      <p>{{ application.job.title }}</p>
+    </article>
+  </div>
+  <p class="muted">Our team will review your application and contact you if your profile matches the role.</p>
+  <div class="links">
+    <a href="{{ url_for('main.careers') }}">Back to Careers</a>
+    <a href="{{ url_for('main.public_home') }}">Back to Homepage</a>
+  </div>
+</section>
+{% endblock %}

@@ -24,7 +24,7 @@
   <table>
     <tr><th>Edit User</th><th>Delete</th></tr>
     {% for user in users %}
-    {% set is_cafe_admin = (user.email == "admin@brownberries.local") or (user.role == "admin" and user.full_name|lower == "cafe admin") %}
+    {% set is_cafe_admin = (user.email == "admin@brownberries.local") or (user.has_role("admin") and user.full_name|lower == "cafe admin") %}
     <tr>
       <td>
         <form method="post" action="{{ url_for('main.update_user', user_id=user.id) }}" class="grid grid-4">

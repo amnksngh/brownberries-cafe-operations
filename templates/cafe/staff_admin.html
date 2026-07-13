@@ -11,7 +11,7 @@
     <a class="flash success staff-summary-card" href="{{ url_for('cafe.staff', section='leave_requests') }}"><strong>Pending Leave Requests:</strong> {{ pending_leave_count }}</a>
     <a class="flash success staff-summary-card" href="{{ url_for('cafe.staff', section='docs_review') }}"><strong>Docs Need Review:</strong> {{ document_pending_count }}</a>
   </div>
-  {% if g.current_user.role == "admin" %}
+  {% if user_has_any_role(g.current_user, "admin") %}
   <p><a class="button-link" href="{{ url_for('cafe.user_types') }}">Manage Roles</a></p>
   {% endif %}
 </section>
@@ -37,13 +37,17 @@
         <label>Full Name<input name="full_name" required /></label>
         <label>Email<input type="email" name="email" required /></label>
         <label>Password<input type="password" name="password" required /></label>
-        <label>Role
-          <select name="role" required>
+        <div class="full">
+          <strong>Roles</strong>
+          <div class="inventory-category-grid">
             {% for role in staff_role_options %}
-            <option value="{{ role }}">{{ role.replace('_', ' ').title() }}</option>
+            <label class="inventory-category-chip">
+              <input type="checkbox" name="roles" value="{{ role }}" {% if role == 'staff' %}checked{% endif %} />
+              <span>{{ role.replace('_', ' ').title() }}</span>
+            </label>
             {% endfor %}
-          </select>
-        </label>
+          </div>
+        </div>
         <label>Joining Date<input type="date" name="joining_date" /></label>
         <label>DOB<input type="date" name="dob" /></label>
         <label>Gender<input name="gender" /></label>
@@ -64,12 +68,12 @@
           </thead>
           <tbody>
             {% for s in active_profiles %}
-            {% set is_cafe_admin = (s.user.email == "admin@brownberries.local") or (s.user.role == "admin" and s.user.full_name|lower == "cafe admin") %}
+            {% set is_cafe_admin = (s.user.email == "admin@brownberries.local") or (user_has_any_role(s.user, "admin") and s.user.full_name|lower == "cafe admin") %}
             <tr>
               <td>
                 <strong>{{ s.user.full_name }}</strong><br />
                 {{ s.user.email }}<br />
-                {{ s.user.role.replace('_', ' ').title() }}<br />
+                {{ user_display_roles(s.user) }}<br />
                 Joined: {{ s.joining_date or "-" }}<br />
                 DOB: {{ s.dob or "-" }}<br />
                 {{ s.gender or "-" }}, {{ s.marital_status or "-" }}<br />
@@ -91,15 +95,20 @@
                 <form method="post" enctype="multipart/form-data" class="grid">
                   <input type="hidden" name="action" value="update" />
                   <input type="hidden" name="user_id" value="{{ s.user_id }}" />
+                  {% set current_roles = s.user.assigned_roles() %}
                   <label>Name<input name="full_name" value="{{ s.user.full_name }}" required /></label>
                   <label>Email<input type="email" name="email" value="{{ s.user.email }}" required /></label>
-                  <label>Role
-                    <select name="role" required>
+                  <div class="full">
+                    <strong>Roles</strong>
+                    <div class="inventory-category-grid">
                       {% for role in staff_role_options %}
-                      <option value="{{ role }}" {% if s.user.role == role %}selected{% endif %}>{{ role.replace('_', ' ').title() }}</option>
+                      <label class="inventory-category-chip">
+                        <input type="checkbox" name="roles" value="{{ role }}" {% if role in current_roles %}checked{% endif %} />
+                        <span>{{ role.replace('_', ' ').title() }}</span>
+                      </label>
                       {% endfor %}
-                    </select>
-                  </label>
+                    </div>
+                  </div>
                   <label>Joining<input type="date" name="joining_date" value="{{ s.joining_date or '' }}" /></label>
                   <label>DOB<input type="date" name="dob" value="{{ s.dob or '' }}" /></label>
                   <label>Marital Status<input name="marital_status" value="{{ s.marital_status or '' }}" /></label>
@@ -173,12 +182,12 @@
           </thead>
           <tbody>
             {% for s in archived_profiles %}
-            {% set is_cafe_admin = (s.user.email == "admin@brownberries.local") or (s.user.role == "admin" and s.user.full_name|lower == "cafe admin") %}
+            {% set is_cafe_admin = (s.user.email == "admin@brownberries.local") or (user_has_any_role(s.user, "admin") and s.user.full_name|lower == "cafe admin") %}
             <tr>
               <td>
                 <strong>{{ s.user.full_name }}</strong><br />
                 {{ s.user.email }}<br />
-                {{ s.user.role.replace('_', ' ').title() }}<br />
+                {{ user_display_roles(s.user) }}<br />
                 Joined: {{ s.joining_date or "-" }}<br />
                 DOB: {{ s.dob or "-" }}<br />
                 {{ s.gender or "-" }}, {{ s.marital_status or "-" }}<br />
@@ -228,7 +237,7 @@
         <label>Staff Member
           <select name="attendance_user_id" required>
             {% for s in active_profiles %}
-            <option value="{{ s.user_id }}" {% if attendance_user_id == s.user_id %}selected{% endif %}>{{ s.user.full_name }} ({{ s.user.role }})</option>
+            <option value="{{ s.user_id }}" {% if attendance_user_id == s.user_id %}selected{% endif %}>{{ s.user.full_name }} ({{ user_display_roles(s.user) }})</option>
             {% endfor %}
           </select>
         </label>
@@ -262,6 +271,42 @@
     <section class="panel">
       <h3>Attendance Entry</h3>
       <p class="muted">Staff should normally use one-tap check-in and check-out from their own profile. Use this section for admin or manager override only.</p>
+      <div class="grid grid-2" style="margin-bottom:0.9rem;">
+        <form method="post" class="grid">
+          <input type="hidden" name="action" value="checkout_all_active_sessions" />
+          <label>Bulk Check-Out Time<input type="time" name="bulk_check_out_time" /></label>
+          <button type="submit">Check Out All Active Sessions</button>
+        </form>
+        <div class="flash success">
+          <strong>Open Sessions:</strong> {{ active_attendance_sessions|length }}
+        </div>
+      </div>
+      <div style="overflow:auto; margin-bottom:0.9rem;">
+        <table>
+          <thead><tr><th>Staff</th><th>Date</th><th>Check-In</th><th>Source</th><th>Distance</th><th>Action</th></tr></thead>
+          <tbody>
+            {% for row in active_attendance_sessions %}
+            <tr>
+              <td>{{ row.user.full_name if row.user else "-" }}</td>
+              <td>{{ row.attendance_date }}</td>
+              <td>{{ row.check_in_at.strftime("%I:%M:%S %p") if row.check_in_at else "-" }}</td>
+              <td>{{ row.check_in_method or "manual" }}</td>
+              <td>{% if row.check_in_distance_m is not none %}{{ "%.0f"|format(row.check_in_distance_m) }} m{% else %}-{% endif %}</td>
+              <td>
+                <form method="post" class="grid">
+                  <input type="hidden" name="action" value="checkout_active_session" />
+                  <input type="hidden" name="attendance_id" value="{{ row.id }}" />
+                  <label>Check-Out Time<input type="time" name="check_out_time" /></label>
+                  <button type="submit">Check Out</button>
+                </form>
+              </td>
+            </tr>
+            {% else %}
+            <tr><td colspan="6">No active attendance sessions right now.</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
       <form method="post" class="grid grid-4">
         <input type="hidden" name="action" value="attendance_for_user" />
         <label>Staff
@@ -389,7 +434,7 @@
           <tbody>
             {% for row in payroll_rows %}
             <tr>
-              <td>{{ row.user.full_name }}<br /><small>{{ row.user.role.replace('_', ' ').title() }}</small></td>
+              <td>{{ row.user.full_name }}<br /><small>{{ user_display_roles(row.user) }}</small></td>
               <td>{{ (row.profile.salary_type or "monthly")|title }}{% if row.profile.salary_amount %}<br />₹{{ "%.2f"|format(row.profile.salary_amount) }}{% else %}<br />-{% endif %}</td>
               <td>{{ row.present_days }}</td>
               <td>{{ row.half_days }}</td>

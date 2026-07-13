@@ -1,0 +1,131 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="panel">
+  <div class="split-head" style="align-items:flex-start;gap:1rem;">
+    <div>
+      <h2>To Purchase</h2>
+      <p class="muted">Quick shared list for kitchen, barista, and support staff. Add what is needed, tick it once purchased, and keep the remaining list easy to scan.</p>
+    </div>
+    <form method="post">
+      <input type="hidden" name="action" value="clear_to_purchase" />
+      <button type="submit" {% if not purchase_todos_active %}disabled{% endif %}>Clear Whole List</button>
+    </form>
+  </div>
+</section>
+
+<section class="panel">
+  <form method="post" id="to-purchase-form" class="grid" style="gap:0.8rem;">
+    <input type="hidden" name="action" value="add_batch_to_purchase" />
+    <div id="purchase-rows" style="display:grid;gap:0.7rem;"></div>
+    <button type="submit">Save Items</button>
+  </form>
+</section>
+
+<section class="panel">
+  <h3>Active List</h3>
+  <div class="inventory-alert-list">
+    {% for row in purchase_todos_active %}
+    <div class="inventory-alert-row neutral" style="display:grid;grid-template-columns:auto 1fr auto;align-items:flex-start;gap:0.8rem;">
+      <form method="post" style="margin:0;">
+        <input type="hidden" name="action" value="toggle_to_purchase" />
+        <input type="hidden" name="todo_id" value="{{ row.id }}" />
+        <input type="checkbox" {% if row.status == 'purchased' %}checked{% endif %} onchange="this.form.submit()" />
+      </form>
+      <div>
+        <strong style="{% if row.status == 'purchased' %}text-decoration:line-through;opacity:0.7;{% endif %}">{{ row.item_name }}</strong>
+        <div class="muted">{{ row.quantity_note }}</div>
+        <div class="muted">Added by {{ row.created_by_name }} on {{ row.created_at_ist }}</div>
+        {% if row.status == "purchased" and row.completed_by_name %}
+        <div class="muted">Purchased by {{ row.completed_by_name }} on {{ row.completed_at_ist }}</div>
+        {% endif %}
+      </div>
+      <form method="post" style="margin:0;">
+        <input type="hidden" name="action" value="remove_to_purchase" />
+        <input type="hidden" name="todo_id" value="{{ row.id }}" />
+        <button type="submit" aria-label="Remove item">×</button>
+      </form>
+    </div>
+    {% else %}
+    <p class="muted">No items waiting to be purchased.</p>
+    {% endfor %}
+  </div>
+</section>
+
+<section class="panel">
+  <h3>Recent History</h3>
+  <table>
+    <tr><th>Item</th><th>Quantity</th><th>Status</th><th>Added By</th><th>Closed By</th><th>Closed At</th></tr>
+    {% for row in purchase_todos_history %}
+    <tr>
+      <td>{{ row.item_name }}</td>
+      <td>{{ row.quantity_note or "-" }}</td>
+      <td>{{ row.status }}</td>
+      <td>{{ row.created_by_name }}</td>
+      <td>{{ row.closed_by_name }}</td>
+      <td>{{ row.closed_at_ist }}</td>
+    </tr>
+    {% else %}
+    <tr><td colspan="6">No purchase history yet.</td></tr>
+    {% endfor %}
+  </table>
+</section>
+
+<script>
+  (() => {
+    const rowsRoot = document.getElementById("purchase-rows");
+    if (!rowsRoot) return;
+
+    function buildRow(itemValue = "", qtyValue = "") {
+      const row = document.createElement("div");
+      row.style.display = "grid";
+      row.style.gridTemplateColumns = "minmax(0, 1fr) minmax(0, 1fr) auto auto";
+      row.style.gap = "0.55rem";
+      row.style.alignItems = "center";
+      row.className = "purchase-row";
+      row.innerHTML = `
+        <input name="item_name[]" placeholder="Item" value="${itemValue.replace(/"/g, "&quot;")}" />
+        <input name="quantity_note[]" placeholder="Quantity" value="${qtyValue.replace(/"/g, "&quot;")}" />
+        <button type="button" class="purchase-add-btn">Add</button>
+        <button type="button" class="purchase-remove-btn" aria-label="Remove row">×</button>
+      `;
+      const addBtn = row.querySelector(".purchase-add-btn");
+      const removeBtn = row.querySelector(".purchase-remove-btn");
+      addBtn.addEventListener("click", () => {
+        const itemInput = row.querySelector('input[name="item_name[]"]');
+        const qtyInput = row.querySelector('input[name="quantity_note[]"]');
+        const item = itemInput.value.trim();
+        const qty = qtyInput.value.trim();
+        if (!item || !qty) {
+          if (!item) itemInput.focus();
+          else qtyInput.focus();
+          return;
+        }
+        const rows = [...rowsRoot.querySelectorAll(".purchase-row")];
+        const hasBlankRow = rows.some((candidate) => {
+          const candidateItem = candidate.querySelector('input[name="item_name[]"]').value.trim();
+          const candidateQty = candidate.querySelector('input[name="quantity_note[]"]').value.trim();
+          return !candidateItem && !candidateQty;
+        });
+        if (!hasBlankRow) {
+          rowsRoot.appendChild(buildRow());
+        }
+        itemInput.value = "";
+        qtyInput.value = "";
+        itemInput.focus();
+      });
+      removeBtn.addEventListener("click", () => {
+        const rows = [...rowsRoot.querySelectorAll(".purchase-row")];
+        if (rows.length === 1) {
+          row.querySelector('input[name="item_name[]"]').value = "";
+          row.querySelector('input[name="quantity_note[]"]').value = "";
+        } else {
+          row.remove();
+        }
+      });
+      return row;
+    }
+
+    rowsRoot.appendChild(buildRow());
+  })();
+</script>
+{% endblock %}

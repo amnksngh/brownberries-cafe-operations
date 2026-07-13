@@ -17,9 +17,36 @@
     </div>
     <div class="public-cta-stack">
       <a class="cta-order" href="{{ url_for('main.table_qr_page', preview=1) }}">Browse Menu</a>
+      <a class="cta-order cta-secondary" href="{{ url_for('main.careers') }}">Apply for a Job</a>
     </div>
   </div>
 </section>
+
+{% if open_jobs %}
+<section class="panel public-jobs-preview">
+  <div class="public-section-head">
+    <div>
+      <h3>We're Hiring</h3>
+      <p class="muted">Join Brownberries Café. Explore current openings and apply online.</p>
+    </div>
+    <a class="button-link" href="{{ url_for('main.careers') }}">View All Jobs</a>
+  </div>
+  <div class="careers-grid">
+    {% for job in open_jobs[:3] %}
+    <article class="career-card">
+      <div class="career-card-meta">
+        <span class="career-chip">{{ job.department }}</span>
+        <span class="career-chip">{{ job.employment_type }}</span>
+      </div>
+      <h4>{{ job.title }}</h4>
+      <p>{{ job.salary_text }}</p>
+      <p class="muted">{{ job.location_type }} · {{ job.vacancies }} opening{% if job.vacancies != 1 %}s{% endif %}</p>
+      <a href="{{ url_for('main.career_detail', career_slug=job.career_slug) }}">View Details</a>
+    </article>
+    {% endfor %}
+  </div>
+</section>
+{% endif %}
 
 <section class="public-grid">
   <section class="panel">

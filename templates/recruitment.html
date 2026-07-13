@@ -1,0 +1,213 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="hero-band compact" style="background-image:url('{{ url_for('static', filename='images/cafe-interior-1.jpeg') }}')">
+  <div class="hero-overlay">
+    <h2>Recruitment Portal</h2>
+    <p>Manage open jobs, applications, and hiring flow from one workspace.</p>
+  </div>
+</section>
+
+<section class="stats">
+  <article class="metric"><h3>Open Jobs</h3><p>{{ stats.open_jobs }}</p></article>
+  <article class="metric"><h3>Applicants Today</h3><p>{{ stats.applicants_today }}</p></article>
+  <article class="metric"><h3>Interviews</h3><p>{{ stats.interviews_today }}</p></article>
+  <article class="metric"><h3>Offers Pending</h3><p>{{ stats.offers_pending }}</p></article>
+  <article class="metric"><h3>Joined</h3><p>{{ stats.joining_today }}</p></article>
+  <article class="metric"><h3>Rejected</h3><p>{{ stats.rejected }}</p></article>
+</section>
+
+<section class="panel">
+  <div class="links">
+    <a href="{{ url_for('main.recruitment', section='jobs') }}">Job Listings</a>
+    <a href="{{ url_for('main.recruitment', section='applications') }}">Applications</a>
+    <a href="{{ url_for('main.careers') }}" target="_blank" rel="noopener">Open Public Careers Page</a>
+  </div>
+</section>
+
+{% if section == "jobs" %}
+<section class="panel">
+  <h3>{% if editing_job %}Edit Job{% else %}Create New Job{% endif %}</h3>
+  <form method="post" action="{{ url_for('main.save_recruitment_job') }}" class="grid recruitment-form">
+    {% if editing_job %}<input type="hidden" name="job_id" value="{{ editing_job.id }}" />{% endif %}
+    <div class="grid grid-3">
+      <label>Job Title *<input name="title" value="{{ editing_job.title if editing_job else '' }}" required /></label>
+      <label>Department *<input name="department" list="job-departments" value="{{ editing_job.department if editing_job else '' }}" required /></label>
+      <label>Employment Type
+        <select name="employment_type">
+          {% for option in employment_types %}
+          <option value="{{ option }}" {% if editing_job and editing_job.employment_type == option %}selected{% endif %}>{{ option }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>Location
+        <select name="location_type">
+          {% for option in location_types %}
+          <option value="{{ option }}" {% if editing_job and editing_job.location_type == option %}selected{% endif %}>{{ option }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>Salary Min<input type="number" step="0.01" name="salary_min" value="{{ editing_job.salary_min if editing_job and editing_job.salary_min is not none else '' }}" /></label>
+      <label>Salary Max<input type="number" step="0.01" name="salary_max" value="{{ editing_job.salary_max if editing_job and editing_job.salary_max is not none else '' }}" /></label>
+      <label>Salary Display<input name="salary_display" value="{{ editing_job.salary_display if editing_job else '' }}" placeholder="₹ 12,000 - ₹ 18,000" /></label>
+      <label>Vacancies<input type="number" min="1" name="vacancies" value="{{ editing_job.vacancies if editing_job else 1 }}" /></label>
+      <label>Priority
+        <select name="priority">
+          {% for option in priority_types %}
+          <option value="{{ option }}" {% if editing_job and editing_job.priority == option %}selected{% endif %}>{{ option }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>Experience
+        <select name="experience_required">
+          {% for option in experience_types %}
+          <option value="{{ option }}" {% if editing_job and editing_job.experience_required == option %}selected{% endif %}>{{ option }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>Education
+        <select name="education_required">
+          {% for option in education_types %}
+          <option value="{{ option }}" {% if editing_job and editing_job.education_required == option %}selected{% endif %}>{{ option }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>Status
+        <select name="status">
+          {% for option in ["draft", "published", "hidden", "archived"] %}
+          <option value="{{ option }}" {% if editing_job and editing_job.status == option %}selected{% elif not editing_job and option == 'draft' %}selected{% endif %}>{{ option|title }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>Auto Close After (days)<input type="number" min="1" name="auto_close_days" value="{{ editing_job.auto_close_days if editing_job and editing_job.auto_close_days else '' }}" /></label>
+      <label>Maximum Applicants<input type="number" min="1" name="max_applicants" value="{{ editing_job.max_applicants if editing_job and editing_job.max_applicants else '' }}" /></label>
+      <label>Career URL Slug<input name="career_slug" value="{{ editing_job.career_slug if editing_job else '' }}" placeholder="barista-karwi" /></label>
+    </div>
+    <label>Description<textarea name="description" rows="3">{{ editing_job.description if editing_job else '' }}</textarea></label>
+    <label>Responsibilities<textarea name="responsibilities" rows="3">{{ editing_job.responsibilities if editing_job else '' }}</textarea></label>
+    <label>Requirements<textarea name="requirements" rows="3">{{ editing_job.requirements if editing_job else '' }}</textarea></label>
+    <div class="grid grid-2">
+      <label>Benefits<textarea name="benefits" rows="3">{{ editing_job.benefits if editing_job else '' }}</textarea></label>
+      <label>Working Hours<textarea name="working_hours" rows="3">{{ editing_job.working_hours if editing_job else '' }}</textarea></label>
+      <label>Weekly Off<textarea name="weekly_off" rows="2">{{ editing_job.weekly_off if editing_job else '' }}</textarea></label>
+      <label>Perks<textarea name="perks" rows="2">{{ editing_job.perks if editing_job else '' }}</textarea></label>
+      <label class="full">Growth Opportunities<textarea name="growth_opportunities" rows="2">{{ editing_job.growth_opportunities if editing_job else '' }}</textarea></label>
+    </div>
+    <div>
+      <strong>Skills</strong>
+      <div class="career-skill-picker">
+        {% for skill in skill_options %}
+        <label><input type="checkbox" name="skills" value="{{ skill }}" {% if skill in editing_job_skills %}checked{% endif %} /> {{ skill }}</label>
+        {% endfor %}
+      </div>
+      <label>Extra Skills<input name="extra_skills" placeholder="Comma separated" /></label>
+    </div>
+    <div class="grid grid-3">
+      <label><input type="checkbox" name="require_resume" {% if not editing_job or editing_job.require_resume %}checked{% endif %} /> Require Resume</label>
+      <label><input type="checkbox" name="require_cover_letter" {% if editing_job and editing_job.require_cover_letter %}checked{% endif %} /> Require Cover Letter</label>
+      <label><input type="checkbox" name="require_photograph" {% if editing_job and editing_job.require_photograph %}checked{% endif %} /> Require Photograph</label>
+      <label><input type="checkbox" name="require_aadhaar" {% if editing_job and editing_job.require_aadhaar %}checked{% endif %} /> Require Aadhaar</label>
+      <label><input type="checkbox" name="require_driving_license" {% if editing_job and editing_job.require_driving_license %}checked{% endif %} /> Require Driving License</label>
+    </div>
+    <div class="grid grid-2">
+      <label>Meta Title<input name="meta_title" value="{{ editing_job.meta_title if editing_job else '' }}" /></label>
+      <label>Meta Description<input name="meta_description" value="{{ editing_job.meta_description if editing_job else '' }}" /></label>
+    </div>
+    <button type="submit">Save Job</button>
+  </form>
+  <datalist id="job-departments">
+    {% for option in departments %}
+    <option value="{{ option }}"></option>
+    {% endfor %}
+  </datalist>
+</section>
+
+<section class="panel">
+  <h3>Open Positions</h3>
+  <div class="recruitment-job-list">
+    {% for job in jobs %}
+    <article class="recruitment-job-card">
+      <div>
+        <h4>{{ job.title }}</h4>
+        <p class="muted">{{ job.department }} · {{ job.employment_type }} · {{ job.location_type }}</p>
+        <p class="muted">{{ job.status|title }} · {{ job.applications|length }} applications · {{ job.career_slug }}</p>
+      </div>
+      <div class="recruitment-actions">
+        <a href="{{ url_for('main.career_detail', career_slug=job.career_slug) }}" target="_blank" rel="noopener">View</a>
+        <a href="{{ url_for('main.recruitment', section='jobs', edit_job_id=job.id) }}">Edit</a>
+        <form method="post" action="{{ url_for('main.recruitment_job_action', job_id=job.id) }}"><input type="hidden" name="action" value="duplicate" /><button type="submit">Duplicate</button></form>
+        {% if job.status != "published" %}<form method="post" action="{{ url_for('main.recruitment_job_action', job_id=job.id) }}"><input type="hidden" name="action" value="publish" /><button type="submit">Publish</button></form>{% endif %}
+        {% if job.status == "published" %}<form method="post" action="{{ url_for('main.recruitment_job_action', job_id=job.id) }}"><input type="hidden" name="action" value="hide" /><button type="submit">Unpublish</button></form>{% endif %}
+        <form method="post" action="{{ url_for('main.recruitment_job_action', job_id=job.id) }}"><input type="hidden" name="action" value="archive" /><button type="submit">Archive</button></form>
+        <form method="post" action="{{ url_for('main.recruitment_job_action', job_id=job.id) }}" onsubmit="return confirm('Delete this job listing?');"><input type="hidden" name="action" value="delete" /><button type="submit">Delete</button></form>
+      </div>
+    </article>
+    {% else %}
+    <p class="muted">No job listings yet.</p>
+    {% endfor %}
+  </div>
+</section>
+{% else %}
+<section class="panel">
+  <h3>Applications</h3>
+  <div class="recruitment-application-list">
+    {% for card in application_cards %}
+    {% set application = card.application %}
+    <article class="recruitment-application-card">
+      <div class="recruitment-application-head">
+        <div>
+          <h4>{{ application.full_name }}</h4>
+          <p class="muted">{{ application.application_code }} · {{ application.job.title }}</p>
+        </div>
+        <span class="career-chip">{{ status_label(application.status) }}</span>
+      </div>
+      <div class="grid grid-3">
+        <div><strong>Mobile</strong><br />{{ application.mobile }}</div>
+        <div><strong>Email</strong><br />{{ application.email or "-" }}</div>
+        <div><strong>Experience</strong><br />{{ application.experience or "-" }}</div>
+      </div>
+      {% if card.skills %}
+      <div class="career-skill-list">
+        {% for skill in card.skills %}
+        <span>{{ skill }}</span>
+        {% endfor %}
+      </div>
+      {% endif %}
+      <div class="links">
+        {% if card.files.resume %}<a href="{{ url_for('main.recruitment_application_file', application_id=application.id, file_kind='resume') }}">Resume</a>{% endif %}
+        {% if card.files.photo %}<a href="{{ url_for('main.recruitment_application_file', application_id=application.id, file_kind='photo') }}">Photo</a>{% endif %}
+        {% if card.files.aadhaar %}<a href="{{ url_for('main.recruitment_application_file', application_id=application.id, file_kind='aadhaar') }}">Aadhaar</a>{% endif %}
+        {% if card.files.license %}<a href="{{ url_for('main.recruitment_application_file', application_id=application.id, file_kind='license') }}">License</a>{% endif %}
+        {% if card.files.certificates %}<a href="{{ url_for('main.recruitment_application_file', application_id=application.id, file_kind='certificates') }}">Certificates</a>{% endif %}
+      </div>
+      <form method="post" action="{{ url_for('main.recruitment_application_update', application_id=application.id) }}" class="grid grid-2">
+        <label>Status
+          <select name="status">
+            {% for option in status_options %}
+            <option value="{{ option }}" {% if application.status == option %}selected{% endif %}>{{ status_label(option) }}</option>
+            {% endfor %}
+          </select>
+        </label>
+        <label>Admin Notes
+          <textarea name="admin_notes" rows="3">{{ application.admin_notes or '' }}</textarea>
+        </label>
+        <button type="submit">Update Application</button>
+      </form>
+      {% if application.timeline_entries %}
+      <div class="recruitment-timeline">
+        {% for item in application.timeline_entries|sort(attribute='created_at', reverse=True) %}
+        <div class="recruitment-timeline-entry">
+          <strong>{{ status_label(item.status) }}</strong>
+          <span class="muted">{{ item.created_at.strftime('%d %b %Y %I:%M %p') }}</span>
+          {% if item.note %}<p>{{ item.note }}</p>{% endif %}
+        </div>
+        {% endfor %}
+      </div>
+      {% endif %}
+    </article>
+    {% else %}
+    <p class="muted">No applications yet.</p>
+    {% endfor %}
+  </div>
+</section>
+{% endif %}
+{% endblock %}

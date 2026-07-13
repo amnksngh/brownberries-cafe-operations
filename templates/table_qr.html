@@ -289,6 +289,7 @@
   const menuHeader = document.querySelector(".qr-menu-header");
   const emptyResults = document.getElementById("qr-empty-results");
   const greetingEl = document.getElementById("qr-greeting");
+  let orderSubmitLocked = false;
   let toastTimer = null;
   let celebrationTimer = null;
   let activeCat = "all";
@@ -839,6 +840,10 @@
 
   if (!isPreview) {
     orderForm?.addEventListener("submit", (event) => {
+      if (orderSubmitLocked) {
+        event.preventDefault();
+        return;
+      }
       if (Object.keys(cart).length < 1) {
         event.preventDefault();
         alert("Please add at least one item to cart.");
@@ -863,6 +868,12 @@
         form.submit();
         return;
       }
+      orderSubmitLocked = true;
+      orderForm.querySelectorAll('button[type="submit"]').forEach((btn) => {
+        btn.disabled = true;
+        if (!btn.dataset.originalLabel) btn.dataset.originalLabel = btn.textContent;
+        btn.textContent = "Placing...";
+      });
       closeBottomSheet();
       try {
         window.sessionStorage.removeItem(CART_STORAGE_KEY);

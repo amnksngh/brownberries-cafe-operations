@@ -19,6 +19,7 @@ ENDPOINT_PERMISSIONS = {
     "cafe.delete_menu_item": "can_manage_menu",
     "cafe.update_menu_availability": "can_manage_menu",
     "cafe.orders": "can_manage_orders",
+    "cafe.to_purchase": "can_manage_inventory",
     "cafe.kitchen_display": "can_manage_kitchen",
     "cafe.barista_display": "can_manage_kitchen",
     "cafe.inventory": "can_manage_inventory",
@@ -52,6 +53,48 @@ def load_current_user():
         g.current_user = None
 
 
+def user_roles(user) -> list[str]:
+    if not user:
+        return []
+    if hasattr(user, "assigned_roles"):
+        return user.assigned_roles()
+    role_name = str(getattr(user, "role", "") or "").strip().lower()
+    return [role_name] if role_name else []
+
+
+def user_primary_role(user) -> str:
+    roles = user_roles(user)
+    return roles[0] if roles else ""
+
+
+def user_display_roles(user) -> str:
+    if not user:
+        return ""
+    if hasattr(user, "display_roles"):
+        return user.display_roles()
+    return ", ".join(role.replace("_", " ").title() for role in user_roles(user))
+
+
+def user_has_any_role(user, *roles) -> bool:
+    assigned = set(user_roles(user))
+    return any(str(role or "").strip().lower() in assigned for role in roles)
+
+
+def user_has_permission(user, perm_name: str) -> bool:
+    if not user or not perm_name:
+        return False
+    if getattr(user, "user_type", None) and getattr(user.user_type, perm_name, False):
+        return True
+    assigned = user_roles(user)
+    if not assigned:
+        return False
+    from .extensions import db
+    from .models import UserType
+    lowered = [role.lower() for role in assigned]
+    role_templates = UserType.query.filter(db.func.lower(UserType.name).in_(lowered)).all()
+    return any(getattr(role_template, perm_name, False) for role_template in role_templates)
+
+
 def login_required(view):
     @wraps(view)
     def wrapped(*args, **kwargs):
@@ -71,11 +114,10 @@ def roles_required(*roles):
             if not g.current_user.active:
                 session.clear()
                 return redirect(url_for("main.login", next=request.path))
-            if g.current_user.role in roles:
+            if user_has_any_role(g.current_user, *roles):
                 return view(*args, **kwargs)
-            user_type = getattr(g.current_user, "user_type", None)
             perm_name = ENDPOINT_PERMISSIONS.get(request.endpoint or "")
-            if user_type and perm_name and getattr(user_type, perm_name, False):
+            if user_has_permission(g.current_user, perm_name):
                 return view(*args, **kwargs)
             return redirect(url_for("main.dashboard"))
 

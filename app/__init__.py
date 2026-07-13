@@ -6,7 +6,13 @@ from flask import Flask
 from sqlalchemy import text
 from werkzeug.security import generate_password_hash
 
-from .auth_helpers import load_current_user
+from .auth_helpers import (
+    load_current_user,
+    user_display_roles,
+    user_has_any_role,
+    user_has_permission,
+    user_primary_role,
+)
 from .cafe import (
     _backfill_order_codes,
     _backfill_paid_timestamps,
@@ -17,7 +23,7 @@ from .deploy_config import load_deployment_config
 from .extensions import db, socketio
 from .library import bp as library_bp
 from .main import bp as main_bp
-from .models import InventoryCategory, SubscriptionPlan, User
+from .models import InventoryCategory, InventoryExpenseLog, InventoryItem, InventoryVendor, SubscriptionPlan, User
 
 
 def _ensure_sqlite_schema_columns():
@@ -55,9 +61,15 @@ def _ensure_sqlite_schema_columns():
             "check_in_at": "DATETIME",
             "check_out_at": "DATETIME",
             "manager_override": "BOOLEAN NOT NULL DEFAULT 0",
+            "check_in_lat": "FLOAT",
+            "check_in_lng": "FLOAT",
+            "check_in_distance_m": "FLOAT",
+            "check_in_method": "TEXT",
+            "check_out_method": "TEXT",
         },
         "user": {
             "user_type_id": "INTEGER",
+            "roles_json": "TEXT",
         },
         "user_type": {
             "can_view_delivery_locations": "BOOLEAN NOT NULL DEFAULT 0",
@@ -120,6 +132,73 @@ def _ensure_sqlite_schema_columns():
             "sop_photo_url": "TEXT",
             "size_sop_json": "TEXT",
         },
+        "inventory_expense_log": {
+            "vendor_id": "INTEGER",
+            "transaction_mode": "TEXT",
+        },
+        "job_opening": {
+            "salary_display": "TEXT",
+            "vacancies": "INTEGER NOT NULL DEFAULT 1",
+            "priority": "TEXT NOT NULL DEFAULT 'Normal'",
+            "experience_required": "TEXT",
+            "education_required": "TEXT",
+            "description": "TEXT",
+            "responsibilities": "TEXT",
+            "requirements": "TEXT",
+            "benefits": "TEXT",
+            "working_hours": "TEXT",
+            "weekly_off": "TEXT",
+            "perks": "TEXT",
+            "growth_opportunities": "TEXT",
+            "skills_json": "TEXT",
+            "require_resume": "BOOLEAN NOT NULL DEFAULT 1",
+            "require_cover_letter": "BOOLEAN NOT NULL DEFAULT 0",
+            "require_photograph": "BOOLEAN NOT NULL DEFAULT 0",
+            "require_aadhaar": "BOOLEAN NOT NULL DEFAULT 0",
+            "require_driving_license": "BOOLEAN NOT NULL DEFAULT 0",
+            "auto_close_days": "INTEGER",
+            "max_applicants": "INTEGER",
+            "career_slug": "TEXT",
+            "meta_title": "TEXT",
+            "meta_description": "TEXT",
+            "published_at": "DATETIME",
+            "archived_at": "DATETIME",
+        },
+        "job_application": {
+            "application_code": "TEXT",
+            "source": "TEXT",
+            "gender": "TEXT",
+            "dob": "DATE",
+            "whatsapp": "TEXT",
+            "address": "TEXT",
+            "city": "TEXT",
+            "state": "TEXT",
+            "pincode": "TEXT",
+            "highest_qualification": "TEXT",
+            "school_college": "TEXT",
+            "passing_year": "TEXT",
+            "percentage": "TEXT",
+            "currently_working": "BOOLEAN NOT NULL DEFAULT 0",
+            "previous_employer": "TEXT",
+            "current_salary": "TEXT",
+            "expected_salary": "TEXT",
+            "notice_period": "TEXT",
+            "experience": "TEXT",
+            "skills_json": "TEXT",
+            "immediate_joining": "BOOLEAN NOT NULL DEFAULT 0",
+            "available_from": "DATE",
+            "cover_letter": "TEXT",
+            "declaration_confirmed": "BOOLEAN NOT NULL DEFAULT 0",
+            "resume_file_path": "TEXT",
+            "photo_file_path": "TEXT",
+            "aadhaar_file_path": "TEXT",
+            "driving_license_file_path": "TEXT",
+            "certificates_file_path": "TEXT",
+            "admin_notes": "TEXT",
+        },
+        "job_application_timeline": {
+            "changed_by_user_id": "INTEGER",
+        },
     }
     for table_name, cols in column_specs.items():
         existing = {
@@ -169,7 +248,67 @@ def _ensure_sqlite_schema_columns():
     db.session.execute(
         text("CREATE INDEX IF NOT EXISTS idx_inventory_daily_closing_item_date ON inventory_daily_closing (item_id, closing_date)")
     )
+    db.session.execute(
+        text("CREATE INDEX IF NOT EXISTS idx_inventory_expense_log_date_category ON inventory_expense_log (entry_date, category_id)")
+    )
+    db.session.execute(
+        text("CREATE INDEX IF NOT EXISTS idx_job_opening_status_published ON job_opening (status, published_at)")
+    )
+    db.session.execute(
+        text("CREATE INDEX IF NOT EXISTS idx_job_application_job_status_created ON job_application (job_id, status, created_at)")
+    )
+    db.session.execute(
+        text("CREATE INDEX IF NOT EXISTS idx_job_application_mobile ON job_application (mobile)")
+    )
+    db.session.execute(
+        text("UPDATE user SET roles_json = json_array(lower(role)) WHERE (roles_json IS NULL OR trim(roles_json) = '') AND role IS NOT NULL AND trim(role) != ''")
+    )
     db.session.commit()
+
+
+def _normalize_inventory_categories():
+    alias_map = {
+        "dairy & refrigerated": "Dairy",
+        "dry grocery": "Groceries",
+        "coffee & beverage": "Coffee & Beverages",
+        "beverage supplies": "Coffee & Beverages",
+        "packaging & utility": "Utility",
+        "cleaning & hygiene": "Cleaning Products",
+        "machinery & equipment": "Maintenance & Equipment",
+    }
+    all_categories = InventoryCategory.query.order_by(InventoryCategory.id.asc()).all()
+    category_by_name = {
+        (category.name or "").strip().lower(): category
+        for category in all_categories
+        if (category.name or "").strip()
+    }
+    changed = False
+    for alias_name, canonical_name in alias_map.items():
+        alias = category_by_name.get(alias_name)
+        canonical = category_by_name.get(canonical_name.lower())
+        if not alias or not canonical or alias.id == canonical.id:
+            continue
+        InventoryExpenseLog.query.filter_by(category_id=alias.id).update({"category_id": canonical.id})
+        InventoryItem.query.filter(
+            db.func.lower(db.func.trim(InventoryItem.category_name)) == alias_name
+        ).update({"category_name": canonical.name}, synchronize_session=False)
+        if alias.active:
+            alias.active = False
+            changed = True
+    if changed:
+        db.session.commit()
+
+
+def _ensure_other_inventory_vendor():
+    vendor = InventoryVendor.query.filter(db.func.lower(InventoryVendor.name) == "other").first()
+    if not vendor:
+        vendor = InventoryVendor(name="Other", active=True)
+        db.session.add(vendor)
+        db.session.commit()
+    elif not vendor.active:
+        vendor.active = True
+        db.session.commit()
+    return vendor
 
 
 def create_app():
@@ -198,6 +337,7 @@ def create_app():
     (uploads_root / "staff_photos").mkdir(parents=True, exist_ok=True)
     (uploads_root / "library_cards").mkdir(parents=True, exist_ok=True)
     (uploads_root / "library_docs").mkdir(parents=True, exist_ok=True)
+    (uploads_root / "recruitment").mkdir(parents=True, exist_ok=True)
     (uploads_root / "salary_receipts").mkdir(parents=True, exist_ok=True)
     app.config["UPLOADS_ROOT"] = str(uploads_root)
 
@@ -210,21 +350,36 @@ def create_app():
         _backfill_order_codes()
         _backfill_paid_timestamps()
         default_inventory_categories = [
+            ("Groceries", "package", "#b08968"),
+            ("Dairy", "milk", "#6ea8fe"),
             ("Fresh Produce", "leaf", "#6cab7a"),
-            ("Dairy & Refrigerated", "snowflake", "#6ea8fe"),
-            ("Coffee & Beverage", "cup-soda", "#8b5e3c"),
-            ("Dry Grocery", "package", "#b08968"),
+            ("Coffee & Beverages", "cup-soda", "#8b5e3c"),
             ("Bakery & Confectionery", "cake-slice", "#d49a89"),
-            ("Beverage Supplies", "bottle-wine", "#7aa2c8"),
-            ("Cleaning & Hygiene", "sparkles", "#9aa6b2"),
-            ("Machinery & Equipment", "cog", "#7c7f8a"),
+            ("Utility", "bolt", "#d6a75b"),
+            ("Packaging & Utility", "box", "#d0a85c"),
+            ("Cleaning Products", "sparkles", "#9aa6b2"),
+            ("Kitchen Supplies", "utensils", "#a17755"),
+            ("Gas & Fuel", "flame", "#de7c4a"),
+            ("Water & Ice", "droplets", "#6aa9c8"),
+            ("Maintenance & Equipment", "cog", "#7c7f8a"),
             ("Interior & Consumables", "armchair", "#b2a39b"),
         ]
         for name, icon, color in default_inventory_categories:
             if not InventoryCategory.query.filter(db.func.lower(InventoryCategory.name) == name.lower()).first():
                 db.session.add(InventoryCategory(name=name, icon=icon, color=color, active=True))
         db.session.commit()
+        _normalize_inventory_categories()
+        _ensure_other_inventory_vendor()
     app.before_request(load_current_user)
+    @app.context_processor
+    def inject_role_helpers():
+        return {
+            "user_has_any_role": user_has_any_role,
+            "user_has_permission": user_has_permission,
+            "user_display_roles": user_display_roles,
+            "user_primary_role": user_primary_role,
+        }
+
     app.register_blueprint(main_bp)
     app.register_blueprint(cafe_bp)
     app.register_blueprint(library_bp)
