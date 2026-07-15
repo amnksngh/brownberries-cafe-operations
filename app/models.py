@@ -109,6 +109,14 @@ class MenuType(TimestampMixin, db.Model):
     name = db.Column(db.String(80), nullable=False, unique=True)
 
 
+class Workstation(TimestampMixin, db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    slug = db.Column(db.String(40), nullable=False, unique=True)
+    name = db.Column(db.String(80), nullable=False, unique=True)
+    active = db.Column(db.Boolean, default=True, nullable=False)
+    display_order = db.Column(db.Integer, default=0, nullable=False)
+
+
 class MenuItem(TimestampMixin, db.Model):
     id = db.Column(db.Integer, primary_key=True)
     category_id = db.Column(db.Integer, db.ForeignKey("menu_category.id"), nullable=False)

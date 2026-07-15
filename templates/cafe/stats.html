@@ -29,9 +29,9 @@
     </label>
     <label>Sales Source
       <select name="salesSource">
-        <option value="all" {% if filters.salesSource == "all" %}selected{% endif %}>All</option>
-        <option value="barista" {% if filters.salesSource == "barista" %}selected{% endif %}>Barista Counter</option>
-        <option value="kitchen" {% if filters.salesSource == "kitchen" %}selected{% endif %}>Kitchen</option>
+        {% for source in sales_source_options %}
+        <option value="{{ source.value }}" {% if filters.salesSource == source.value %}selected{% endif %}>{{ source.label }}</option>
+        {% endfor %}
       </select>
     </label>
     <label>Order Type
@@ -115,16 +115,13 @@
     <h3>Unique Items Sold</h3>
     <p>{{ stats_payload.summary.products.unique_items_sold }}</p>
   </article>
+  {% for row in stats_payload.summary.operations.workstation_rows %}
   <article class="metric kpi-card">
-    <h3>Kitchen Sales</h3>
-    <p>₹{{ "%.2f"|format(stats_payload.summary.operations.kitchen_sales) }}</p>
-    <small>{{ "%.2f"|format(stats_payload.summary.operations.kitchen_contribution_pct) }}%</small>
+    <h3>{{ row.label }} Sales</h3>
+    <p>₹{{ "%.2f"|format(row.sales) }}</p>
+    <small>{{ "%.2f"|format(row.contribution_pct) }}%</small>
   </article>
-  <article class="metric kpi-card">
-    <h3>Barista Sales</h3>
-    <p>₹{{ "%.2f"|format(stats_payload.summary.operations.barista_sales) }}</p>
-    <small>{{ "%.2f"|format(stats_payload.summary.operations.barista_contribution_pct) }}%</small>
-  </article>
+  {% endfor %}
 </section>
 
 <section class="panel">
@@ -139,7 +136,7 @@
       <canvas id="revenue-split-chart" height="140"></canvas>
     </article>
     <article class="panel inner">
-      <h4>Kitchen vs Barista Revenue</h4>
+      <h4>Workstation Revenue</h4>
       <canvas id="revenue-compare-chart" height="140"></canvas>
     </article>
   </div>
@@ -264,16 +261,25 @@
 </section>
 
 <section class="panel">
-  <h3>Kitchen vs Barista Analytics</h3>
+  <h3>Workstation Analytics</h3>
   <div class="stats-kv-grid">
-    <article class="metric"><h3>Kitchen Revenue</h3><p>₹{{ "%.2f"|format(stats_payload.kitchen_vs_barista.revenue_comparison.kitchen) }}</p></article>
-    <article class="metric"><h3>Barista Revenue</h3><p>₹{{ "%.2f"|format(stats_payload.kitchen_vs_barista.revenue_comparison.barista) }}</p></article>
-    <article class="metric"><h3>Kitchen Orders</h3><p>{{ stats_payload.kitchen_vs_barista.order_count_comparison.kitchen_orders }}</p></article>
-    <article class="metric"><h3>Barista Orders</h3><p>{{ stats_payload.kitchen_vs_barista.order_count_comparison.barista_orders }}</p></article>
-    <article class="metric"><h3>Best Kitchen Item</h3><p>{{ stats_payload.kitchen_vs_barista.best_kitchen_item.name }}</p><small>₹{{ "%.2f"|format(stats_payload.kitchen_vs_barista.best_kitchen_item.revenue) }} | {{ stats_payload.kitchen_vs_barista.best_kitchen_item.qty }}</small></article>
-    <article class="metric"><h3>Best Barista Item</h3><p>{{ stats_payload.kitchen_vs_barista.best_barista_item.name }}</p><small>₹{{ "%.2f"|format(stats_payload.kitchen_vs_barista.best_barista_item.revenue) }} | {{ stats_payload.kitchen_vs_barista.best_barista_item.qty }}</small></article>
-    <article class="metric"><h3>Kitchen Avg Ticket</h3><p>₹{{ "%.2f"|format(stats_payload.kitchen_vs_barista.average_ticket_size.kitchen) }}</p></article>
-    <article class="metric"><h3>Barista Avg Ticket</h3><p>₹{{ "%.2f"|format(stats_payload.kitchen_vs_barista.average_ticket_size.barista) }}</p></article>
+    {% for row in stats_payload.kitchen_vs_barista.workstation_rows %}
+    <article class="metric">
+      <h3>{{ row.label }}</h3>
+      <p>₹{{ "%.2f"|format(row.sales) }}</p>
+      <small>{{ row.order_count }} orders | {{ "%.2f"|format(row.contribution_pct) }}%</small>
+    </article>
+    <article class="metric">
+      <h3>{{ row.label }} Best Item</h3>
+      <p>{{ row.best_item.name }}</p>
+      <small>₹{{ "%.2f"|format(row.best_item.revenue) }} | {{ row.best_item.qty }}</small>
+    </article>
+    <article class="metric">
+      <h3>{{ row.label }} Avg Ticket</h3>
+      <p>₹{{ "%.2f"|format(row.average_ticket_size) }}</p>
+      <small>{{ "%+.2f"|format(row.growth_pct) }}% growth</small>
+    </article>
+    {% endfor %}
   </div>
   <article class="panel inner">
     <h4>Contribution Trend (%)</h4>
@@ -302,7 +308,7 @@
   <div class="table-wrap">
     <table>
       <thead>
-        <tr><th>Order</th><th>Table</th><th>Type</th><th>Source Mix</th><th>Status</th><th>Payment</th><th>Total</th><th>Created</th></tr>
+        <tr><th>Order</th><th>Table</th><th>Type</th><th>Source Mix</th><th>Status</th><th>Payment</th><th>Total</th><th>Settled</th></tr>
       </thead>
       <tbody>
         {% for order in stats_payload.orders %}
@@ -314,7 +320,7 @@
           <td>{{ order.status }}</td>
           <td>{{ order.payment_type }}</td>
           <td>₹{{ "%.2f"|format(order.total_amount) }}</td>
-          <td>{{ order.created_at }}</td>
+          <td>{{ order.settled_at }}</td>
         </tr>
         {% else %}
         <tr><td colspan="8">No orders found for selected filters.</td></tr>
@@ -361,7 +367,7 @@
       options: { responsive: true, plugins: { legend: { labels: { color: chartTextColor } } }, scales: { x: { ticks: { color: chartTextColor }, grid: { color: gridColor } }, y: { ticks: { color: chartTextColor }, grid: { color: gridColor } } } },
     });
   }
-  function buildPieChart(id, labels, data) {
+  function buildPieChart(id, labels, data, colors) {
     const node = document.getElementById(id);
     if (!node || !window.Chart) return;
     return new Chart(node, {
@@ -371,7 +377,7 @@
         datasets: [
           {
             data,
-            backgroundColor: ["#6f4a35", "#2d7070", "#d4a574", "#8f6c96", "#4d8b53", "#9b5b5b", "#567fb5", "#a38656", "#5b5b5b", "#a16f3b", "#3f6e8f"],
+            backgroundColor: colors && colors.length ? colors : ["#6f4a35", "#2d7070", "#d4a574", "#8f6c96", "#4d8b53", "#9b5b5b", "#567fb5", "#a38656", "#5b5b5b", "#a16f3b", "#3f6e8f"],
           },
         ],
       },
@@ -380,8 +386,19 @@
   }
 
   buildLineChart("revenue-trend-chart", statsPayload.revenue.trend.labels, statsPayload.revenue.trend.values, "Revenue", "#6f4a35");
-  buildPieChart("revenue-split-chart", ["Kitchen", "Barista"], [statsPayload.revenue.split.kitchen, statsPayload.revenue.split.barista]);
-  buildBarChart("revenue-compare-chart", ["Kitchen", "Barista"], [statsPayload.revenue.comparison.kitchen, statsPayload.revenue.comparison.barista], "Revenue", ["#6f4a35", "#2d7070"]);
+  buildPieChart(
+    "revenue-split-chart",
+    statsPayload.revenue.split.labels || [],
+    statsPayload.revenue.split.values || [],
+    statsPayload.revenue.split.colors || []
+  );
+  buildBarChart(
+    "revenue-compare-chart",
+    statsPayload.revenue.comparison.labels || [],
+    statsPayload.revenue.comparison.values || [],
+    "Revenue",
+    statsPayload.revenue.comparison.colors || []
+  );
   buildLineChart("orders-trend-chart", statsPayload.orders_analytics.orders_over_time.labels, statsPayload.orders_analytics.orders_over_time.values, "Orders", "#2d7070");
   buildPieChart("order-type-chart", ["Dine In", "Takeaway", "Online"], [
     statsPayload.orders_analytics.order_type_distribution.dine_in || 0,
@@ -402,17 +419,20 @@
   );
   buildPieChart("category-pie-chart", statsPayload.category_analytics.pie.labels || [], statsPayload.category_analytics.pie.values || []);
   buildBarChart("category-bar-chart", statsPayload.category_analytics.bar.labels || [], statsPayload.category_analytics.bar.values || [], "Revenue", "#6f4a35");
-  const ctrend = statsPayload.kitchen_vs_barista.contribution_trend || { labels: [], kitchen_pct: [], barista_pct: [] };
+  const ctrend = statsPayload.kitchen_vs_barista.contribution_trend || { labels: [], datasets: [] };
   const nodeC = document.getElementById("contribution-trend-chart");
   if (nodeC && window.Chart) {
     new Chart(nodeC, {
       type: "line",
       data: {
         labels: ctrend.labels,
-        datasets: [
-          { label: "Kitchen %", data: ctrend.kitchen_pct, borderColor: "#6f4a35", backgroundColor: "#6f4a3533", tension: 0.22 },
-          { label: "Barista %", data: ctrend.barista_pct, borderColor: "#2d7070", backgroundColor: "#2d707033", tension: 0.22 },
-        ],
+        datasets: (ctrend.datasets || []).map((dataset) => ({
+          label: `${dataset.label} %`,
+          data: dataset.values || [],
+          borderColor: dataset.color || "#6f4a35",
+          backgroundColor: `${dataset.color || "#6f4a35"}33`,
+          tension: 0.22,
+        })),
       },
       options: { responsive: true, plugins: { legend: { labels: { color: chartTextColor } } }, scales: { x: { ticks: { color: chartTextColor }, grid: { color: gridColor } }, y: { ticks: { color: chartTextColor }, grid: { color: gridColor } } } },
     });

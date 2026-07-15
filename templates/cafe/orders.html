@@ -79,7 +79,7 @@
         </label>
         {% if item.has_size_variants and sizes %}
         <label class="size-row">
-          <span>Serving Size</span>
+          <span>Serving Size/Options</span>
           <select class="size-select">
             {% for s in sizes %}
             <option value="{{ s.size }}" data-price="{{ s.price }}" {% if loop.first %}selected{% endif %}>{{ s.size }} | ₹{{ "%.2f"|format(s.price) }}</option>
@@ -87,7 +87,7 @@
           </select>
         </label>
         {% else %}
-        <div class="size-row muted"><span>Serving Size</span><span>Standard</span></div>
+        <div class="size-row muted"><span>Serving Size/Options</span><span>Standard</span></div>
         {% endif %}
         <div class="item-actions">
           <button type="button" class="desc-btn" data-name="{{ item.name }}" data-description="{{ item.description or 'No description available.' }}">View Description</button>

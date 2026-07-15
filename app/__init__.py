@@ -23,7 +23,7 @@ from .deploy_config import load_deployment_config
 from .extensions import db, socketio
 from .library import bp as library_bp
 from .main import bp as main_bp
-from .models import InventoryCategory, InventoryExpenseLog, InventoryItem, InventoryVendor, SubscriptionPlan, User
+from .models import InventoryCategory, InventoryExpenseLog, InventoryItem, InventoryVendor, SubscriptionPlan, User, Workstation
 
 
 def _ensure_sqlite_schema_columns():
@@ -311,6 +311,37 @@ def _ensure_other_inventory_vendor():
     return vendor
 
 
+def _ensure_default_workstations():
+    defaults = [
+        ("kitchen", "Kitchen"),
+        ("barista", "Barista Counter"),
+    ]
+    changed = False
+    for index, (slug, name) in enumerate(defaults, start=1):
+        workstation = Workstation.query.filter_by(slug=slug).first()
+        if not workstation:
+            workstation = Workstation(
+                slug=slug,
+                name=name,
+                active=True,
+                display_order=index,
+            )
+            db.session.add(workstation)
+            changed = True
+            continue
+        if not workstation.name:
+            workstation.name = name
+            changed = True
+        if workstation.display_order != index:
+            workstation.display_order = index
+            changed = True
+        if not workstation.active:
+            workstation.active = True
+            changed = True
+    if changed:
+        db.session.commit()
+
+
 def create_app():
     app = Flask(
         __name__,
@@ -349,6 +380,7 @@ def create_app():
         _ensure_protected_menu_categories()
         _backfill_order_codes()
         _backfill_paid_timestamps()
+        _ensure_default_workstations()
         default_inventory_categories = [
             ("Groceries", "package", "#b08968"),
             ("Dairy", "milk", "#6ea8fe"),

@@ -25,8 +25,9 @@
     {% if user_has_any_role(g.current_user, "admin", "manager", "delivery_partner") or user_has_permission(g.current_user, "can_view_delivery_locations") %}
     <a href="{{ url_for('cafe.delivery_locations') }}">Delivery Locations</a>
     {% endif %}
-    <a href="{{ url_for('cafe.kitchen_display', station='kitchen') }}">Kitchen Display</a>
-    <a href="{{ url_for('cafe.kitchen_display', station='barista') }}">Barista Counter Display</a>
+    {% for station in workstation_options %}
+    <a href="{{ url_for('cafe.kitchen_display', station=station.slug) }}">{{ station.name }} Display</a>
+    {% endfor %}
     <a href="{{ url_for('cafe.inventory') }}">Inventory Management</a>
     {% if user_has_any_role(g.current_user, "admin", "manager") or user_has_permission(g.current_user, "can_manage_staff") %}
     <a href="{{ url_for('cafe.staff') }}">Staff Management</a>
@@ -79,8 +80,8 @@
 </section>
 
 <section class="panel">
-  <h3>Kitchen / Barista Kiosk URL</h3>
-  <p class="muted">Use this for Windows kiosk browsers so the display opens without staff login and only shows kitchen or barista screens.</p>
+  <h3>Prep Display Kiosk URL</h3>
+  <p class="muted">Use this for workstation kiosks so each screen opens without staff login and only shows its own prep queue.</p>
   <form method="post" action="{{ url_for('cafe.update_kiosk_settings') }}" class="grid grid-4">
     <label class="full">Kiosk Access Key
       <input name="kiosk_token" value="{{ kiosk_token or '' }}" placeholder="Leave blank to auto-generate a secure key" />
@@ -89,14 +90,12 @@
   </form>
   {% if kiosk_token %}
   <div class="grid grid-2" style="margin-top:0.75rem;">
+    {% for station in workstation_kiosk_urls %}
     <div class="flash success">
-      <strong>Kitchen Kiosk URL</strong><br />
-      <a href="{{ kiosk_kitchen_url }}" target="_blank" rel="noopener">{{ kiosk_kitchen_url }}</a>
+      <strong>{{ station.name }} Kiosk URL</strong><br />
+      <a href="{{ station.url }}" target="_blank" rel="noopener">{{ station.url }}</a>
     </div>
-    <div class="flash success">
-      <strong>Barista Kiosk URL</strong><br />
-      <a href="{{ kiosk_barista_url }}" target="_blank" rel="noopener">{{ kiosk_barista_url }}</a>
-    </div>
+    {% endfor %}
   </div>
   {% endif %}
 </section>

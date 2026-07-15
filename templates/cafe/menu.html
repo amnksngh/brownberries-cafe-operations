@@ -75,6 +75,34 @@
         {% endfor %}
       </table>
     </section>
+
+    <section class="panel">
+      <h3>Workstations</h3>
+      <p class="muted">Create named prep displays like Kitchen, Barista Counter, or Sandwich Line. Leave a menu item unassigned if it should stay out of all prep screens.</p>
+      <form method="post" action="{{ url_for('cafe.add_workstation') }}" class="grid grid-4">
+        <label>Name <input name="name" required placeholder="Kitchen" /></label>
+        <label>Slug <input name="slug" placeholder="kitchen-line" /></label>
+        <button type="submit">Add Workstation</button>
+      </form>
+      <table>
+        <tr><th>Name</th><th>Slug</th><th>Active</th><th>Actions</th></tr>
+        {% for st in workstation_options %}
+        <tr>
+          <td><input form="workstation-form-{{ st.id }}" name="name" value="{{ st.name }}" required /></td>
+          <td><input form="workstation-form-{{ st.id }}" name="slug" value="{{ st.slug }}" required /></td>
+          <td><label><input form="workstation-form-{{ st.id }}" type="checkbox" name="active" {% if st.active %}checked{% endif %} /> Active</label></td>
+          <td>
+            <form id="workstation-form-{{ st.id }}" method="post" action="{{ url_for('cafe.update_workstation', workstation_id=st.id) }}" class="inline">
+              <button type="submit">Save</button>
+            </form>
+            <form method="post" action="{{ url_for('cafe.delete_workstation', workstation_id=st.id) }}" class="inline confirm-delete-form" data-confirm-message="Delete workstation '{{ st.name }}'? Linked menu items will become unassigned.">
+              <button type="submit">Delete</button>
+            </form>
+          </td>
+        </tr>
+        {% endfor %}
+      </table>
+    </section>
     {% endif %}
 
     {% if active_menu_section == 'add_item' %}
@@ -95,9 +123,10 @@
           </select>
         </label>
         <label>Name <input name="name" value="{{ add_form.name }}" required /></label>
-        <label>Prep Station
-          <select name="prep_station" required>
-            {% for st in prep_station_options %}<option value="{{ st }}" {% if add_form.prep_station == st %}selected{% endif %}>{{ st|title }}</option>{% endfor %}
+        <label>Workstation
+          <select name="prep_station">
+            <option value="" {% if not add_form.prep_station %}selected{% endif %}>No workstation</option>
+            {% for st in workstation_options %}<option value="{{ st.slug }}" {% if add_form.prep_station == st.slug %}selected{% endif %}>{{ st.name }}</option>{% endfor %}
           </select>
         </label>
         <label>Image URL <input name="image_url" value="{{ add_form.image_url }}" /></label>
@@ -127,13 +156,14 @@
       <h3>Menu Items</h3>
       <label>Search Item <input id="menu-item-search" placeholder="Search by name/category/type..." /></label>
       <table id="menu-items-table">
-        <tr><th>Category</th><th>Item</th><th>Type</th><th>Price</th><th>Image</th><th>Actions</th></tr>
+        <tr><th>Category</th><th>Item</th><th>Type</th><th>Workstation</th><th>Price</th><th>Image</th><th>Actions</th></tr>
         {% for item in items %}
         {% set selected_cats = item_category_map.get(item.id, []) %}
         <tr>
           <td>{% for c in categories if c.id in selected_cats %}{{ c.name }}{% if not loop.last %}, {% endif %}{% endfor %}</td>
           <td>{{ item.name }}</td>
           <td>{{ item.item_type }}</td>
+          <td>{{ workstation_name_map.get(item.prep_station, 'No workstation') }}</td>
           <td>₹{{ "%.2f"|format(item.price) }}</td>
           <td>{% if item.image_url %}<a href="{{ item.image_url }}" target="_blank" class="button-link">View Image</a>{% else %}-{% endif %}</td>
           <td>
@@ -163,9 +193,10 @@
                   </select>
                 </label>
                 <label>Name <input name="name" value="{{ item.name }}" required /></label>
-                <label>Prep Station
-                  <select name="prep_station" required>
-                    {% for st in prep_station_options %}<option value="{{ st }}" {% if item.prep_station == st %}selected{% endif %}>{{ st|title }}</option>{% endfor %}
+                <label>Workstation
+                  <select name="prep_station">
+                    <option value="" {% if not item.prep_station %}selected{% endif %}>No workstation</option>
+                    {% for st in workstation_options %}<option value="{{ st.slug }}" {% if item.prep_station == st.slug %}selected{% endif %}>{{ st.name }}</option>{% endfor %}
                   </select>
                 </label>
                 <label>Image URL <input name="image_url" value="{{ item.image_url or '' }}" /></label>
@@ -204,13 +235,14 @@
     <section class="panel">
       <h3>Deleted Items</h3>
       <table>
-        <tr><th>Item</th><th>Category</th><th>Type</th><th>Actions</th></tr>
+        <tr><th>Item</th><th>Category</th><th>Type</th><th>Workstation</th><th>Actions</th></tr>
         {% for item in deleted_items %}
         {% set selected_cats = item_category_map.get(item.id, []) %}
         <tr>
           <td>{{ item.name }}</td>
           <td>{% for c in categories if c.id in selected_cats %}{{ c.name }}{% if not loop.last %}, {% endif %}{% endfor %}</td>
           <td>{{ item.item_type }}</td>
+          <td>{{ workstation_name_map.get(item.prep_station, 'No workstation') }}</td>
           <td>
             <form method="post" action="{{ url_for('cafe.restore_menu_item', item_id=item.id) }}" class="inline">
               <button type="submit">Restore</button>
@@ -218,7 +250,7 @@
           </td>
         </tr>
         {% else %}
-        <tr><td colspan="4">No deleted items.</td></tr>
+        <tr><td colspan="5">No deleted items.</td></tr>
         {% endfor %}
       </table>
     </section>

@@ -1,11 +1,11 @@
 {% extends "base.html" %}
 {% block content %}
 <section class="panel inventory-hero">
-  <div class="split-head">
-    <div>
-      <h2>Inventory OS</h2>
-      <p class="muted">Operational stock control for kitchen, barista, and front-of-house.</p>
-    </div>
+    <div class="split-head">
+      <div>
+        <h2>Inventory OS</h2>
+      <p class="muted">Operational stock control for all live workstations and front-of-house.</p>
+      </div>
     <div class="inventory-hero-badges">
       <span class="inventory-badge">Closing: {{ closing_date.isoformat() }}</span>
       <span class="inventory-badge">Items: {{ inventory_analytics.total_items }}</span>
@@ -309,7 +309,7 @@
             <tr>
               <td>
                 <strong>{{ row.item.name }}</strong>
-                <div class="muted">{{ row.item.area.title() }} | {{ row.item.unit }}</div>
+                <div class="muted">{{ inventory_area_name_map.get((row.item.area or '')|lower, row.item.area or '-') }} | {{ row.item.unit }}</div>
                 <input type="hidden" name="item_id" value="{{ row.item.id }}" />
               </td>
               <td>{{ "%.3f"|format(row.opening) }}</td>
@@ -336,10 +336,9 @@
           <label>Search <input name="q" value="{{ inventory_search }}" placeholder="Name, code, category, location" /></label>
           <label>Area
             <select name="area">
-              <option value="all" {% if inventory_area == 'all' %}selected{% endif %}>All</option>
-              <option value="kitchen" {% if inventory_area == 'kitchen' %}selected{% endif %}>Kitchen</option>
-              <option value="barista" {% if inventory_area == 'barista' %}selected{% endif %}>Barista</option>
-              <option value="cafe" {% if inventory_area == 'cafe' %}selected{% endif %}>Cafe</option>
+              {% for area in inventory_area_options %}
+              <option value="{{ area.value }}" {% if inventory_area == area.value %}selected{% endif %}>{{ area.label }}</option>
+              {% endfor %}
             </select>
           </label>
           <label>Category
@@ -370,7 +369,11 @@
           <label>Category <input name="category_name" list="inventory-cats" /></label>
           <label>Subcategory <input name="subcategory_name" /></label>
           <label>Area
-            <select name="area"><option value="kitchen">Kitchen</option><option value="barista">Barista</option><option value="cafe">Cafe</option></select>
+            <select name="area">
+              {% for area in inventory_area_options if area.value != 'all' %}
+              <option value="{{ area.value }}">{{ area.label }}</option>
+              {% endfor %}
+            </select>
           </label>
           <label>Unit <input name="unit" value="pcs" /></label>
           <label>Current Stock <input name="current_amount" type="number" step="0.001" min="0" value="0" /></label>
@@ -403,9 +406,9 @@
           <label>Subcategory <input name="subcategory_name" value="{{ selected_item.subcategory_name or '' }}" /></label>
           <label>Area
             <select name="area">
-              <option value="kitchen" {% if selected_item.area == 'kitchen' %}selected{% endif %}>Kitchen</option>
-              <option value="barista" {% if selected_item.area == 'barista' %}selected{% endif %}>Barista</option>
-              <option value="cafe" {% if selected_item.area == 'cafe' %}selected{% endif %}>Cafe</option>
+              {% for area in inventory_area_options if area.value != 'all' %}
+              <option value="{{ area.value }}" {% if (selected_item.area or '')|lower == area.value %}selected{% endif %}>{{ area.label }}</option>
+              {% endfor %}
             </select>
           </label>
           <label>Unit <input name="unit" value="{{ selected_item.unit }}" /></label>
@@ -450,7 +453,7 @@
         {% endif %}
         <tr>
           <td><strong>{{ item.name }}</strong><div class="muted">{{ item.item_code or "-" }}</div></td>
-          <td>{{ item.area.title() }}</td>
+          <td>{{ inventory_area_name_map.get((item.area or '')|lower, item.area or '-') }}</td>
           <td>{{ item.category_name or "-" }}</td>
           <td>{{ item.current_amount }} {{ item.unit }}</td>
           <td>{{ item.reorder_level }} {{ item.unit }}</td>
@@ -607,7 +610,7 @@
           <div id="recipe-size-notes-wrap" class="inventory-size-notes hidden">
             <div class="split-head">
               <strong>Serving Size SOP Notes</strong>
-              <span class="muted">Auto-linked to table, kitchen, and barista SOP panels.</span>
+              <span class="muted">Auto-linked to table ordering and the matching workstation SOP panels.</span>
             </div>
             <div id="recipe-size-notes-list" class="grid"></div>
           </div>
@@ -632,7 +635,7 @@
           <tr>
             <td>
               <strong>{{ r.menu_item.name if r.menu_item else "-" }}</strong>
-              {% if r.menu_item %}<div class="muted">{{ "Barista" if r.menu_item.prep_station == "barista" else "Kitchen" }}</div>{% endif %}
+              {% if r.menu_item %}<div class="muted">{{ menu_item_meta.get(r.menu_item.id, {}).get("prep_station_name", "No workstation") }}</div>{% endif %}
             </td>
             <td>{{ r.yield_qty }} {{ r.yield_unit or '' }}</td>
             <td>{{ r.prep_time_minutes or "-" }} min</td>

@@ -71,7 +71,7 @@
         <p class="item-short">{{ item.short_description or item.description or "Freshly prepared at Brownberries Café." }}</p>
         <p class="item-price"><strong>Price:</strong> ₹{{ "%.2f"|format(item.price or 0) }}</p>
         <p class="muted">Calories: {{ item.calories or "-" }}</p>
-        <div class="size-row muted">Serving Size: Standard</div>
+        <div class="size-row muted">Serving Size/Options: Standard</div>
         <div class="item-actions">
           <button type="button" class="desc-btn" data-name="{{ item.name }}" data-description="{{ item.description or 'No description available.' }}">View Description</button>
           <div class="qty-control">

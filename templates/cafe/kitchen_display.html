@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 {% block content %}
-{% set display_title = "Barista Counter Display" if station == "barista" else "Kitchen Display" %}
+{% set display_title = station_name ~ " Display" %}
 <section class="panel kds-shell">
   <div class="kds-header">
     <div>
@@ -9,8 +9,9 @@
     </div>
     <div class="kds-header-actions">
       <div class="kds-station-switch">
-        <a class="button-link {% if station == 'kitchen' %}active{% endif %}" href="{{ kitchen_switch_url }}">Kitchen</a>
-        <a class="button-link {% if station == 'barista' %}active{% endif %}" href="{{ barista_switch_url }}">Barista Counter</a>
+        {% for option in workstation_options %}
+        <a class="button-link {% if station == option.slug %}active{% endif %}" href="{% if kiosk_mode and kiosk_access_key %}{{ url_for('cafe.kiosk_display', access_key=kiosk_access_key, station=option.slug) }}{% else %}{{ url_for('cafe.kitchen_display', station=option.slug) }}{% endif %}">{{ option.name }}</a>
+        {% endfor %}
       </div>
       <label class="sound-volume-control">Alert Volume
         <input type="range" id="sound-volume" min="0" max="100" step="5" value="85" />
@@ -52,7 +53,7 @@
   <div class="panel kds-board-panel">
     <div class="kds-board-head">
       <div>
-        <h3>{{ "Barista Table Queue" if station == "barista" else "Kitchen Table Queue" }}</h3>
+        <h3>{{ station_name }} Table Queue</h3>
         <p class="muted">Tap an item to open its SOP without leaving the queue.</p>
       </div>
       <div class="kds-board-state">
@@ -137,7 +138,8 @@
     reconnectionDelay: 800,
   });
   const station = "{{ station }}";
-  const displayLabel = station === "barista" ? "Brewing" : "Preparing";
+  const stationName = {{ station_name|tojson }};
+  const displayLabel = {{ station_action_label|tojson }};
   const currentPageUrl = {{ current_page_url|tojson }};
   const statusUpdateUrlTemplate = {{ status_update_url_template|tojson }};
   const itemStatusUpdateUrlTemplate = {{ item_status_update_url_template|tojson }};
@@ -390,7 +392,7 @@
       avgTicketEl.textContent = "0 min";
       board.innerHTML = `
         <article class="k-card k-card-empty">
-          <h3>No active ${station === "barista" ? "drink" : "kitchen"} tickets</h3>
+          <h3>No active ${stationName.toLowerCase()} tickets</h3>
           <p class="muted">Fresh orders will appear here automatically.</p>
         </article>`;
       return;
@@ -514,7 +516,7 @@
           name: item.name,
           sizeLabel: "",
           sop: item.sop || {},
-          source: station === "barista" ? "Barista SOP Library" : "Kitchen SOP Library",
+          source: `${stationName} SOP Library`,
         });
         renderBoard();
       });

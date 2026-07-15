@@ -59,6 +59,7 @@ from .models import (
     StaffProfile,
     TableBooking,
     User,
+    Workstation,
 )
 
 bp = Blueprint("cafe", __name__, url_prefix="/cafe")
@@ -79,7 +80,20 @@ DEFAULT_ROLE_OPTIONS = (
     "delivery_partner",
 )
 STAFF_ROLES = DEFAULT_ROLE_OPTIONS
-PREP_STATION_OPTIONS = ("kitchen", "barista")
+DEFAULT_WORKSTATIONS = (
+    ("kitchen", "Kitchen"),
+    ("barista", "Barista Counter"),
+)
+WORKSTATION_COLOR_PALETTE = (
+    "#6f4a35",
+    "#2d7070",
+    "#d4a574",
+    "#8f6c96",
+    "#4d8b53",
+    "#9b5b5b",
+    "#567fb5",
+    "#a38656",
+)
 IST_TZ = ZoneInfo("Asia/Kolkata")
 UTC_TZ = ZoneInfo("UTC")
 PROTECTED_MENU_CATEGORY_NAMES = {"other", "utility"}
@@ -87,6 +101,123 @@ ITEM_PREP_STATUSES = ("pending", "preparing", "ready", "served")
 DEFAULT_ATTENDANCE_CAFE_LAT = 25.207989477704068
 DEFAULT_ATTENDANCE_CAFE_LNG = 80.87374457551877
 DEFAULT_ATTENDANCE_RADIUS_METERS = 120.0
+
+
+def _slugify_workstation(value: str) -> str:
+    value = "".join(ch.lower() if ch.isalnum() else "-" for ch in str(value or "").strip())
+    slug = "-".join(part for part in value.split("-") if part)
+    return slug[:40]
+
+
+def _ensure_workstations_seeded():
+    changed = False
+    for index, (slug, name) in enumerate(DEFAULT_WORKSTATIONS, start=1):
+        station = Workstation.query.filter_by(slug=slug).first()
+        if not station:
+            db.session.add(Workstation(slug=slug, name=name, active=True, display_order=index))
+            changed = True
+            continue
+        if not station.name:
+            station.name = name
+            changed = True
+        if station.display_order != index:
+            station.display_order = index
+            changed = True
+        if not station.active:
+            station.active = True
+            changed = True
+    if changed:
+        db.session.commit()
+
+
+def _all_workstations(include_inactive: bool = False):
+    _ensure_workstations_seeded()
+    query = Workstation.query
+    if not include_inactive:
+        query = query.filter_by(active=True)
+    return query.order_by(Workstation.display_order.asc(), Workstation.name.asc()).all()
+
+
+def _workstation_slug_set(include_inactive: bool = False) -> set[str]:
+    return {station.slug for station in _all_workstations(include_inactive=include_inactive) if station.slug}
+
+
+def _normalize_prep_station(value: str | None) -> str:
+    station = (value or "").strip().lower()
+    return station if station in _workstation_slug_set(include_inactive=True) else ""
+
+
+def _workstation_display_name(slug: str | None) -> str:
+    normalized = (slug or "").strip().lower()
+    if not normalized:
+        return "No Workstation"
+    for station in _all_workstations(include_inactive=True):
+        if station.slug == normalized:
+            return station.name
+    return normalized.replace("-", " ").title()
+
+
+def _station_action_label(slug: str | None, display_name: str | None = None) -> str:
+    probe = f"{slug or ''} {display_name or ''}".lower()
+    if "barista" in probe or "brew" in probe or "coffee" in probe:
+        return "Brewing"
+    return "Preparing"
+
+
+def _inventory_area_options(include_all: bool = False) -> list[dict]:
+    options = []
+    if include_all:
+        options.append({"value": "all", "label": "All"})
+    for station in _all_workstations(include_inactive=True):
+        options.append({"value": station.slug, "label": station.name})
+    options.append({"value": "cafe", "label": "Cafe"})
+    return options
+
+
+def _inventory_area_name_map() -> dict[str, str]:
+    return {row["value"]: row["label"] for row in _inventory_area_options(include_all=False)}
+
+
+def _normalize_inventory_area(value: str | None, default: str | None = None) -> str:
+    raw = (value or default or "").strip().lower()
+    allowed = {row["value"] for row in _inventory_area_options(include_all=False)}
+    if raw in allowed:
+        return raw
+    first_station = next((row["value"] for row in _inventory_area_options(include_all=False) if row["value"] != "cafe"), "cafe")
+    return first_station or "cafe"
+
+
+def _stats_station_registry(include_unassigned: bool = True) -> list[dict]:
+    stations = []
+    for index, station in enumerate(_all_workstations(include_inactive=True)):
+        stations.append(
+            {
+                "slug": station.slug,
+                "label": station.name,
+                "color": WORKSTATION_COLOR_PALETTE[index % len(WORKSTATION_COLOR_PALETTE)],
+            }
+        )
+    if include_unassigned:
+        stations.append(
+            {
+                "slug": "unassigned",
+                "label": "No Workstation",
+                "color": "#7b7b7b",
+            }
+        )
+    return stations
+
+
+def _station_slug_for_stats(value: str | None) -> str:
+    normalized = _normalize_prep_station(value)
+    return normalized or "unassigned"
+
+
+def _stats_sales_source_options() -> list[dict]:
+    return [{"value": "all", "label": "All"}] + [
+        {"value": row["slug"], "label": row["label"]}
+        for row in _stats_station_registry(include_unassigned=True)
+    ]
 
 
 def _kiosk_token():
@@ -279,7 +410,7 @@ def _menu_form_state_from_request():
         "selected_category_ids": selected_category_ids,
         "menu_type_id": form.get("menu_type_id", "").strip(),
         "name": form.get("name", "").strip(),
-        "prep_station": (form.get("prep_station") or "kitchen").strip().lower(),
+        "prep_station": _normalize_prep_station(form.get("prep_station")),
         "image_url": form.get("image_url", "").strip(),
         "short_description": form.get("short_description", "").strip(),
         "description": form.get("description", "").strip(),
@@ -296,7 +427,7 @@ def _default_menu_form_state():
         "selected_category_ids": [],
         "menu_type_id": "",
         "name": "",
-        "prep_station": "kitchen",
+        "prep_station": "",
         "image_url": "",
         "short_description": "",
         "description": "",
@@ -309,9 +440,12 @@ def _default_menu_form_state():
 
 
 def _render_menu_page(active_menu_section: str = "catalog", add_form_state: dict | None = None):
+    _ensure_workstations_seeded()
     items = MenuItem.query.filter(MenuItem.is_deleted.is_(False)).order_by(MenuItem.name).all()
     deleted_items = MenuItem.query.filter(MenuItem.is_deleted.is_(True)).order_by(MenuItem.updated_at.desc(), MenuItem.name.asc()).all()
     all_categories = MenuCategory.query.order_by(MenuCategory.name).all()
+    workstation_options = _all_workstations(include_inactive=True)
+    workstation_name_map = {station.slug: station.name for station in workstation_options}
     item_category_map = {}
     item_size_map = {}
     for item in items + deleted_items:
@@ -352,7 +486,8 @@ def _render_menu_page(active_menu_section: str = "catalog", add_form_state: dict
         categories=all_categories,
         protected_category_ids=[c.id for c in all_categories if _is_protected_menu_category(c)],
         menu_types=MenuType.query.order_by(MenuType.name).all(),
-        prep_station_options=PREP_STATION_OPTIONS,
+        workstation_options=workstation_options,
+        workstation_name_map=workstation_name_map,
         item_category_map=item_category_map,
         item_size_map=item_size_map,
         active_menu_section=active_menu_section,
@@ -1358,6 +1493,8 @@ def home():
     public_base = (current_app.config.get("PUBLIC_BASE_URL") or request.host_url.rstrip("/")).rstrip("/")
     attendance_settings = _attendance_settings()
     today_start, today_end = _current_ist_day_bounds()
+    _ensure_workstations_seeded()
+    workstation_options = _all_workstations()
     sms_enabled = str(cfg.get("SMS_ENABLED", "0")).strip() in ["1", "true", "True"]
     sms_provider = (cfg.get("SMS_PROVIDER") or "twilio").strip().lower() or "twilio"
     sms_from = (cfg.get("SMS_FROM") or cfg.get("TWILIO_FROM_NUMBER") or "").strip()
@@ -1403,8 +1540,15 @@ def home():
         qr_order_cutoff_time=qr_order_cutoff_time,
         staff_order_cutoff_time=staff_order_cutoff_time,
         kiosk_token=kiosk_token,
-        kiosk_kitchen_url=f"{public_base}{_kiosk_display_url(kiosk_token, 'kitchen')}" if kiosk_token else "",
-        kiosk_barista_url=f"{public_base}{_kiosk_display_url(kiosk_token, 'barista')}" if kiosk_token else "",
+        workstation_options=workstation_options,
+        workstation_kiosk_urls=[
+            {
+                "slug": station.slug,
+                "name": station.name,
+                "url": f"{public_base}{_kiosk_display_url(kiosk_token, station.slug)}" if kiosk_token else "",
+            }
+            for station in workstation_options
+        ],
         reception_kiosk_token=reception_kiosk_token,
         reception_kiosk_url=f"{public_base}{_reception_kiosk_url(reception_kiosk_token)}" if reception_kiosk_token else "",
         attendance_cafe_lat=attendance_settings["cafe_lat"],
@@ -1536,7 +1680,7 @@ def update_kiosk_settings():
             "KDS_KIOSK_TOKEN": raw_token,
         },
     )
-    flash("Kitchen and barista kiosk URL updated.", "success")
+    flash("Prep display kiosk URLs updated.", "success")
     return redirect(url_for("cafe.home"))
 
 
@@ -1697,6 +1841,7 @@ def table_qr_download(table_id):
 def menu():
     _ensure_protected_menu_categories()
     _ensure_menu_types_seeded()
+    _ensure_workstations_seeded()
     stale_count = MenuItem.query.filter(MenuItem.subcategory_id.isnot(None)).count()
     if stale_count:
         MenuItem.query.filter(MenuItem.subcategory_id.isnot(None)).update(
@@ -1745,7 +1890,7 @@ def menu():
             price=price,
             has_size_variants=True if request.form.get("has_size_variants") else False,
             size_pricing_json=None,
-            prep_station=request.form.get("prep_station", "kitchen"),
+            prep_station=_normalize_prep_station(request.form.get("prep_station")),
             available=True if request.form.get("available") else False,
             is_deleted=False,
         )
@@ -1936,6 +2081,86 @@ def delete_type(type_id):
     return redirect(url_for("cafe.menu"))
 
 
+@bp.route("/menu/workstations", methods=["POST"])
+@roles_required("admin", "manager")
+def add_workstation():
+    _ensure_workstations_seeded()
+    name = (request.form.get("name") or "").strip()
+    if not name:
+        flash("Workstation name is required.", "error")
+        return redirect(url_for("cafe.menu"))
+    slug = _slugify_workstation(request.form.get("slug") or name)
+    if not slug:
+        flash("Please enter a valid workstation name.", "error")
+        return redirect(url_for("cafe.menu"))
+    if Workstation.query.filter(db.func.lower(Workstation.slug) == slug.lower()).first():
+        flash("Workstation slug already exists.", "error")
+        return redirect(url_for("cafe.menu"))
+    duplicate_name = Workstation.query.filter(db.func.lower(Workstation.name) == name.lower()).first()
+    if duplicate_name:
+        flash("Workstation name already exists.", "error")
+        return redirect(url_for("cafe.menu"))
+    last_order = db.session.query(db.func.max(Workstation.display_order)).scalar() or 0
+    db.session.add(
+        Workstation(
+            slug=slug,
+            name=name,
+            active=True,
+            display_order=int(last_order) + 1,
+        )
+    )
+    db.session.commit()
+    flash("Workstation added.", "success")
+    return redirect(url_for("cafe.menu"))
+
+
+@bp.route("/menu/workstations/<int:workstation_id>/update", methods=["POST"])
+@roles_required("admin", "manager")
+def update_workstation(workstation_id):
+    _ensure_workstations_seeded()
+    workstation = Workstation.query.get_or_404(workstation_id)
+    name = (request.form.get("name") or "").strip()
+    slug = _slugify_workstation(request.form.get("slug") or workstation.slug)
+    if not name or not slug:
+        flash("Workstation name and slug are required.", "error")
+        return redirect(url_for("cafe.menu"))
+    duplicate_slug = Workstation.query.filter(
+        db.func.lower(Workstation.slug) == slug.lower(),
+        Workstation.id != workstation.id,
+    ).first()
+    if duplicate_slug:
+        flash("Another workstation already uses that slug.", "error")
+        return redirect(url_for("cafe.menu"))
+    duplicate_name = Workstation.query.filter(
+        db.func.lower(Workstation.name) == name.lower(),
+        Workstation.id != workstation.id,
+    ).first()
+    if duplicate_name:
+        flash("Another workstation already uses that name.", "error")
+        return redirect(url_for("cafe.menu"))
+    old_slug = workstation.slug
+    workstation.name = name
+    workstation.slug = slug
+    workstation.active = True if request.form.get("active") else False
+    if old_slug != slug:
+        MenuItem.query.filter_by(prep_station=old_slug).update({"prep_station": slug}, synchronize_session=False)
+    db.session.commit()
+    flash("Workstation updated.", "success")
+    return redirect(url_for("cafe.menu"))
+
+
+@bp.route("/menu/workstations/<int:workstation_id>/delete", methods=["POST"])
+@roles_required("admin", "manager")
+def delete_workstation(workstation_id):
+    _ensure_workstations_seeded()
+    workstation = Workstation.query.get_or_404(workstation_id)
+    MenuItem.query.filter_by(prep_station=workstation.slug).update({"prep_station": ""}, synchronize_session=False)
+    db.session.delete(workstation)
+    db.session.commit()
+    flash("Workstation deleted. Linked menu items are now unassigned.", "success")
+    return redirect(url_for("cafe.menu"))
+
+
 @bp.route("/menu/<int:item_id>/availability", methods=["POST"])
 @roles_required("admin", "manager")
 def toggle_item(item_id):
@@ -2001,9 +2226,8 @@ def update_menu_item(item_id):
         item.has_size_variants = False
         item.size_pricing_json = None
 
-    prep_station = request.form.get("prep_station", "").strip().lower()
-    if prep_station in PREP_STATION_OPTIONS:
-        item.prep_station = prep_station
+    if "prep_station" in request.form:
+        item.prep_station = _normalize_prep_station(request.form.get("prep_station"))
 
     item.available = True if request.form.get("available") else False
     db.session.commit()
@@ -2849,9 +3073,14 @@ def reception_kiosk_send_order_receipt_sms(access_key, order_id):
 
 
 def _render_kitchen_display(station: str = "kitchen", kiosk_mode: bool = False, access_key: str = ""):
-    station = (request.args.get("station") or station or "kitchen").strip().lower()
-    if station not in PREP_STATION_OPTIONS:
-        station = "kitchen"
+    _ensure_workstations_seeded()
+    workstation_options = _all_workstations()
+    station_lookup = {ws.slug: ws for ws in workstation_options}
+    fallback_station = workstation_options[0].slug if workstation_options else "kitchen"
+    station = (request.args.get("station") or station or fallback_station).strip().lower()
+    if station not in station_lookup:
+        station = fallback_station
+    station_name = station_lookup.get(station).name if station in station_lookup else _workstation_display_name(station)
     orders = (
         CafeOrder.query.join(CafeOrderItem, CafeOrderItem.order_id == CafeOrder.id)
         .join(MenuItem, MenuItem.id == CafeOrderItem.menu_item_id)
@@ -2916,7 +3145,7 @@ def _render_kitchen_display(station: str = "kitchen", kiosk_mode: bool = False, 
             }
         )
         for oi in sorted(order.order_items, key=lambda row: (row.created_at or datetime.min, row.id or 0)):
-            if not oi.menu_item or oi.menu_item.prep_station != station:
+            if not oi.menu_item or (oi.menu_item.prep_station or "").strip().lower() != station:
                 continue
             if (oi.approval_status or "pending") == "rejected":
                 continue
@@ -2999,13 +3228,14 @@ def _render_kitchen_display(station: str = "kitchen", kiosk_mode: bool = False, 
         orders=orders,
         order_cards=order_cards,
         station=station,
+        station_name=station_name,
+        station_action_label=_station_action_label(station, station_name),
+        workstation_options=workstation_options,
         active_orders=len(order_cards),
         avg_ticket_minutes=avg_ticket_minutes,
         sop_library=sop_library,
         kiosk_mode=kiosk_mode,
         kiosk_access_key=access_key,
-        kitchen_switch_url=_kiosk_display_url(access_key, "kitchen") if kiosk_mode and access_key else url_for("cafe.kitchen_display", station="kitchen"),
-        barista_switch_url=_kiosk_display_url(access_key, "barista") if kiosk_mode and access_key else url_for("cafe.kitchen_display", station="barista"),
         current_page_url=_kiosk_display_url(access_key, station) if kiosk_mode and access_key else url_for("cafe.kitchen_display", station=station),
         status_update_url_template=(
             url_for("cafe.kiosk_update_order_status", access_key=access_key, order_id=0)
@@ -3419,7 +3649,7 @@ def inventory():
         if action == "add_item":
             item = InventoryItem(
                 item_code=(request.form.get("item_code") or "").strip() or None,
-                area=(request.form.get("area") or "kitchen").strip(),
+                area=_normalize_inventory_area(request.form.get("area")),
                 name=request.form.get("name", "").strip(),
                 category_name=(request.form.get("category_name") or "").strip() or None,
                 subcategory_name=(request.form.get("subcategory_name") or "").strip() or None,
@@ -3450,7 +3680,7 @@ def inventory():
             item.name = (request.form.get("name") or "").strip()
             item.category_name = (request.form.get("category_name") or "").strip() or None
             item.subcategory_name = (request.form.get("subcategory_name") or "").strip() or None
-            item.area = (request.form.get("area") or item.area or "kitchen").strip()
+            item.area = _normalize_inventory_area(request.form.get("area"), item.area)
             item.unit = (request.form.get("unit") or item.unit or "pcs").strip()
             item.current_amount = _safe_float(request.form.get("current_amount"), item.current_amount or 0)
             item.reorder_level = _safe_float(request.form.get("reorder_level"), item.reorder_level or 0)
@@ -3752,8 +3982,10 @@ def inventory():
         inventory_period = "today"
     inventory_period_start, inventory_period_end = _inventory_period_bounds(inventory_period)
     inventory_tracking_category_id = request.args.get("track_category_id", type=int) or 0
+    inventory_area_options = _inventory_area_options(include_all=True)
+    inventory_area_name_map = _inventory_area_name_map()
     inventory_area = (request.args.get("area") or "all").strip().lower()
-    if inventory_area not in ["all", "kitchen", "barista", "cafe"]:
+    if inventory_area not in {row["value"] for row in inventory_area_options}:
         inventory_area = "all"
     inventory_category_filter = (request.args.get("category") or "all").strip().lower()
     inventory_status_filter = (request.args.get("status") or "all").strip().lower()
@@ -3794,6 +4026,7 @@ def inventory():
         item.id: {
             "name": item.name,
             "prep_station": item.prep_station,
+            "prep_station_name": _workstation_display_name(item.prep_station),
             "sizes": _load_menu_item_size_variants(item),
         }
         for item in menu_items
@@ -4007,6 +4240,8 @@ def inventory():
         inventory_period_end=inventory_period_end,
         inventory_tracking_category_id=inventory_tracking_category_id,
         inventory_area=inventory_area,
+        inventory_area_options=inventory_area_options,
+        inventory_area_name_map=inventory_area_name_map,
         inventory_category_filter=inventory_category_filter,
         inventory_status_filter=inventory_status_filter,
         top_stock_value_items=top_stock_value_items,
@@ -4037,6 +4272,7 @@ def stats():
         stats_payload=payload,
         filters=payload["filters"],
         category_options=category_options,
+        sales_source_options=_stats_sales_source_options(),
     )
 
 
@@ -4104,8 +4340,8 @@ def export_stats():
     ws3.append(["Total Sales", kpi["revenue"]["total_sales"]])
     ws3.append(["Total Orders", kpi["revenue"]["total_orders"]])
     ws3.append(["Average Order Value", kpi["revenue"]["average_order_value"]])
-    ws3.append(["Kitchen Sales", kpi["operations"]["kitchen_sales"]])
-    ws3.append(["Barista Sales", kpi["operations"]["barista_sales"]])
+    for row in kpi["operations"]["workstation_rows"]:
+        ws3.append([f'{row["label"]} Sales', row["sales"]])
     from io import BytesIO
 
     output = BytesIO()
@@ -4283,7 +4519,7 @@ def _parse_stats_filters(args):
     if preset not in _STAT_FILTER_PRESETS:
         preset = "today"
     sales_source = (args.get("salesSource") or "all").strip().lower()
-    if sales_source not in ["all", "barista", "kitchen"]:
+    if sales_source not in {row["value"] for row in _stats_sales_source_options()}:
         sales_source = "all"
     order_type = (args.get("orderType") or "all").strip().lower()
     if order_type not in ["all", "dine_in", "takeaway", "online_order"]:
@@ -4383,6 +4619,10 @@ def _build_stats_payload(filters, use_cache=True):
     selected_category = (filters["category"] or "all").strip().lower()
     sales_source = filters["salesSource"]
     order_type_filter = filters["orderType"]
+    station_registry = _stats_station_registry(include_unassigned=True)
+    station_label_map = {row["slug"]: row["label"] for row in station_registry}
+    station_color_map = {row["slug"]: row["color"] for row in station_registry}
+    station_slugs = [row["slug"] for row in station_registry]
 
     orders = (
         CafeOrder.query.options(
@@ -4390,19 +4630,21 @@ def _build_stats_payload(filters, use_cache=True):
             joinedload(CafeOrder.order_items).joinedload(CafeOrderItem.menu_item),
         )
         .filter(
-            CafeOrder.created_at >= query_start_dt,
-            CafeOrder.created_at < query_end_dt,
-            CafeOrder.status != "cancelled",
+            CafeOrder.status == "paid",
+            CafeOrder.paid_at.is_not(None),
+            CafeOrder.paid_at >= query_start_dt,
+            CafeOrder.paid_at < query_end_dt,
         )
-        .order_by(CafeOrder.created_at.asc())
+        .order_by(CafeOrder.paid_at.asc(), CafeOrder.created_at.asc())
         .all()
     )
     prev_orders = (
         CafeOrder.query.options(joinedload(CafeOrder.order_items).joinedload(CafeOrderItem.menu_item))
         .filter(
-            CafeOrder.created_at >= prev_query_start,
-            CafeOrder.created_at < prev_query_end,
-            CafeOrder.status != "cancelled",
+            CafeOrder.status == "paid",
+            CafeOrder.paid_at.is_not(None),
+            CafeOrder.paid_at >= prev_query_start,
+            CafeOrder.paid_at < prev_query_end,
         )
         .all()
     )
@@ -4419,15 +4661,16 @@ def _build_stats_payload(filters, use_cache=True):
             all_line_subtotal = round(sum(float(oi.unit_price or 0) * int(oi.quantity or 0) for oi in approved_items), 2)
             matched_items = []
             for oi in approved_items:
-                if sales_source != "all" and (oi.menu_item.prep_station or "kitchen") != sales_source:
+                station_slug = _station_slug_for_stats(oi.menu_item.prep_station)
+                if sales_source != "all" and station_slug != sales_source:
                     continue
                 categories = _menu_item_category_names_for_stats(oi.menu_item, category_map)
                 if selected_category != "all" and selected_category not in [c.lower() for c in categories]:
                     continue
-                matched_items.append((oi, categories))
+                matched_items.append((oi, categories, station_slug))
             if not matched_items:
                 continue
-            matched_subtotal = round(sum(float(oi.unit_price or 0) * int(oi.quantity or 0) for oi, _ in matched_items), 2)
+            matched_subtotal = round(sum(float(oi.unit_price or 0) * int(oi.quantity or 0) for oi, _categories, _station_slug in matched_items), 2)
             extra = float(order.packaging_charge or 0) + float(order.delivery_charge or 0)
             ratio = (matched_subtotal / all_line_subtotal) if all_line_subtotal > 0 else 1.0
             matched_total = round(matched_subtotal + (extra * ratio), 2)
@@ -4456,10 +4699,9 @@ def _build_stats_payload(filters, use_cache=True):
     prev_total_orders = len(filtered_prev_orders)
     prev_avg = round(prev_total_sales / prev_total_orders, 2) if prev_total_orders else 0.0
 
-    kitchen_sales = 0.0
-    barista_sales = 0.0
-    station_order_counts = {"kitchen": 0, "barista": 0}
-    station_items = {"kitchen": {}, "barista": {}}
+    station_sales = {slug: 0.0 for slug in station_slugs}
+    station_order_counts = {slug: 0 for slug in station_slugs}
+    station_items = {slug: {} for slug in station_slugs}
 
     total_items_sold = 0
     unique_item_ids = set()
@@ -4468,8 +4710,7 @@ def _build_stats_payload(filters, use_cache=True):
     order_type_counts = {"dine_in": 0, "takeaway": 0, "online_order": 0}
     bucket_sales = {}
     bucket_orders = {}
-    bucket_kitchen = {}
-    bucket_barista = {}
+    station_trend_buckets = {slug: {} for slug in station_slugs}
     peak_hour_orders = {h: 0 for h in range(24)}
     peak_hour_sales = {h: 0.0 for h in range(24)}
 
@@ -4480,7 +4721,8 @@ def _build_stats_payload(filters, use_cache=True):
 
     for row in filtered_orders:
         order = row["order"]
-        order_local_dt = _ist_from_utc_naive(order.created_at)
+        revenue_dt = order.paid_at or order.created_at
+        order_local_dt = _ist_from_utc_naive(revenue_dt)
         order_type_counts[row["order_type"]] += 1
         bucket = _bucket_key(order_local_dt.replace(tzinfo=None), granularity)
         bucket_sales[bucket] = round(bucket_sales.get(bucket, 0.0) + row["matched_total"], 2)
@@ -4494,8 +4736,8 @@ def _build_stats_payload(filters, use_cache=True):
         else:
             customers.add(f"o:{order.id}")
 
-        order_station_mix = {"kitchen": 0.0, "barista": 0.0}
-        for oi, categories in row["matched_items"]:
+        order_station_mix = {slug: 0.0 for slug in station_slugs}
+        for oi, categories, station_slug in row["matched_items"]:
             qty = int(oi.quantity or 0)
             line_amount = round(float(oi.unit_price or 0) * qty, 2)
             total_items_sold += qty
@@ -4510,16 +4752,15 @@ def _build_stats_payload(filters, use_cache=True):
                     "qty": 0,
                     "revenue": 0.0,
                     "order_ids": set(),
-                    "station": oi.menu_item.prep_station or "kitchen",
+                    "station": station_slug,
                 },
             )
             stat["qty"] += qty
             stat["revenue"] = round(stat["revenue"] + line_amount, 2)
             stat["order_ids"].add(order.id)
 
-            station = (oi.menu_item.prep_station or "kitchen")
-            order_station_mix[station] = round(order_station_mix.get(station, 0.0) + line_amount, 2)
-            st_item = station_items[station].setdefault(
+            order_station_mix[station_slug] = round(order_station_mix.get(station_slug, 0.0) + line_amount, 2)
+            st_item = station_items[station_slug].setdefault(
                 oi.menu_item_id,
                 {"name": oi.menu_item.name, "qty": 0, "revenue": 0.0},
             )
@@ -4535,14 +4776,14 @@ def _build_stats_payload(filters, use_cache=True):
                 category_order_ids.setdefault(cname, set()).add(order.id)
 
         order_mix_parts = []
-        for station in ["kitchen", "barista"]:
+        for station in station_slugs:
             val = order_station_mix[station]
             if val > 0:
-                order_mix_parts.append(f"{station.title()} ₹{val:.2f}")
+                order_mix_parts.append(f"{station_label_map.get(station, _workstation_display_name(station))} ₹{val:.2f}")
                 station_order_counts[station] += 1
         mix_label = ", ".join(order_mix_parts) if order_mix_parts else "-"
 
-        line_subtotal = round(sum(float(oi.unit_price or 0) * int(oi.quantity or 0) for oi, _ in row["matched_items"]), 2)
+        line_subtotal = round(sum(float(oi.unit_price or 0) * int(oi.quantity or 0) for oi, _categories, _station_slug in row["matched_items"]), 2)
         ratio = (line_subtotal / row["matched_subtotal"]) if row["matched_subtotal"] > 0 else 0
         packaging_m = round(float(order.packaging_charge or 0) * row["ratio"], 2)
         delivery_m = round(float(order.delivery_charge or 0) * row["ratio"], 2)
@@ -4561,7 +4802,7 @@ def _build_stats_payload(filters, use_cache=True):
                 "packaging_charge": packaging_m,
                 "delivery_charge": delivery_m,
                 "total_amount": row["matched_total"],
-                "created_at": _format_ist(order.created_at),
+                "settled_at": _format_ist(revenue_dt),
                 "items": [
                     {
                         "name": oi.menu_item.name,
@@ -4570,7 +4811,7 @@ def _build_stats_payload(filters, use_cache=True):
                         "size_label": oi.size_label or "",
                         "is_parcel": bool(oi.is_parcel),
                     }
-                    for oi, _ in row["matched_items"]
+                    for oi, _, _station_slug in row["matched_items"]
                 ],
             }
         )
@@ -4579,33 +4820,33 @@ def _build_stats_payload(filters, use_cache=True):
         if total_line_revenue_for_alloc <= 0:
             total_line_revenue_for_alloc = 1.0
         extra = row["matched_total"] - row["matched_subtotal"]
-        for station in ["kitchen", "barista"]:
+        for station in station_slugs:
             station_line = order_station_mix[station]
             alloc = extra * (station_line / total_line_revenue_for_alloc)
             station_total = station_line + alloc
-            if station == "kitchen":
-                kitchen_sales = round(kitchen_sales + station_total, 2)
-                bucket_kitchen[bucket] = round(bucket_kitchen.get(bucket, 0.0) + station_total, 2)
-            else:
-                barista_sales = round(barista_sales + station_total, 2)
-                bucket_barista[bucket] = round(bucket_barista.get(bucket, 0.0) + station_total, 2)
+            station_sales[station] = round(station_sales.get(station, 0.0) + station_total, 2)
+            station_trend_buckets[station][bucket] = round(
+                station_trend_buckets[station].get(bucket, 0.0) + station_total,
+                2,
+            )
 
-    prev_kitchen = 0.0
-    prev_barista = 0.0
+    prev_station_sales = {slug: 0.0 for slug in station_slugs}
     for row in filtered_prev_orders:
-        order_station_mix = {"kitchen": 0.0, "barista": 0.0}
-        for oi, _ in row["matched_items"]:
-            station = oi.menu_item.prep_station or "kitchen"
-            order_station_mix[station] = round(order_station_mix[station] + float(oi.unit_price or 0) * int(oi.quantity or 0), 2)
+        order_station_mix = {slug: 0.0 for slug in station_slugs}
+        for oi, _categories, station_slug in row["matched_items"]:
+            order_station_mix[station_slug] = round(
+                order_station_mix[station_slug] + float(oi.unit_price or 0) * int(oi.quantity or 0),
+                2,
+            )
         total_line_revenue = sum(order_station_mix.values()) or 1.0
         extra = row["matched_total"] - row["matched_subtotal"]
-        prev_kitchen += order_station_mix["kitchen"] + (extra * (order_station_mix["kitchen"] / total_line_revenue))
-        prev_barista += order_station_mix["barista"] + (extra * (order_station_mix["barista"] / total_line_revenue))
-    prev_kitchen = round(prev_kitchen, 2)
-    prev_barista = round(prev_barista, 2)
-
-    kitchen_pct = round((kitchen_sales / total_sales) * 100, 2) if total_sales else 0.0
-    barista_pct = round((barista_sales / total_sales) * 100, 2) if total_sales else 0.0
+        for station in station_slugs:
+            prev_station_sales[station] = round(
+                prev_station_sales[station]
+                + order_station_mix[station]
+                + (extra * (order_station_mix[station] / total_line_revenue)),
+                2,
+            )
 
     recurring_mobile_set = set()
     if mobile_customers:
@@ -4613,8 +4854,9 @@ def _build_stats_payload(filters, use_cache=True):
             db.session.query(CafeOrder.delivery_customer_mobile)
             .filter(
                 CafeOrder.delivery_customer_mobile.in_(list(mobile_customers)),
-                CafeOrder.created_at < query_start_dt,
-                CafeOrder.status != "cancelled",
+                CafeOrder.status == "paid",
+                CafeOrder.paid_at.is_not(None),
+                CafeOrder.paid_at < query_start_dt,
             )
             .all()
         )
@@ -4645,7 +4887,9 @@ def _build_stats_payload(filters, use_cache=True):
     top_items = top_by_qty[:15]
     bottom_items = sorted(item_rows, key=lambda x: (x["qty"], x["revenue"], x["name"].lower()))[:10]
     menu_q = MenuItem.query.filter(MenuItem.available.is_(True), MenuItem.is_deleted.is_(False))
-    if sales_source in ["kitchen", "barista"]:
+    if sales_source == "unassigned":
+        menu_q = menu_q.filter(db.or_(MenuItem.prep_station.is_(None), MenuItem.prep_station == ""))
+    elif sales_source != "all":
         menu_q = menu_q.filter(MenuItem.prep_station == sales_source)
     menu_all = menu_q.all()
     zero_sales = []
@@ -4663,18 +4907,25 @@ def _build_stats_payload(filters, use_cache=True):
     revenue_trend_labels = [_bucket_label(b, granularity) for b in sorted_buckets]
     revenue_trend_values = [round(bucket_sales.get(b, 0.0), 2) for b in sorted_buckets]
     order_trend_values = [int(bucket_orders.get(b, 0)) for b in sorted_buckets]
-    kitchen_trend = [round(bucket_kitchen.get(b, 0.0), 2) for b in sorted_buckets]
-    barista_trend = [round(bucket_barista.get(b, 0.0), 2) for b in sorted_buckets]
-    kitchen_contrib_trend = []
-    barista_contrib_trend = []
-    for i in range(len(sorted_buckets)):
-        total_b = kitchen_trend[i] + barista_trend[i]
-        if total_b <= 0:
-            kitchen_contrib_trend.append(0.0)
-            barista_contrib_trend.append(0.0)
-        else:
-            kitchen_contrib_trend.append(round((kitchen_trend[i] / total_b) * 100, 2))
-            barista_contrib_trend.append(round((barista_trend[i] / total_b) * 100, 2))
+    station_trends = {
+        slug: [round(station_trend_buckets[slug].get(b, 0.0), 2) for b in sorted_buckets]
+        for slug in station_slugs
+    }
+    station_contribution_datasets = []
+    for station in station_slugs:
+        values = []
+        trend_values = station_trends[station]
+        for index in range(len(sorted_buckets)):
+            total_bucket = sum(station_trends[slug][index] for slug in station_slugs)
+            values.append(round((trend_values[index] / total_bucket) * 100, 2) if total_bucket > 0 else 0.0)
+        station_contribution_datasets.append(
+            {
+                "slug": station,
+                "label": station_label_map.get(station, _workstation_display_name(station)),
+                "values": values,
+                "color": station_color_map.get(station, "#6f4a35"),
+            }
+        )
 
     peak_hours = [
         {
@@ -4690,16 +4941,17 @@ def _build_stats_payload(filters, use_cache=True):
         day_end_query = _utc_naive_from_ist(day_end_dt)
         rows = (
             db.session.query(
-                db.func.date(CafeOrder.created_at).label("day"),
+                db.func.date(CafeOrder.paid_at).label("day"),
                 db.func.count(CafeOrder.id),
                 db.func.coalesce(db.func.sum(CafeOrder.total_amount), 0.0),
             )
             .filter(
-                CafeOrder.created_at >= day_start_query,
-                CafeOrder.created_at < day_end_query,
-                CafeOrder.status != "cancelled",
+                CafeOrder.status == "paid",
+                CafeOrder.paid_at.is_not(None),
+                CafeOrder.paid_at >= day_start_query,
+                CafeOrder.paid_at < day_end_query,
             )
-            .group_by(db.func.date(CafeOrder.created_at))
+            .group_by(db.func.date(CafeOrder.paid_at))
             .all()
         )
         if not rows:
@@ -4756,7 +5008,7 @@ def _build_stats_payload(filters, use_cache=True):
     recipe_map = {r.menu_item_id: r for r in recipes}
     ingredient_usage = {}
     for row in filtered_orders:
-        for oi, _ in row["matched_items"]:
+        for oi, _categories, _station_slug in row["matched_items"]:
             recipe = recipe_map.get(oi.menu_item_id)
             if not recipe:
                 continue
@@ -4781,6 +5033,25 @@ def _build_stats_payload(filters, use_cache=True):
     top10_sum = sum(x["revenue"] for x in top10)
     others_sum = round(max(total_sales - top10_sum, 0), 2)
 
+    workstation_rows = []
+    for station in station_slugs:
+        sales = round(station_sales.get(station, 0.0), 2)
+        contribution_pct = round((sales / total_sales) * 100, 2) if total_sales else 0.0
+        order_count = int(station_order_counts.get(station, 0))
+        workstation_rows.append(
+            {
+                "slug": station,
+                "label": station_label_map.get(station, _workstation_display_name(station)),
+                "sales": sales,
+                "contribution_pct": contribution_pct,
+                "order_count": order_count,
+                "best_item": _best_station_item(station),
+                "average_ticket_size": round(sales / order_count, 2) if order_count else 0.0,
+                "growth_pct": _growth(sales, prev_station_sales.get(station, 0.0)),
+                "color": station_color_map.get(station, "#6f4a35"),
+            }
+        )
+
     summary = {
         "revenue": {
             "total_sales": round(total_sales, 2),
@@ -4799,17 +5070,12 @@ def _build_stats_payload(filters, use_cache=True):
             "unique_items_sold": len(unique_item_ids),
         },
         "operations": {
-            "kitchen_sales": round(kitchen_sales, 2),
-            "barista_sales": round(barista_sales, 2),
-            "kitchen_contribution_pct": kitchen_pct,
-            "barista_contribution_pct": barista_pct,
+            "workstation_rows": workstation_rows,
         },
         "growth": {
             "total_sales_pct": _growth(total_sales, prev_total_sales),
             "orders_pct": _growth(total_orders, prev_total_orders),
             "average_order_value_pct": _growth(avg_order_value, prev_avg),
-            "kitchen_sales_pct": _growth(kitchen_sales, prev_kitchen),
-            "barista_sales_pct": _growth(barista_sales, prev_barista),
         },
     }
 
@@ -4828,12 +5094,19 @@ def _build_stats_payload(filters, use_cache=True):
         "summary": summary,
         "revenue": {
             "trend": {"labels": revenue_trend_labels, "values": revenue_trend_values},
-            "split": {"kitchen": round(kitchen_sales, 2), "barista": round(barista_sales, 2)},
-            "comparison": {"kitchen": round(kitchen_sales, 2), "barista": round(barista_sales, 2)},
+            "split": {
+                "labels": [row["label"] for row in workstation_rows if row["sales"] > 0],
+                "values": [row["sales"] for row in workstation_rows if row["sales"] > 0],
+                "colors": [row["color"] for row in workstation_rows if row["sales"] > 0],
+            },
+            "comparison": {
+                "labels": [row["label"] for row in workstation_rows],
+                "values": [row["sales"] for row in workstation_rows],
+                "colors": [row["color"] for row in workstation_rows],
+            },
             "contribution_trend": {
                 "labels": revenue_trend_labels,
-                "kitchen_pct": kitchen_contrib_trend,
-                "barista_pct": barista_contrib_trend,
+                "datasets": station_contribution_datasets,
             },
         },
         "orders_analytics": {
@@ -4873,21 +5146,10 @@ def _build_stats_payload(filters, use_cache=True):
             "trend": {"labels": revenue_trend_labels, "values": revenue_trend_values},
         },
         "kitchen_vs_barista": {
-            "revenue_comparison": {"kitchen": round(kitchen_sales, 2), "barista": round(barista_sales, 2)},
-            "order_count_comparison": {
-                "kitchen_orders": int(station_order_counts["kitchen"]),
-                "barista_orders": int(station_order_counts["barista"]),
-            },
-            "best_kitchen_item": _best_station_item("kitchen"),
-            "best_barista_item": _best_station_item("barista"),
-            "average_ticket_size": {
-                "kitchen": round(kitchen_sales / station_order_counts["kitchen"], 2) if station_order_counts["kitchen"] else 0.0,
-                "barista": round(barista_sales / station_order_counts["barista"], 2) if station_order_counts["barista"] else 0.0,
-            },
+            "workstation_rows": workstation_rows,
             "contribution_trend": {
                 "labels": revenue_trend_labels,
-                "kitchen_pct": kitchen_contrib_trend,
-                "barista_pct": barista_contrib_trend,
+                "datasets": station_contribution_datasets,
             },
         },
         "inventory_consumption": {
@@ -4939,16 +5201,17 @@ def api_stats_items():
         rows = (
             CafeOrder.query.options(joinedload(CafeOrder.order_items))
             .filter(
-                CafeOrder.created_at >= start_dt,
-                CafeOrder.created_at < end_dt,
-                CafeOrder.status != "cancelled",
+                CafeOrder.status == "paid",
+                CafeOrder.paid_at.is_not(None),
+                CafeOrder.paid_at >= start_dt,
+                CafeOrder.paid_at < end_dt,
             )
-            .order_by(CafeOrder.created_at.asc())
+            .order_by(CafeOrder.paid_at.asc(), CafeOrder.created_at.asc())
             .all()
         )
         daily = {}
         for order in rows:
-            order_local_day = _format_ist(order.created_at, "%Y-%m-%d")
+            order_local_day = _format_ist(order.paid_at or order.created_at, "%Y-%m-%d")
             for oi in order.order_items:
                 if oi.menu_item_id != item_id or (oi.approval_status or "pending") == "rejected":
                     continue
