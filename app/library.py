@@ -3,8 +3,6 @@ import random
 import string
 from datetime import date, timedelta
 from io import BytesIO
-from urllib.parse import urlencode
-from urllib.request import Request, urlopen
 
 from flask import Blueprint, Response, current_app, flash, redirect, render_template, request, url_for
 from PIL import Image, ImageDraw, ImageFont
@@ -12,8 +10,10 @@ from openpyxl import Workbook
 from werkzeug.utils import secure_filename
 
 from .auth_helpers import login_required, roles_required
+from .deploy_config import load_deployment_config
 from .extensions import db
 from .models import Book, LibraryAuthor, LibraryLoan, LibraryMember, LibraryPayment, SubscriptionPlan
+from .sms_gateway import send_sms_from_config
 
 bp = Blueprint("library", __name__, url_prefix="/library")
 BOOK_GENRES = [
@@ -76,32 +76,13 @@ def _save_uploaded_library_doc(file_obj, prefix: str):
 
 
 def _send_sms(phone: str, body: str):
-    sid = os.environ.get("TWILIO_ACCOUNT_SID", "").strip()
-    token = os.environ.get("TWILIO_AUTH_TOKEN", "").strip()
-    from_number = os.environ.get("TWILIO_FROM_NUMBER", "").strip()
-    if not (sid and token and from_number):
-        return False, "SMS skipped: Twilio env vars not configured."
-    to_number = phone if phone.startswith("+") else f"+91{phone}"
-    payload = urlencode({"From": from_number, "To": to_number, "Body": body}).encode("utf-8")
-    endpoint = f"https://api.twilio.com/2010-04-01/Accounts/{sid}/Messages.json"
-    req = Request(endpoint, data=payload)
-    import base64
-
-    auth = base64.b64encode(f"{sid}:{token}".encode("utf-8")).decode("utf-8")
-    req.add_header("Authorization", f"Basic {auth}")
-    req.add_header("Content-Type", "application/x-www-form-urlencoded")
-    try:
-        with urlopen(req, timeout=15) as resp:
-            return (200 <= resp.status < 300), f"Twilio status: {resp.status}"
-    except Exception as exc:
-        return False, f"SMS failed: {exc}"
+    digits = "".join(ch for ch in (phone or "") if ch.isdigit())
+    return send_sms_from_config(current_app.instance_path, "+91", digits, body)
 
 
 def _process_due_reminders():
-    sid = os.environ.get("TWILIO_ACCOUNT_SID", "").strip()
-    token = os.environ.get("TWILIO_AUTH_TOKEN", "").strip()
-    from_number = os.environ.get("TWILIO_FROM_NUMBER", "").strip()
-    if not (sid and token and from_number):
+    cfg = load_deployment_config(current_app.instance_path)
+    if str(cfg.get("SMS_ENABLED", "0")).strip().lower() not in {"1", "true"}:
         return 0, 0
     tomorrow = date.today() + timedelta(days=1)
     loans = (
@@ -118,8 +99,11 @@ def _process_due_reminders():
     failed = 0
     for loan in loans:
         msg = (
-            f"Hi {loan.member.full_name}, reminder from Brownberries Library: "
-            f'Please return/renew "{loan.book.title}" by {loan.due_date.isoformat()}.'
+            "Brownberries Library\n"
+            f"Hello {loan.member.full_name},\n"
+            f'Book due tomorrow: "{loan.book.title}"\n'
+            f"Due date: {loan.due_date.strftime('%d %b %Y')}\n"
+            "Please return or renew it in time to avoid charges."
         )
         ok, _ = _send_sms(loan.member.phone, msg)
         if ok:

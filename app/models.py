@@ -89,6 +89,7 @@ class CafeTable(TimestampMixin, db.Model):
     seating_capacity = db.Column(db.Integer, nullable=False, default=2)
     metadata_note = db.Column(db.String(255), nullable=True)
     qr_slug = db.Column(db.String(120), unique=True, nullable=False)
+    last_staff_call_at = db.Column(db.DateTime, nullable=True)
     active = db.Column(db.Boolean, default=True, nullable=False)
 
 
@@ -159,6 +160,9 @@ class CafeOrder(TimestampMixin, db.Model):
     packaging_charge = db.Column(db.Float, default=0, nullable=False)
     delivery_distance_km = db.Column(db.Float, default=0, nullable=False)
     delivery_charge = db.Column(db.Float, default=0, nullable=False)
+    service_tax_amount = db.Column(db.Float, default=0, nullable=False)
+    gst_amount = db.Column(db.Float, default=0, nullable=False)
+    cst_amount = db.Column(db.Float, default=0, nullable=False)
     daily_sequence = db.Column(db.Integer, nullable=True)
     display_code = db.Column(db.String(30), nullable=True)
     total_amount = db.Column(db.Float, default=0, nullable=False)

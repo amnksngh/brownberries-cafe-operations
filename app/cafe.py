@@ -2,13 +2,9 @@ import json
 import calendar
 import math
 import os
-import base64
-import ssl
 import secrets
 from datetime import date, datetime, timedelta, time
 from io import BytesIO
-from urllib.parse import urlencode
-from urllib.request import Request, urlopen
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
@@ -61,6 +57,7 @@ from .models import (
     User,
     Workstation,
 )
+from .sms_gateway import send_sms_from_config
 
 bp = Blueprint("cafe", __name__, url_prefix="/cafe")
 
@@ -101,6 +98,8 @@ ITEM_PREP_STATUSES = ("pending", "preparing", "ready", "served")
 DEFAULT_ATTENDANCE_CAFE_LAT = 25.207989477704068
 DEFAULT_ATTENDANCE_CAFE_LNG = 80.87374457551877
 DEFAULT_ATTENDANCE_RADIUS_METERS = 120.0
+DEFAULT_RECEIPT_LOCATION = "Chitrakoot, Uttar Pradesh"
+STAFF_CALL_COOLDOWN_SECONDS = 5 * 60
 
 
 def _slugify_workstation(value: str) -> str:
@@ -247,6 +246,139 @@ def _attendance_settings():
         "cafe_lng": cafe_lng,
         "radius_m": max(20.0, radius_m),
     }
+
+
+def _tax_settings():
+    cfg = load_deployment_config(current_app.instance_path)
+
+    def _read_rate(key: str) -> float:
+        try:
+            value = float(cfg.get(key) or 0)
+        except (TypeError, ValueError):
+            value = 0.0
+        return round(value, 2)
+
+    raw_service_rate = _read_rate("SERVICE_CHARGE_RATE")
+    if raw_service_rate <= 0:
+        raw_service_rate = _read_rate("SERVICE_TAX_RATE")
+    service_charge_rate = min(max(raw_service_rate or 5.0, 5.0), 10.0)
+
+    return {
+        "service_charge_rate": service_charge_rate,
+    }
+
+
+def _selected_tax_flags():
+    controls_present = request.form.get("tax_controls_present") == "1"
+
+    def _flag(name: str) -> bool:
+        if controls_present:
+            return request.form.get(name) == "1"
+        return True
+
+    return {
+        "apply_service_charge": _flag("apply_service_charge"),
+    }
+
+
+def _order_tax_breakdown(order: CafeOrder, *, base_amount: float | None = None, flags: dict | None = None):
+    settings = _tax_settings()
+    chosen = {
+        "apply_service_charge": True,
+    }
+    if flags:
+        chosen.update({key: bool(value) for key, value in flags.items()})
+    taxable_base = round(float(order.total_amount if base_amount is None else base_amount) or 0, 2)
+    service_tax_amount = round(
+        taxable_base * settings["service_charge_rate"] / 100.0 if chosen["apply_service_charge"] else 0.0,
+        2,
+    )
+    gst_amount = 0.0
+    cst_amount = 0.0
+    return {
+        "base_amount": taxable_base,
+        "service_charge_rate": settings["service_charge_rate"],
+        "apply_service_charge": chosen["apply_service_charge"],
+        "service_tax_amount": service_tax_amount,
+        "gst_amount": gst_amount,
+        "cst_amount": cst_amount,
+        "tax_amount": 0.0,
+        "grand_total": round(taxable_base + service_tax_amount, 2),
+    }
+
+
+def _apply_order_tax_breakdown(order: CafeOrder, flags: dict | None = None):
+    breakdown = _order_tax_breakdown(order, flags=flags)
+    order.service_tax_amount = breakdown["service_tax_amount"]
+    order.gst_amount = breakdown["gst_amount"]
+    order.cst_amount = breakdown["cst_amount"]
+    order.total_amount = breakdown["grand_total"]
+    return breakdown
+
+
+def _receipt_location_text():
+    return DEFAULT_RECEIPT_LOCATION
+
+
+def _google_review_link() -> str:
+    return "https://g.page/r/CZclLI_Be-puEAI/review"
+
+
+def _staff_call_cooldown_remaining_seconds(table: CafeTable | None) -> int:
+    if not table or not table.last_staff_call_at:
+        return 0
+    elapsed = (datetime.utcnow() - table.last_staff_call_at).total_seconds()
+    remaining = STAFF_CALL_COOLDOWN_SECONDS - int(elapsed)
+    return max(0, remaining)
+
+
+def _payment_breakdown_rows(order: CafeOrder) -> list[dict]:
+    try:
+        rows = json.loads(order.payment_breakdown_json or "[]")
+        if isinstance(rows, list):
+            cleaned = []
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                cleaned.append(
+                    {
+                        "method": str(row.get("method") or "").strip(),
+                        "amount": round(float(row.get("amount") or 0), 2),
+                        "reference": str(row.get("reference") or "").strip(),
+                    }
+                )
+            if cleaned:
+                return cleaned
+    except (TypeError, ValueError, json.JSONDecodeError):
+        pass
+    if order.payment_type:
+        return [
+            {
+                "method": str(order.payment_type or "").strip(),
+                "amount": round(float(order.total_amount or 0), 2),
+                "reference": str(order.payment_reference or "").strip(),
+            }
+        ]
+    return []
+
+
+def _receipt_orders_for_settlement(order: CafeOrder) -> list[CafeOrder]:
+    if not order.paid_at:
+        return [order]
+    query = CafeOrder.query.options(
+        joinedload(CafeOrder.table),
+        joinedload(CafeOrder.order_items).joinedload(CafeOrderItem.menu_item),
+    ).filter(
+        CafeOrder.status == "paid",
+        CafeOrder.paid_at == order.paid_at,
+        CafeOrder.table_id == order.table_id,
+    )
+    if order.payment_breakdown_json:
+        query = query.filter(CafeOrder.payment_breakdown_json == order.payment_breakdown_json)
+    else:
+        query = query.filter(CafeOrder.id == order.id)
+    related = query.order_by(CafeOrder.created_at.asc(), CafeOrder.id.asc()).all()
+    return related or [order]
 
 
 def _has_valid_kiosk_access(token: str | None) -> bool:
@@ -937,6 +1069,10 @@ def _serialize_order(order: CafeOrder):
         "packaging_charge": round(order.packaging_charge or 0, 2),
         "delivery_distance_km": round(order.delivery_distance_km or 0, 2),
         "delivery_charge": round(order.delivery_charge or 0, 2),
+                "service_tax_amount": round(order.service_tax_amount or 0, 2),
+                "gst_amount": 0.0,
+                "cst_amount": 0.0,
+                "tax_amount": 0.0,
         "created_at": _format_ist(order.created_at),
         "pending_approval_count": pending_count,
         "items": [
@@ -1287,6 +1423,9 @@ def _recalculate_order_totals(order: CafeOrder):
         elif oi.is_parcel:
             packaging_charge += 20.0 * int(oi.quantity or 0)
     order.packaging_charge = round(packaging_charge, 2)
+    order.service_tax_amount = 0.0
+    order.gst_amount = 0.0
+    order.cst_amount = 0.0
     order.total_amount = round(line_total + order.packaging_charge + float(order.delivery_charge or 0), 2)
 
 
@@ -1345,52 +1484,27 @@ def _parse_split_payment_rows():
 
 
 def _send_receipt_sms(country_code: str, mobile: str, message: str):
-    cfg = load_deployment_config(current_app.instance_path)
-    enabled = str(cfg.get("SMS_ENABLED", "0")).strip() in ["1", "true", "True"]
-    provider = (cfg.get("SMS_PROVIDER") or "twilio").strip().lower()
-    if not enabled:
-        return False, "SMS gateway is disabled."
-    if provider != "twilio":
-        return False, "Unsupported SMS provider configured."
-    sid = (cfg.get("TWILIO_ACCOUNT_SID") or "").strip()
-    token = (cfg.get("TWILIO_AUTH_TOKEN") or "").strip()
-    from_number = (cfg.get("SMS_FROM") or cfg.get("TWILIO_FROM_NUMBER") or "").strip()
-    if not sid or not token or not from_number:
-        return False, "SMS provider credentials are incomplete."
-    to_number = f"{country_code}{mobile}"
-    payload = urlencode({"To": to_number, "From": from_number, "Body": message}).encode("utf-8")
-    auth_raw = f"{sid}:{token}".encode("utf-8")
-    auth_b64 = base64.b64encode(auth_raw).decode("utf-8")
-    req = Request(
-        f"https://api.twilio.com/2010-04-01/Accounts/{sid}/Messages.json",
-        data=payload,
-        method="POST",
-        headers={
-            "Authorization": f"Basic {auth_b64}",
-            "Content-Type": "application/x-www-form-urlencoded",
-        },
-    )
-    ca_bundle = (cfg.get("SMS_CA_BUNDLE") or "").strip()
-    allow_insecure_ssl = str(cfg.get("SMS_ALLOW_INSECURE_SSL", "0")).strip() in ["1", "true", "True"]
-    context = None
-    try:
-        if allow_insecure_ssl:
-            context = ssl._create_unverified_context()
-        elif ca_bundle and os.path.exists(ca_bundle):
-            context = ssl.create_default_context(cafile=ca_bundle)
-        else:
-            import certifi  # type: ignore
+    return send_sms_from_config(current_app.instance_path, country_code, mobile, message)
 
-            context = ssl.create_default_context(cafile=certifi.where())
-    except Exception:
-        context = ssl.create_default_context()
-    try:
-        with urlopen(req, timeout=12, context=context) as resp:
-            if 200 <= resp.status < 300:
-                return True, "SMS sent."
-            return False, f"SMS gateway returned status {resp.status}."
-    except Exception as exc:
-        return False, f"SMS sending failed: {exc}"
+
+def _receipt_sms_message(order: CafeOrder) -> str:
+    public_no = _format_pickup_number(order)
+    internal_ref = order.display_code or _format_internal_order_code(order)
+    paid_label = _format_ist(order.paid_at or datetime.utcnow(), "%d %b %Y, %I:%M %p")
+    total_amount = round(float(order.total_amount or 0), 2)
+    payment_label = (order.payment_type or "Payment").strip()
+    table_label = "Delivery" if order.is_delivery else (order.table.name if order.table else "Cafe")
+    receipt_link = _receipt_link_for_order(order)
+    return (
+        "Brownberries Cafe\n"
+        f"Receipt: Order #{public_no}\n"
+        f"Ref: {internal_ref}\n"
+        f"Table: {table_label}\n"
+        f"Total: Rs {total_amount:.2f}\n"
+        f"Paid via: {payment_label}\n"
+        f"Time: {paid_label}\n"
+        f"Receipt Link: {receipt_link}"
+    )
 
 
 def create_cafe_order(
@@ -1490,20 +1604,20 @@ def create_cafe_order(
 @login_required
 def home():
     cfg = load_deployment_config(current_app.instance_path)
+    tax_settings = _tax_settings()
     public_base = (current_app.config.get("PUBLIC_BASE_URL") or request.host_url.rstrip("/")).rstrip("/")
     attendance_settings = _attendance_settings()
     today_start, today_end = _current_ist_day_bounds()
     _ensure_workstations_seeded()
     workstation_options = _all_workstations()
     sms_enabled = str(cfg.get("SMS_ENABLED", "0")).strip() in ["1", "true", "True"]
-    sms_provider = (cfg.get("SMS_PROVIDER") or "twilio").strip().lower() or "twilio"
-    sms_from = (cfg.get("SMS_FROM") or cfg.get("TWILIO_FROM_NUMBER") or "").strip()
-    twilio_sid = (cfg.get("TWILIO_ACCOUNT_SID") or "").strip()
-    twilio_auth_token = (cfg.get("TWILIO_AUTH_TOKEN") or "").strip()
-    sid_hint = f"{twilio_sid[:4]}...{twilio_sid[-4:]}" if len(twilio_sid) >= 10 else twilio_sid
-    token_hint = f"{twilio_auth_token[:3]}...{twilio_auth_token[-3:]}" if len(twilio_auth_token) >= 8 else ("Set" if twilio_auth_token else "")
     sms_ca_bundle = (cfg.get("SMS_CA_BUNDLE") or "").strip()
     sms_allow_insecure_ssl = str(cfg.get("SMS_ALLOW_INSECURE_SSL", "0")).strip() in ["1", "true", "True"]
+    textbee_api_key = (cfg.get("TEXTBEE_API_KEY") or "").strip()
+    textbee_device_id = (cfg.get("TEXTBEE_DEVICE_ID") or "").strip()
+    textbee_sim_subscription_id = (cfg.get("TEXTBEE_SIM_SUBSCRIPTION_ID") or "").strip()
+    textbee_base_url = (cfg.get("TEXTBEE_BASE_URL") or "https://api.textbee.dev/api/v1").strip()
+    textbee_key_hint = f"{textbee_api_key[:4]}...{textbee_api_key[-4:]}" if len(textbee_api_key) >= 10 else ("Set" if textbee_api_key else "")
     qr_order_cutoff_time = _format_cutoff_value(cfg.get("QR_ORDER_CUTOFF_TIME"))
     staff_order_cutoff_time = _format_cutoff_value(cfg.get("STAFF_ORDER_CUTOFF_TIME"))
     kiosk_token = (cfg.get("KDS_KIOSK_TOKEN") or "").strip()
@@ -1531,14 +1645,15 @@ def home():
         public_notice_text=(cfg.get("PUBLIC_NOTICE_TEXT", "") or "").strip(),
         public_notice_enabled=(cfg.get("PUBLIC_NOTICE_ENABLED", "0") in [1, "1", True, "true", "True"]),
         sms_enabled=sms_enabled,
-        sms_provider=sms_provider,
-        sms_from=sms_from,
-        twilio_sid_hint=sid_hint,
-        twilio_token_hint=token_hint,
         sms_ca_bundle=sms_ca_bundle,
         sms_allow_insecure_ssl=sms_allow_insecure_ssl,
+        textbee_key_hint=textbee_key_hint,
+        textbee_device_id=textbee_device_id,
+        textbee_sim_subscription_id=textbee_sim_subscription_id,
+        textbee_base_url=textbee_base_url,
         qr_order_cutoff_time=qr_order_cutoff_time,
         staff_order_cutoff_time=staff_order_cutoff_time,
+        service_charge_rate=tax_settings["service_charge_rate"],
         kiosk_token=kiosk_token,
         workstation_options=workstation_options,
         workstation_kiosk_urls=[
@@ -1580,23 +1695,21 @@ def update_public_notice():
 def update_sms_settings():
     cfg = load_deployment_config(current_app.instance_path)
     sms_enabled = True if request.form.get("sms_enabled") else False
-    provider = (request.form.get("sms_provider") or "twilio").strip().lower()
-    if provider not in ["twilio"]:
-        provider = "twilio"
-    sid = (request.form.get("twilio_account_sid") or "").strip()
-    token = (request.form.get("twilio_auth_token") or "").strip()
-    from_number = (request.form.get("sms_from") or "").strip()
     ca_bundle = (request.form.get("sms_ca_bundle") or "").strip()
     allow_insecure_ssl = True if request.form.get("sms_allow_insecure_ssl") else False
+    textbee_api_key = (request.form.get("textbee_api_key") or "").strip()
+    textbee_device_id = (request.form.get("textbee_device_id") or "").strip()
+    textbee_sim_subscription_id = (request.form.get("textbee_sim_subscription_id") or "").strip()
+    textbee_base_url = (request.form.get("textbee_base_url") or "").strip()
 
     updates = {
         "SMS_ENABLED": "1" if sms_enabled else "0",
-        "SMS_PROVIDER": provider,
-        "TWILIO_ACCOUNT_SID": sid or (cfg.get("TWILIO_ACCOUNT_SID") or ""),
-        "TWILIO_AUTH_TOKEN": token or (cfg.get("TWILIO_AUTH_TOKEN") or ""),
-        "SMS_FROM": from_number or (cfg.get("SMS_FROM") or cfg.get("TWILIO_FROM_NUMBER") or ""),
         "SMS_CA_BUNDLE": ca_bundle or (cfg.get("SMS_CA_BUNDLE") or ""),
         "SMS_ALLOW_INSECURE_SSL": "1" if allow_insecure_ssl else "0",
+        "TEXTBEE_API_KEY": textbee_api_key or (cfg.get("TEXTBEE_API_KEY") or ""),
+        "TEXTBEE_DEVICE_ID": textbee_device_id or (cfg.get("TEXTBEE_DEVICE_ID") or ""),
+        "TEXTBEE_SIM_SUBSCRIPTION_ID": textbee_sim_subscription_id or (cfg.get("TEXTBEE_SIM_SUBSCRIPTION_ID") or ""),
+        "TEXTBEE_BASE_URL": textbee_base_url or (cfg.get("TEXTBEE_BASE_URL") or "https://api.textbee.dev/api/v1"),
     }
     save_deployment_config(current_app.instance_path, updates)
     flash("SMS gateway settings saved.", "success")
@@ -1616,6 +1729,27 @@ def update_order_cutoff_settings():
         },
     )
     flash("Order cutoff settings saved.", "success")
+    return redirect(url_for("cafe.home"))
+
+
+@bp.route("/tax-settings", methods=["POST"])
+@roles_required("admin", "manager")
+def update_tax_settings():
+    try:
+        service_charge_rate = round(float(request.form.get("service_charge_rate") or 0), 2)
+    except (TypeError, ValueError):
+        flash("Service charge must be a valid number.", "error")
+        return redirect(url_for("cafe.home"))
+    if service_charge_rate < 5 or service_charge_rate > 10:
+        flash("Default service charge must be between 5% and 10%.", "error")
+        return redirect(url_for("cafe.home"))
+    save_deployment_config(
+        current_app.instance_path,
+        {
+            "SERVICE_CHARGE_RATE": f"{service_charge_rate:.2f}",
+        },
+    )
+    flash("Service charge setting saved.", "success")
     return redirect(url_for("cafe.home"))
 
 
@@ -2395,6 +2529,7 @@ def mark_order_paid(order_id):
         return redirect(request.form.get("next") or url_for("cafe.cashier"))
     payment_type = request.form.get("payment_type", "").strip() or order.payment_type or "Cash"
     payment_reference = request.form.get("payment_reference", "").strip() or order.payment_reference
+    _apply_order_tax_breakdown(order, flags=_selected_tax_flags())
     order.status = "paid"
     order.paid_at = datetime.utcnow()
     order.payment_type = payment_type
@@ -2404,10 +2539,7 @@ def mark_order_paid(order_id):
         cc = (request.form.get("country_code") or "+91").strip()
         mobile = "".join(ch for ch in (request.form.get("mobile") or "") if ch.isdigit())
         if mobile:
-            msg = (
-                f"Brownberries Cafe receipt for Order #{_format_pickup_number(order)} "
-                f"(Ref: {order.display_code or _format_internal_order_code(order)}): {_receipt_link_for_order(order)}"
-            )
+            msg = _receipt_sms_message(order)
             ok, sms_resp = _send_receipt_sms(cc, mobile, msg)
             sms_message = " SMS sent." if ok else f" SMS not sent: {sms_resp}"
         else:
@@ -2511,7 +2643,12 @@ def _clear_table_orders_impl(table_id: int, next_url: str = ""):
     if not payable_orders:
         flash("Select at least one approved order to settle.", "error")
         return redirect(next_url or url_for("cafe.cashier", table_id=table.id, tab="running"))
-    selected_total = round(sum(float(order.total_amount or 0) for order in payable_orders), 2)
+    tax_flags = _selected_tax_flags()
+    selected_total = 0.0
+    for order in payable_orders:
+        breakdown = _order_tax_breakdown(order, flags=tax_flags)
+        selected_total += breakdown["grand_total"]
+    selected_total = round(selected_total, 2)
     split_total = round(sum(float(row["amount"]) for row in split_rows), 2)
     if abs(split_total - selected_total) > 0.01:
         flash(f"Payment split total ₹{split_total:.2f} must match selected orders total ₹{selected_total:.2f}.", "error")
@@ -2524,6 +2661,7 @@ def _clear_table_orders_impl(table_id: int, next_url: str = ""):
     )[:120] or None
     payment_breakdown_json = json.dumps(split_rows)
     for order in payable_orders:
+        _apply_order_tax_breakdown(order, flags=tax_flags)
         order.status = "paid"
         order.paid_at = paid_now
         order.payment_type = summary_label
@@ -2534,7 +2672,17 @@ def _clear_table_orders_impl(table_id: int, next_url: str = ""):
         socketio.emit("order_updated", payload, namespace="/table")
         count += 1
     db.session.commit()
-    flash(f"Settled {count} order(s) for {table.name}.", "success")
+    sms_message = ""
+    if request.form.get("send_receipt_sms"):
+        cc = (request.form.get("receipt_country_code") or "+91").strip()
+        mobile = "".join(ch for ch in (request.form.get("receipt_mobile") or "") if ch.isdigit())
+        if mobile:
+            msg = _receipt_sms_message(payable_orders[0])
+            ok, sms_resp = _send_receipt_sms(cc, mobile, msg)
+            sms_message = " Receipt SMS sent." if ok else f" Receipt SMS not sent: {sms_resp}"
+        else:
+            sms_message = " Receipt SMS not sent: mobile missing."
+    flash(f"Settled {count} order(s) for {table.name}.{sms_message}", "success")
     if next_url:
         return redirect(next_url)
     return redirect(url_for("cafe.cashier", table_id=table.id))
@@ -2637,6 +2785,7 @@ def _render_cashier_view(kiosk_mode: bool = False, access_key: str = ""):
     day_end = _utc_naive_from_ist(datetime.combine(selected_date + timedelta(days=1), time.min))
     today_day_start = _utc_naive_from_ist(datetime.combine(today_ist, time.min))
     today_day_end = _utc_naive_from_ist(datetime.combine(today_ist + timedelta(days=1), time.min))
+    tax_settings = _tax_settings()
     tables = CafeTable.query.filter_by(active=True).order_by(CafeTable.name).all()
     running_orders = (
         CafeOrder.query.options(
@@ -2785,7 +2934,9 @@ def _render_cashier_view(kiosk_mode: bool = False, access_key: str = ""):
                 ],
                 "subtotal": line_subtotal,
                 "packaging_charge": round(float(o.packaging_charge or 0), 2),
-                "service_charge": 0.0,
+                "service_tax_amount": round(float(o.service_tax_amount or 0), 2),
+                "gst_amount": 0.0,
+                "cst_amount": 0.0,
                 "tax_amount": 0.0,
                 "total_amount": round(float(o.total_amount or 0), 2),
                 "receipt_link": f"{public_base}/cafe/receipt/{o.id}",
@@ -2806,6 +2957,7 @@ def _render_cashier_view(kiosk_mode: bool = False, access_key: str = ""):
         running_order_time_map=running_order_time_map,
         table_total=table_total,
         table_settle_total=table_settle_total,
+        service_charge_rate=tax_settings["service_charge_rate"],
         total_sale_today=round(float(total_sale_today), 2),
         all_orders=all_orders,
         all_orders_payload=all_orders_payload,
@@ -2855,17 +3007,60 @@ def public_receipt(order_id):
         joinedload(CafeOrder.table),
         joinedload(CafeOrder.order_items).joinedload(CafeOrderItem.menu_item),
     ).get_or_404(order_id)
-    subtotal = round(sum(float(oi.unit_price or 0) * int(oi.quantity or 0) for oi in order.order_items if (oi.approval_status or "pending") != "rejected"), 2)
-    packaging_charge = round(float(order.packaging_charge or 0), 2)
-    service_charge = 0.0
+    receipt_orders = _receipt_orders_for_settlement(order)
+    primary_order = receipt_orders[0]
+    payment_breakdown = _payment_breakdown_rows(primary_order)
+    subtotal = round(
+        sum(
+            float(oi.unit_price or 0) * int(oi.quantity or 0)
+            for settled_order in receipt_orders
+            for oi in settled_order.order_items
+            if (oi.approval_status or "pending") != "rejected"
+        ),
+        2,
+    )
+    packaging_charge = round(sum(float(settled_order.packaging_charge or 0) for settled_order in receipt_orders), 2)
+    delivery_charge = round(sum(float(settled_order.delivery_charge or 0) for settled_order in receipt_orders), 2)
+    service_tax_amount = round(sum(float(settled_order.service_tax_amount or 0) for settled_order in receipt_orders), 2)
+    gst_amount = 0.0
+    cst_amount = 0.0
     tax_amount = 0.0
+    settlement_total = round(sum(float(settled_order.total_amount or 0) for settled_order in receipt_orders), 2)
+    receipt_lines = []
+    for settled_order in receipt_orders:
+        pickup_no = _format_pickup_number(settled_order)
+        for oi in settled_order.order_items:
+            if (oi.approval_status or "pending") == "rejected":
+                continue
+            receipt_lines.append(
+                {
+                    "order_public_id": f"#{pickup_no}",
+                    "order_internal_ref": settled_order.display_code or str(settled_order.id),
+                    "item_name": oi.menu_item.name if oi.menu_item else "Item",
+                    "size_label": oi.size_label or "",
+                    "is_parcel": bool(oi.is_parcel),
+                    "quantity": int(oi.quantity or 0),
+                    "unit_price": round(float(oi.unit_price or 0), 2),
+                    "line_total": round(float(oi.unit_price or 0) * int(oi.quantity or 0), 2),
+                }
+            )
     return render_template(
         "cafe/receipt_public.html",
-        order=order,
+        order=primary_order,
+        receipt_orders=receipt_orders,
+        receipt_lines=receipt_lines,
+        payment_breakdown=payment_breakdown,
         subtotal=subtotal,
         packaging_charge=packaging_charge,
-        service_charge=service_charge,
+        delivery_charge=delivery_charge,
+        service_tax_amount=service_tax_amount,
+        gst_amount=gst_amount,
+        cst_amount=cst_amount,
         tax_amount=tax_amount,
+        settlement_total=settlement_total,
+        paid_at_display=_format_ist(primary_order.paid_at, "%d %b %Y, %I:%M %p") if primary_order.paid_at else "",
+        receipt_location=_receipt_location_text(),
+        review_link=_google_review_link(),
     )
 
 
@@ -2882,10 +3077,7 @@ def _send_order_receipt_sms_impl(order_id: int):
     if not mobile or not any(ch.isdigit() for ch in mobile):
         return jsonify({"ok": False, "message": "Valid mobile number is required."}), 400
     mobile_digits = "".join(ch for ch in mobile if ch.isdigit())
-    message = (
-        f"Brownberries Cafe receipt for Order #{_format_pickup_number(order)} "
-        f"(Ref: {order.display_code or _format_internal_order_code(order)}): {_receipt_link_for_order(order)}"
-    )
+    message = _receipt_sms_message(order)
     ok, msg = _send_receipt_sms(country_code, mobile_digits, message)
     if ok:
         return jsonify({"ok": True, "message": "Receipt SMS sent."})
@@ -3025,12 +3217,31 @@ def call_staff_for_table():
     table = CafeTable.query.filter_by(qr_slug=slug, active=True).first()
     if not table:
         return jsonify({"ok": False, "message": "Table not found."}), 404
+    cooldown_remaining = _staff_call_cooldown_remaining_seconds(table)
+    if cooldown_remaining > 0:
+        minutes = cooldown_remaining // 60
+        seconds = cooldown_remaining % 60
+        return jsonify(
+            {
+                "ok": False,
+                "message": f"Please wait {minutes}:{seconds:02d} before calling staff again.",
+                "cooldown_remaining": cooldown_remaining,
+            }
+        ), 429
+    table.last_staff_call_at = datetime.utcnow()
+    db.session.commit()
     _emit_ops_notification(
         f"Staff requested at {table.name}",
         kind="staff_call",
         payload={"table_id": table.id, "table_name": table.name},
     )
-    return jsonify({"ok": True, "message": f"Staff has been notified for {table.name}."})
+    return jsonify(
+        {
+            "ok": True,
+            "message": f"Staff has been notified for {table.name}.",
+            "cooldown_remaining": STAFF_CALL_COOLDOWN_SECONDS,
+        }
+    )
 
 
 @bp.route("/reception/<string:access_key>/orders/<int:order_id>/approve", methods=["POST"])

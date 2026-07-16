@@ -61,6 +61,7 @@ UTC_TZ = ZoneInfo("UTC")
 DEFAULT_ATTENDANCE_CAFE_LAT = 25.207989477704068
 DEFAULT_ATTENDANCE_CAFE_LNG = 80.87374457551877
 DEFAULT_ATTENDANCE_RADIUS_METERS = 120.0
+STAFF_CALL_COOLDOWN_SECONDS = 5 * 60
 JOB_APPLICATION_STATUSES = [
     "applied",
     "resume_screening",
@@ -78,6 +79,14 @@ JOB_LOCATION_TYPES = ["Brownberries Cafe", "Remote", "Hybrid"]
 JOB_PRIORITY_TYPES = ["Urgent", "Normal", "Future Hiring"]
 JOB_EDUCATION_TYPES = ["Any", "10th", "12th", "Graduate"]
 JOB_EXPERIENCE_TYPES = ["0 Years", "1 Year", "2 Years", "3+ Years"]
+
+
+def _staff_call_cooldown_remaining_seconds(table: CafeTable | None) -> int:
+    if not table or not table.last_staff_call_at:
+        return 0
+    elapsed = (datetime.utcnow() - table.last_staff_call_at).total_seconds()
+    remaining = STAFF_CALL_COOLDOWN_SECONDS - int(elapsed)
+    return max(0, remaining)
 RECRUITMENT_SKILL_OPTIONS = [
     "Coffee", "Espresso", "Latte Art", "POS", "Communication", "Customer Service",
     "Cleaning", "South Indian", "North Indian", "Chinese", "Pizza", "Pasta",
@@ -1744,6 +1753,7 @@ def table_qr_page():
         item_category_names_map[item.id] = _get_item_category_names(item, category_name_by_id, include_protected=False)
 
     table_orders = []
+    staff_call_cooldown_remaining = 0
     if table:
         table_orders = (
             CafeOrder.query.options(joinedload(CafeOrder.order_items).joinedload(CafeOrderItem.menu_item))
@@ -1751,6 +1761,7 @@ def table_qr_page():
             .order_by(CafeOrder.created_at.desc())
             .all()
         )
+        staff_call_cooldown_remaining = _staff_call_cooldown_remaining_seconds(table)
     qr_success_toast = session.pop("qr_success_toast", None)
     return render_template(
         "table_qr.html",
@@ -1762,6 +1773,7 @@ def table_qr_page():
         item_frequency=item_frequency,
         item_size_map=item_size_map,
         item_category_names_map=item_category_names_map,
+        staff_call_cooldown_remaining=staff_call_cooldown_remaining,
         qr_success_toast=qr_success_toast,
         hide_staff_nav=True,
     )

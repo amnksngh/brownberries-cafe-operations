@@ -52,6 +52,17 @@
 </section>
 
 <section class="panel">
+  <h3>Default Service Charge</h3>
+  <p class="muted">This is voluntary and enabled by default at settlement. Cashier can remove it if a customer asks not to pay it.</p>
+  <form method="post" action="{{ url_for('cafe.update_tax_settings') }}" class="grid grid-4">
+    <label>Service Charge %
+      <input name="service_charge_rate" type="number" step="0.01" min="5" max="10" value="{{ '%.2f'|format(service_charge_rate or 5) }}" />
+    </label>
+    <button type="submit">Save Service Charge</button>
+  </form>
+</section>
+
+<section class="panel">
   <h3>Staff Attendance QR & Geofence</h3>
   <p class="muted">Staff will scan this QR, allow phone location, and check in only if they are within the cafe premises radius.</p>
   <form method="post" action="{{ url_for('cafe.update_attendance_settings') }}" class="grid grid-4">
@@ -132,29 +143,26 @@
 
 <section class="panel">
   <h3>SMS Gateway Settings</h3>
-  <p class="muted">Configure Twilio settings for receipt SMS and alerts from this server.</p>
+  <p class="muted">Configure TextBee for receipts, reminders, and consumer alerts from this server.</p>
   <form method="post" action="{{ url_for('cafe.update_sms_settings') }}" class="grid grid-4">
-    <label>Provider
-      <select name="sms_provider">
-        <option value="twilio" {% if sms_provider == "twilio" %}selected{% endif %}>Twilio</option>
-      </select>
-    </label>
-    <label>Twilio Account SID
-      <input name="twilio_account_sid" placeholder="AC..." />
-      {% if twilio_sid_hint %}<small class="muted">Current: {{ twilio_sid_hint }}</small>{% endif %}
-    </label>
-    <label>Twilio Auth Token
-      <input type="password" name="twilio_auth_token" placeholder="Enter new token or leave blank" />
-      {% if twilio_token_hint %}<small class="muted">Current: {{ twilio_token_hint }}</small>{% endif %}
-    </label>
-    <label>From Number
-      <input name="sms_from" value="{{ sms_from or '' }}" placeholder="+1xxxxxxxxxx or +91xxxxxxxxxx" />
-    </label>
     <label>CA Bundle Path (Optional)
       <input name="sms_ca_bundle" value="{{ sms_ca_bundle or '' }}" placeholder="/path/to/cacert.pem" />
     </label>
     <label><input type="checkbox" name="sms_enabled" {% if sms_enabled %}checked{% endif %} /> Enable SMS Gateway</label>
     <label><input type="checkbox" name="sms_allow_insecure_ssl" {% if sms_allow_insecure_ssl %}checked{% endif %} /> Emergency: Allow Insecure SSL (not recommended)</label>
+    <label>TextBee API Key
+      <input type="password" name="textbee_api_key" placeholder="Paste TextBee API key" />
+      {% if textbee_key_hint %}<small class="muted">Current: {{ textbee_key_hint }}</small>{% endif %}
+    </label>
+    <label>TextBee Device ID
+      <input name="textbee_device_id" value="{{ textbee_device_id or '' }}" placeholder="Device ID from TextBee dashboard" />
+    </label>
+    <label>TextBee Default SIM Subscription ID
+      <input name="textbee_sim_subscription_id" value="{{ textbee_sim_subscription_id or '' }}" placeholder="Optional numeric SIM ID" />
+    </label>
+    <label>TextBee Base URL
+      <input name="textbee_base_url" value="{{ textbee_base_url or 'https://api.textbee.dev/api/v1' }}" placeholder="https://api.textbee.dev/api/v1" />
+    </label>
     <button type="submit">Save SMS Settings</button>
   </form>
   <form method="post" action="{{ url_for('cafe.test_sms_settings') }}" class="grid grid-4" style="margin-top:0.75rem;">

@@ -78,6 +78,9 @@ def _ensure_sqlite_schema_columns():
             "verification_status": "TEXT NOT NULL DEFAULT 'pending'",
             "verification_note": "TEXT",
         },
+        "cafe_table": {
+            "last_staff_call_at": "DATETIME",
+        },
         "cafe_order": {
             "is_delivery": "BOOLEAN NOT NULL DEFAULT 0",
             "delivery_customer_name": "TEXT",
@@ -89,6 +92,9 @@ def _ensure_sqlite_schema_columns():
             "packaging_charge": "FLOAT NOT NULL DEFAULT 0",
             "delivery_distance_km": "FLOAT NOT NULL DEFAULT 0",
             "delivery_charge": "FLOAT NOT NULL DEFAULT 0",
+            "service_tax_amount": "FLOAT NOT NULL DEFAULT 0",
+            "gst_amount": "FLOAT NOT NULL DEFAULT 0",
+            "cst_amount": "FLOAT NOT NULL DEFAULT 0",
             "daily_sequence": "INTEGER",
             "display_code": "TEXT",
             "paid_at": "DATETIME",

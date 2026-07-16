@@ -145,7 +145,7 @@
         <span class="qr-bottom-cart-orders-label">Orders</span>
       </button>
     </div>
-    <button type="button" id="call-staff-btn" class="floating-assist-btn">🔔 Call Staff</button>
+    <button type="button" id="call-staff-btn" class="floating-assist-btn" data-cooldown-remaining="{{ staff_call_cooldown_remaining or 0 }}">🔔 Call Staff</button>
 
     <div id="cart-sheet-backdrop" class="cart-sheet-backdrop hidden"></div>
     <section id="cart-sheet" class="cart-sheet hidden" aria-hidden="true">
@@ -937,7 +937,43 @@
     syncBottomBarMode();
   }
 
+  let callStaffCooldownTimer = null;
+  const formatCooldown = (seconds) => {
+    const mins = Math.floor(seconds / 60);
+    const secs = seconds % 60;
+    return `${mins}:${String(secs).padStart(2, "0")}`;
+  };
+
+  function syncCallStaffButton(remaining) {
+    if (!callStaffBtn) return;
+    const safeRemaining = Math.max(0, Number(remaining || 0));
+    if (callStaffCooldownTimer) {
+      window.clearInterval(callStaffCooldownTimer);
+      callStaffCooldownTimer = null;
+    }
+    if (safeRemaining <= 0) {
+      callStaffBtn.disabled = false;
+      callStaffBtn.textContent = "🔔 Call Staff";
+      return;
+    }
+    let countdown = safeRemaining;
+    callStaffBtn.disabled = true;
+    callStaffBtn.textContent = `🔔 Call Staff (${formatCooldown(countdown)})`;
+    callStaffCooldownTimer = window.setInterval(() => {
+      countdown -= 1;
+      if (countdown <= 0) {
+        window.clearInterval(callStaffCooldownTimer);
+        callStaffCooldownTimer = null;
+        callStaffBtn.disabled = false;
+        callStaffBtn.textContent = "🔔 Call Staff";
+        return;
+      }
+      callStaffBtn.textContent = `🔔 Call Staff (${formatCooldown(countdown)})`;
+    }, 1000);
+  }
+
   callStaffBtn?.addEventListener("click", async () => {
+    if (callStaffBtn.disabled) return;
     try {
       const body = new URLSearchParams({ slug: "{{ table.qr_slug }}" });
       const res = await fetch("{{ url_for('cafe.call_staff_for_table') }}", {
@@ -946,6 +982,9 @@
         body,
       });
       const data = await res.json();
+      if (data?.cooldown_remaining) {
+        syncCallStaffButton(Number(data.cooldown_remaining || 0));
+      }
       alert(data.message || "Staff has been notified.");
     } catch (_) {
       alert("Could not notify staff right now. Please try again.");
@@ -975,6 +1014,7 @@
   }
 
   setGreeting();
+  syncCallStaffButton(Number(callStaffBtn?.dataset.cooldownRemaining || 0));
   if (!isPreview) {
     const alreadyStarted = (() => {
       try { return window.sessionStorage.getItem(ORDERING_STARTED_KEY) === "1"; } catch (_) { return false; }

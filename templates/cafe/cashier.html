@@ -197,11 +197,16 @@
 <section class="panel cashier-settlement-panel">
   <div class="cashier-section-headline">
     <h3>Table Settlement</h3>
-    <p><strong>Approved Orders Ready To Settle:</strong> ₹{{ "%.2f"|format(table_settle_total) }}</p>
+    <p><strong>Approved Orders Ready To Settle:</strong> <span id="settlement-grand-total">₹{{ "%.2f"|format(table_settle_total) }}</span></p>
   </div>
-  <form method="post" action="{% if kiosk_mode %}{{ url_for('cafe.reception_kiosk_clear_table_orders', access_key=kiosk_access_key, table_id=selected_table.id) }}{% else %}{{ url_for('cafe.clear_table_orders', table_id=selected_table.id) }}{% endif %}" class="grid" id="table-settlement-form">
+  <form method="post" action="{% if kiosk_mode %}{{ url_for('cafe.reception_kiosk_clear_table_orders', access_key=kiosk_access_key, table_id=selected_table.id) }}{% else %}{{ url_for('cafe.clear_table_orders', table_id=selected_table.id) }}{% endif %}" class="grid" id="table-settlement-form" data-service-charge-rate="{{ '%.2f'|format(service_charge_rate or 5) }}">
     <input type="hidden" name="next" value="{{ current_cashier_url }}" />
     <input type="hidden" name="payment_row_count" id="payment-row-count" value="1" />
+    <input type="hidden" name="tax_controls_present" value="1" />
+    <div class="grid cashier-tax-toggle-grid">
+      <label><input type="checkbox" id="apply-service-charge" name="apply_service_charge" value="1" checked /> Service Charge (Voluntary) {% if service_charge_rate %}({{ '%.2f'|format(service_charge_rate) }}%){% endif %}</label>
+    </div>
+    <div class="muted" id="settlement-breakdown-hint">Base: ₹{{ "%.2f"|format(table_settle_total or 0) }}</div>
     <table>
       <thead>
         <tr><th>Settle</th><th>Order</th><th>Status</th><th>Total</th><th>State</th></tr>
@@ -211,7 +216,7 @@
         {% set can_settle = payable_order_id_map.get(order.id) %}
         <tr>
           <td>
-            <input type="checkbox" name="order_ids" value="{{ order.id }}" {% if can_settle %}checked{% else %}disabled{% endif %} />
+            <input type="checkbox" name="order_ids" value="{{ order.id }}" data-base-total="{{ '%.2f'|format(order.total_amount or 0) }}" {% if can_settle %}checked{% else %}disabled{% endif %} />
           </td>
           <td>#{{ order.daily_sequence or order.id }}<br /><small>{{ order.display_code or order.id }}</small></td>
           <td>{{ order.status }}</td>
@@ -264,6 +269,21 @@
       </template>
     </div>
     <button type="submit">Settle Selected Orders For Table</button>
+    <div class="grid grid-3">
+      <label>Country Code
+        <select name="receipt_country_code">
+          <option value="+91" selected>India (+91)</option>
+          <option value="+1">USA (+1)</option>
+          <option value="+44">UK (+44)</option>
+          <option value="+971">UAE (+971)</option>
+        </select>
+      </label>
+      <label>Customer Mobile Number
+        <input name="receipt_mobile" placeholder="Enter mobile number" />
+      </label>
+      <div class="muted" style="align-self:end; padding-bottom:0.75rem;">Use the second button only when customer wants the receipt by SMS.</div>
+    </div>
+    <button type="submit" name="send_receipt_sms" value="1">Settle + Send Receipt</button>
   </form>
 </section>
 {% else %}
@@ -401,8 +421,7 @@
       <div><strong>Items</strong>${itemsHtml || "<div>-</div>"}</div>
       <div><strong>Subtotal:</strong> ₹${Number(order.subtotal || 0).toFixed(2)}</div>
       <div><strong>Packaging:</strong> ₹${Number(order.packaging_charge || 0).toFixed(2)}</div>
-      <div><strong>Service Charge:</strong> ₹${Number(order.service_charge || 0).toFixed(2)}</div>
-      <div><strong>GST/CST:</strong> ₹${Number(order.tax_amount || 0).toFixed(2)}</div>
+      <div><strong>Service Charge:</strong> ₹${Number(order.service_tax_amount || 0).toFixed(2)}</div>
       <div><strong>Total:</strong> ₹${Number(order.total_amount || 0).toFixed(2)}</div>
     `;
   }
@@ -495,9 +514,60 @@
     paymentRowCountInput.value = String(rows.length || 1);
   }
 
-  function updatePaymentTotalHint() {
+  function settlementBaseTotal() {
+    const form = document.getElementById("table-settlement-form");
+    if (!form) return 0;
+    return [...form.querySelectorAll('input[name="order_ids"]:checked:not(:disabled)')]
+      .reduce((sum, input) => sum + Number(input.dataset.baseTotal || 0), 0);
+  }
+
+  function settlementComputedTotals() {
+    const form = document.getElementById("table-settlement-form");
+    if (!form) {
+      return {
+        base: 0,
+        serviceTax: 0,
+        gst: 0,
+        cst: 0,
+        grand: 0,
+      };
+    }
+    const base = settlementBaseTotal();
+    const serviceRate = Number(form.dataset.serviceChargeRate || 0);
+    const serviceTax = document.getElementById("apply-service-charge")?.checked ? (base * serviceRate / 100) : 0;
+    const gst = 0;
+    const cst = 0;
+    const grand = base + serviceTax;
+    return {
+      base,
+      serviceTax,
+      gst,
+      cst,
+      grand,
+    };
+  }
+
+  function updateSettlementUi(syncPrimaryPayment = true) {
     const paymentRowsEl = document.getElementById("payment-rows");
     const paymentTotalHint = document.getElementById("payment-total-hint");
+    const headlineTotal = document.getElementById("settlement-grand-total");
+    const breakdownHint = document.getElementById("settlement-breakdown-hint");
+    const totals = settlementComputedTotals();
+    if (headlineTotal) {
+      headlineTotal.textContent = `₹${totals.grand.toFixed(2)}`;
+    }
+    if (breakdownHint) {
+      const parts = [`Base: ₹${totals.base.toFixed(2)}`];
+      if (totals.serviceTax > 0) parts.push(`Service Charge: ₹${totals.serviceTax.toFixed(2)}`);
+      breakdownHint.textContent = `${parts.join(" | ")} | Final: ₹${totals.grand.toFixed(2)}`;
+    }
+    if (paymentRowsEl && syncPrimaryPayment) {
+      const rows = [...paymentRowsEl.querySelectorAll(".cashier-payment-row")];
+      if (rows.length === 1) {
+        const primaryAmount = rows[0].querySelector(".payment-amount-input");
+        if (primaryAmount) primaryAmount.value = totals.grand.toFixed(2);
+      }
+    }
     if (!paymentRowsEl || !paymentTotalHint) return;
     const total = [...paymentRowsEl.querySelectorAll(".payment-amount-input")]
       .reduce((sum, input) => sum + Number(input.value || 0), 0);
@@ -511,22 +581,30 @@
       renumberPaymentRows();
       updatePaymentTotalHint();
     });
-    row.querySelector(".payment-amount-input")?.addEventListener("input", updatePaymentTotalHint);
+    row.querySelector(".payment-amount-input")?.addEventListener("input", () => updateSettlementUi(false));
   }
 
   function addPaymentRow() {
     const paymentRowsEl = document.getElementById("payment-rows");
     const paymentRowTemplate = document.getElementById("payment-row-template");
     if (!paymentRowsEl || !paymentRowTemplate) return;
+    const totals = settlementComputedTotals();
+    const existingTotal = [...paymentRowsEl.querySelectorAll(".payment-amount-input")]
+      .reduce((sum, input) => sum + Number(input.value || 0), 0);
+    const remainingAmount = Math.max(0, totals.grand - existingTotal);
     const nextIndex = paymentRowsEl.querySelectorAll(".cashier-payment-row").length + 1;
     const wrapper = document.createElement("div");
     wrapper.innerHTML = paymentRowTemplate.innerHTML.replaceAll("__INDEX__", String(nextIndex)).trim();
     const row = wrapper.firstElementChild;
     if (!row) return;
+    const amountInput = row.querySelector(".payment-amount-input");
+    if (amountInput) {
+      amountInput.value = remainingAmount ? remainingAmount.toFixed(2) : "";
+    }
     paymentRowsEl.appendChild(row);
     bindPaymentRow(row);
     renumberPaymentRows();
-    updatePaymentTotalHint();
+    updateSettlementUi(false);
   }
 
   function initSettlementBuilder(root = document) {
@@ -535,10 +613,17 @@
     if (!paymentRowsEl) return;
     paymentRowsEl.querySelectorAll(".cashier-payment-row").forEach(bindPaymentRow);
     renumberPaymentRows();
-    updatePaymentTotalHint();
+    updateSettlementUi();
     if (addPaymentRowBtn && !addPaymentRowBtn.dataset.bound) {
       addPaymentRowBtn.dataset.bound = "1";
       addPaymentRowBtn.addEventListener("click", addPaymentRow);
+    }
+    const form = root.getElementById ? root.getElementById("table-settlement-form") : document.getElementById("table-settlement-form");
+    if (form && form.dataset.taxBound !== "1") {
+      form.dataset.taxBound = "1";
+      form.querySelectorAll('input[name="order_ids"], #apply-service-charge').forEach((field) => {
+        field.addEventListener("change", () => updateSettlementUi(true));
+      });
     }
   }
 

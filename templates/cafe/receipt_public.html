@@ -1,31 +1,296 @@
-{% extends "base.html" %}
-{% block content %}
-<section class="panel">
-  <h2>Brownberries Café Receipt</h2>
-  <p class="muted">Order #{{ order.daily_sequence or order.id }} | Internal Ref: {{ order.display_code or order.id }} | {{ order.created_at.strftime("%Y-%m-%d %H:%M") }}</p>
-  <p><strong>Table:</strong> {{ "For Delivery" if order.is_delivery else (order.table.name if order.table else "-") }}</p>
-  <p><strong>Status:</strong> {{ order.status }}</p>
-  <p><strong>Payment:</strong> {{ order.payment_type or "-" }}</p>
-</section>
-<section class="panel">
-  <table>
-    <tr><th>Item</th><th>Qty</th><th>Rate</th><th>Amount</th></tr>
-    {% for oi in order.order_items %}
-    {% if (oi.approval_status or "pending") != "rejected" %}
-    <tr>
-      <td>{{ oi.menu_item.name if oi.menu_item else "Item" }}{% if oi.size_label %} ({{ oi.size_label }}){% endif %}</td>
-      <td>{{ oi.quantity }}</td>
-      <td>₹{{ "%.2f"|format(oi.unit_price or 0) }}</td>
-      <td>₹{{ "%.2f"|format((oi.unit_price or 0) * (oi.quantity or 0)) }}</td>
-    </tr>
-    {% endif %}
-    {% endfor %}
-  </table>
-  <p><strong>Subtotal:</strong> ₹{{ "%.2f"|format(subtotal) }}</p>
-  <p><strong>Packaging Charge:</strong> ₹{{ "%.2f"|format(packaging_charge) }}</p>
-  <p><strong>Service Charge:</strong> ₹{{ "%.2f"|format(service_charge) }}</p>
-  <p><strong>GST/CST:</strong> ₹{{ "%.2f"|format(tax_amount) }}</p>
-  <p><strong>Total:</strong> ₹{{ "%.2f"|format(order.total_amount or 0) }}</p>
-  <button type="button" onclick="window.print()">Print / Download</button>
-</section>
-{% endblock %}
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Brownberries Café Receipt</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #23160f;
+      --muted: #6c5b4f;
+      --line: #ddd2c8;
+      --paper: #ffffff;
+      --shell: #f4efe8;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: Inter, "Segoe UI", Arial, sans-serif;
+      background: var(--shell);
+      color: var(--ink);
+      padding: 24px 12px 40px;
+    }
+    .receipt-page {
+      max-width: 760px;
+      margin: 0 auto;
+    }
+    .print-actions {
+      display: flex;
+      justify-content: flex-end;
+      margin-bottom: 16px;
+    }
+    .print-actions button {
+      border: 0;
+      border-radius: 10px;
+      background: #6f4a35;
+      color: #fff;
+      font-size: 15px;
+      font-weight: 600;
+      padding: 12px 18px;
+      cursor: pointer;
+    }
+    .receipt-paper {
+      background: var(--paper);
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      box-shadow: 0 16px 48px rgba(42, 23, 12, 0.08);
+      padding: 28px 28px 20px;
+    }
+    .receipt-header {
+      text-align: center;
+      border-bottom: 1px solid var(--line);
+      padding-bottom: 18px;
+      margin-bottom: 18px;
+    }
+    .receipt-header h1 {
+      margin: 0;
+      font-size: 28px;
+      line-height: 1.1;
+      letter-spacing: 0;
+    }
+    .receipt-header p {
+      margin: 8px 0 0;
+      color: var(--muted);
+      font-size: 15px;
+    }
+    .receipt-meta {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px 20px;
+      margin-bottom: 22px;
+      font-size: 14px;
+    }
+    .receipt-meta div {
+      padding-bottom: 6px;
+      border-bottom: 1px dashed #e8dfd6;
+    }
+    .receipt-meta strong {
+      display: block;
+      margin-bottom: 3px;
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      color: var(--muted);
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-bottom: 18px;
+    }
+    thead th {
+      text-align: left;
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      color: var(--muted);
+      border-bottom: 1px solid var(--line);
+      padding: 10px 0;
+    }
+    tbody td {
+      padding: 12px 0;
+      border-bottom: 1px solid #f0e8df;
+      vertical-align: top;
+      font-size: 14px;
+    }
+    tbody td.amount,
+    thead th.amount {
+      text-align: right;
+      white-space: nowrap;
+    }
+    .item-name {
+      font-weight: 600;
+    }
+    .item-meta {
+      display: block;
+      margin-top: 4px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .payment-block {
+      margin: 0 0 18px;
+      padding: 12px 14px;
+      border: 1px dashed var(--line);
+      border-radius: 12px;
+      background: #fcfaf7;
+    }
+    .payment-block h3 {
+      margin: 0 0 8px;
+      font-size: 13px;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      color: var(--muted);
+    }
+    .payment-line {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 4px 0;
+      font-size: 14px;
+    }
+    .payment-line-note {
+      display: block;
+      margin-top: 3px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .totals {
+      margin-left: auto;
+      width: min(100%, 320px);
+      font-size: 14px;
+    }
+    .totals-row {
+      display: flex;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 7px 0;
+      border-bottom: 1px dashed #eadfd4;
+    }
+    .totals-row.grand {
+      font-size: 18px;
+      font-weight: 700;
+      border-bottom: 0;
+      padding-top: 12px;
+    }
+    .receipt-footer {
+      margin-top: 18px;
+      padding-top: 16px;
+      border-top: 1px solid var(--line);
+      text-align: center;
+      color: var(--muted);
+      font-size: 13px;
+    }
+    @media (max-width: 640px) {
+      .receipt-paper {
+        padding: 20px 16px 16px;
+        border-radius: 12px;
+      }
+      .receipt-header h1 {
+        font-size: 24px;
+      }
+      .receipt-meta {
+        grid-template-columns: 1fr;
+      }
+    }
+    @media print {
+      body {
+        background: #fff;
+        padding: 0;
+      }
+      .receipt-page {
+        max-width: none;
+      }
+      .print-actions {
+        display: none !important;
+      }
+      .receipt-paper {
+        border: 0;
+        border-radius: 0;
+        box-shadow: none;
+        padding: 0;
+      }
+      @page {
+        margin: 14mm;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="receipt-page">
+    <div class="print-actions">
+      <button type="button" onclick="window.print()">Print / Download</button>
+    </div>
+    <article class="receipt-paper">
+      <header class="receipt-header">
+        <h1>Brownberries Café</h1>
+        <p>{{ receipt_location }}</p>
+      </header>
+
+      <section class="receipt-meta">
+        <div><strong>Order IDs</strong>{% for settled_order in receipt_orders %}#{{ settled_order.daily_sequence or settled_order.id }}{% if not loop.last %}, {% endif %}{% endfor %}</div>
+        <div><strong>Internal Refs</strong>{% for settled_order in receipt_orders %}{{ settled_order.display_code or settled_order.id }}{% if not loop.last %}, {% endif %}{% endfor %}</div>
+        <div><strong>Table</strong>{{ "For Delivery" if order.is_delivery else (order.table.name if order.table else "-") }}</div>
+        <div><strong>Status</strong>{{ order.status|replace("_", " ")|title }}</div>
+        <div><strong>Paid</strong>{{ paid_at_display or "-" }}</div>
+        <div><strong>Payment</strong>{{ order.payment_type or "-" }}</div>
+      </section>
+
+      <section class="payment-block">
+        <h3>Payment Details</h3>
+        {% for row in payment_breakdown %}
+        <div class="payment-line">
+          <span>
+            {{ row.method or "Payment" }}
+            {% if row.reference %}
+            <span class="payment-line-note">{{ row.reference }}</span>
+            {% endif %}
+          </span>
+          <strong>₹{{ "%.2f"|format(row.amount or 0) }}</strong>
+        </div>
+        {% else %}
+        <div class="payment-line"><span>No payment details available</span><strong>-</strong></div>
+        {% endfor %}
+      </section>
+
+      <table>
+        <thead>
+          <tr>
+            <th>Order Id</th>
+            <th>Item</th>
+            <th class="amount">Qty</th>
+            <th class="amount">Rate</th>
+            <th class="amount">Amount</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for line in receipt_lines %}
+          <tr>
+            <td>{{ line.order_public_id }}</td>
+            <td>
+              <span class="item-name">{{ line.item_name }}</span>
+              {% if line.size_label or line.is_parcel %}
+              <span class="item-meta">
+                {% if line.size_label %}{{ line.size_label }}{% endif %}{% if line.size_label and line.is_parcel %} | {% endif %}{% if line.is_parcel %}Parcel{% endif %}
+              </span>
+              {% endif %}
+            </td>
+            <td class="amount">{{ line.quantity }}</td>
+            <td class="amount">₹{{ "%.2f"|format(line.unit_price or 0) }}</td>
+            <td class="amount">₹{{ "%.2f"|format(line.line_total or 0) }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+
+      <section class="totals">
+        <div class="totals-row"><span>Subtotal</span><strong>₹{{ "%.2f"|format(subtotal) }}</strong></div>
+        {% if packaging_charge %}
+        <div class="totals-row"><span>Packaging Charges</span><strong>₹{{ "%.2f"|format(packaging_charge) }}</strong></div>
+        {% endif %}
+        {% if delivery_charge %}
+        <div class="totals-row"><span>Delivery Charges</span><strong>₹{{ "%.2f"|format(delivery_charge) }}</strong></div>
+        {% endif %}
+        {% if service_tax_amount %}
+        <div class="totals-row"><span>Service Charge</span><strong>₹{{ "%.2f"|format(service_tax_amount) }}</strong></div>
+        {% endif %}
+        <div class="totals-row grand"><span>Total</span><strong>₹{{ "%.2f"|format(settlement_total or 0) }}</strong></div>
+      </section>
+
+      <footer class="receipt-footer">
+        <div>Thank you for visiting Brownberries Café.</div>
+        <div style="margin-top:8px;"><a href="{{ review_link }}" target="_blank" rel="noopener">Leave us a Google review</a></div>
+      </footer>
+    </article>
+  </div>
+</body>
+</html>
