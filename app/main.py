@@ -1755,9 +1755,15 @@ def table_qr_page():
     table_orders = []
     staff_call_cooldown_remaining = 0
     if table:
+        today_start, today_end = _current_ist_day_bounds_utc_naive()
         table_orders = (
             CafeOrder.query.options(joinedload(CafeOrder.order_items).joinedload(CafeOrderItem.menu_item))
-            .filter(CafeOrder.table_id == table.id, CafeOrder.status.notin_(["paid", "cancelled"]))
+            .filter(
+                CafeOrder.table_id == table.id,
+                CafeOrder.status.notin_(["paid", "cancelled"]),
+                CafeOrder.created_at >= today_start,
+                CafeOrder.created_at <= today_end,
+            )
             .order_by(CafeOrder.created_at.desc())
             .all()
         )

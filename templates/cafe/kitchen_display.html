@@ -598,6 +598,17 @@
     renderBoard();
   }
 
+  function currentIstDayKey() {
+    const parts = new Intl.DateTimeFormat("en-GB", {
+      timeZone: "Asia/Kolkata",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).formatToParts(new Date());
+    const byType = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+    return `${byType.year}-${byType.month}-${byType.day}`;
+  }
+
   async function refreshBoardData() {
     if (boardRefreshInFlight) {
       boardRefreshPending = true;
@@ -686,6 +697,7 @@
   });
 
   socket.on("order_created", (payload) => {
+    if (payload?.created_on_ist && payload.created_on_ist !== currentIstDayKey()) return;
     notifs.unshift({
       id: payload.id,
       order_id: payload.order_code || payload.id,
@@ -699,7 +711,8 @@
     refreshBoardData();
   });
 
-  socket.on("order_updated", () => {
+  socket.on("order_updated", (payload) => {
+    if (payload?.created_on_ist && payload.created_on_ist !== currentIstDayKey()) return;
     refreshBoardData();
   });
 

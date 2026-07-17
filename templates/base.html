@@ -279,6 +279,17 @@
           return `Table ${spokenDigits.join(" ")}`;
         }
 
+        function currentIstDayKey() {
+          const parts = new Intl.DateTimeFormat("en-GB", {
+            timeZone: "Asia/Kolkata",
+            year: "numeric",
+            month: "2-digit",
+            day: "2-digit",
+          }).formatToParts(new Date());
+          const byType = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+          return `${byType.year}-${byType.month}-${byType.day}`;
+        }
+
         window.__bbGlobalNotifier = {
           enqueueAnnouncement,
           requestActionWhenIdle,
@@ -303,6 +314,7 @@
         });
 
         socket.on("order_created", (payload) => {
+          if (payload?.created_on_ist && payload.created_on_ist !== currentIstDayKey()) return;
           const tableName = normalizeTableAnnouncementSpeech(payload?.table || payload?.table_name || "A table");
           enqueueAnnouncement(`${tableName} has placed a new order.`, `order:${payload?.id || tableName}`);
         });

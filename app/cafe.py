@@ -1069,11 +1069,12 @@ def _serialize_order(order: CafeOrder):
         "packaging_charge": round(order.packaging_charge or 0, 2),
         "delivery_distance_km": round(order.delivery_distance_km or 0, 2),
         "delivery_charge": round(order.delivery_charge or 0, 2),
-                "service_tax_amount": round(order.service_tax_amount or 0, 2),
-                "gst_amount": 0.0,
-                "cst_amount": 0.0,
-                "tax_amount": 0.0,
+        "service_tax_amount": round(order.service_tax_amount or 0, 2),
+        "gst_amount": 0.0,
+        "cst_amount": 0.0,
+        "tax_amount": 0.0,
         "created_at": _format_ist(order.created_at),
+        "created_on_ist": _order_local_date(order).isoformat(),
         "pending_approval_count": pending_count,
         "items": [
             {
@@ -1259,9 +1260,12 @@ def _append_auto_water_if_needed(table_id: int, line_items, force_first_cycle: b
     if not table or (table.name or "").strip().upper() == "DL":
         return line_items
     if not force_first_cycle:
+        today_start, today_end = _current_ist_day_bounds()
         has_active_orders = db.session.query(CafeOrder.id).filter(
             CafeOrder.table_id == table_id,
             CafeOrder.status.notin_(["paid", "cancelled"]),
+            CafeOrder.created_at >= today_start,
+            CafeOrder.created_at <= today_end,
         ).first()
         if has_active_orders:
             return line_items
@@ -2427,6 +2431,7 @@ def _render_orders_view(kiosk_mode: bool = False, access_key: str = ""):
     table_id = request.args.get("table_id", type=int)
     category_id = request.args.get("category_id", type=int)
     item_type = (request.args.get("item_type") or "").strip()
+    today_start, today_end = _current_ist_day_bounds()
     tables = CafeTable.query.filter_by(active=True).order_by(CafeTable.name).all()
     if not table_id and tables:
         table_id = tables[0].id
@@ -2482,7 +2487,12 @@ def _render_orders_view(kiosk_mode: bool = False, access_key: str = ""):
         "cafe/orders.html",
         tables=tables,
         menu_items=menu_items,
-        orders=CafeOrder.query.order_by(CafeOrder.created_at.desc()).limit(50).all(),
+        orders=(
+            CafeOrder.query.filter(CafeOrder.created_at >= today_start, CafeOrder.created_at <= today_end)
+            .order_by(CafeOrder.created_at.desc())
+            .limit(50)
+            .all()
+        ),
         categories=categories,
         item_types=item_types,
         selected_category_id=category_id,
@@ -2492,7 +2502,10 @@ def _render_orders_view(kiosk_mode: bool = False, access_key: str = ""):
         item_category_names_map=item_category_names_map,
         selected_table_id=table_id,
         table_orders=CafeOrder.query.filter(
-            CafeOrder.table_id == table_id, CafeOrder.status.notin_(["paid", "cancelled"])
+            CafeOrder.table_id == table_id,
+            CafeOrder.status.notin_(["paid", "cancelled"]),
+            CafeOrder.created_at >= today_start,
+            CafeOrder.created_at <= today_end,
         )
         .order_by(CafeOrder.created_at.desc())
         .all()
@@ -2621,6 +2634,7 @@ def clear_table_orders(table_id):
 
 def _clear_table_orders_impl(table_id: int, next_url: str = ""):
     table = CafeTable.query.get_or_404(table_id)
+    day_start, day_end = _current_ist_day_bounds()
     split_rows, split_error = _parse_split_payment_rows()
     if split_error:
         flash(split_error, "error")
@@ -2634,6 +2648,8 @@ def _clear_table_orders_impl(table_id: int, next_url: str = ""):
     orders = CafeOrder.query.filter(
         CafeOrder.table_id == table.id,
         CafeOrder.status.notin_(["paid", "cancelled"]),
+        CafeOrder.created_at >= day_start,
+        CafeOrder.created_at < day_end,
     ).all()
     orders = [order for order in orders if order.id in selected_order_ids]
     payable_orders = [
@@ -2715,6 +2731,7 @@ def _move_table_orders_impl(table_id: int, next_url: str = ""):
         flash("Destination table was not found.", "error")
         return redirect(next_url or url_for("cafe.cashier", table_id=source_table.id, tab="running"))
 
+    today_start, today_end = _current_ist_day_bounds()
     orders = (
         CafeOrder.query.options(
             joinedload(CafeOrder.table),
@@ -2724,6 +2741,8 @@ def _move_table_orders_impl(table_id: int, next_url: str = ""):
             CafeOrder.id.in_(selected_order_ids),
             CafeOrder.table_id == source_table.id,
             CafeOrder.status.notin_(["paid", "cancelled"]),
+            CafeOrder.created_at >= today_start,
+            CafeOrder.created_at <= today_end,
         )
         .order_by(CafeOrder.created_at.asc())
         .all()
@@ -3292,11 +3311,14 @@ def _render_kitchen_display(station: str = "kitchen", kiosk_mode: bool = False, 
     if station not in station_lookup:
         station = fallback_station
     station_name = station_lookup.get(station).name if station in station_lookup else _workstation_display_name(station)
+    today_start, today_end = _current_ist_day_bounds()
     orders = (
         CafeOrder.query.join(CafeOrderItem, CafeOrderItem.order_id == CafeOrder.id)
         .join(MenuItem, MenuItem.id == CafeOrderItem.menu_item_id)
         .filter(
             CafeOrder.status.in_(["pending_approval", "open", "preparing", "ready", "served"]),
+            CafeOrder.created_at >= today_start,
+            CafeOrder.created_at <= today_end,
             MenuItem.prep_station == station,
         )
         .options(

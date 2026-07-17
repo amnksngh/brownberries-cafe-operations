@@ -1014,8 +1014,10 @@
     }, delayMs);
   }
 
+  const liveDayKey = "{{ selected_date.isoformat() if selected_date else '' }}";
   function requestCashierRefresh(payload) {
     if (!payload || !payload.table_id) return;
+    if (payload?.created_on_ist && liveDayKey && payload.created_on_ist !== liveDayKey) return;
     scheduleCashierRefresh(false, 120);
   }
   function toNotifLine(n) {
@@ -1062,6 +1064,7 @@
     saveNotifs();
   });
   cashierSocket.on("order_created", (payload) => {
+    if (payload?.created_on_ist && liveDayKey && payload.created_on_ist !== liveDayKey) return;
     notifs.unshift({
       id: payload.id,
       order_id: payload.order_code || payload.id,
@@ -1110,6 +1113,7 @@
   });
   cashierSocket.on("order_updated", (payload) => {
     if (!payload || !payload.table_id) return;
+    if (payload?.created_on_ist && liveDayKey && payload.created_on_ist !== liveDayKey) return;
     scheduleCashierRefresh(false, 120);
   });
   try {
