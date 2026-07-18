@@ -2,8 +2,9 @@
 __pycache__/
 *.pyc
 instance/
+instance_windows_backup/
 *.db
 logs/
 brownberries-migration-bundle.zip
 migration_bundle/
-static/uploads/menu/
+static/uploads/
