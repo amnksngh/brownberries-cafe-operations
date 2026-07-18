@@ -107,3 +107,24 @@ Note:
 - Password: `admin123`
 
 Change this immediately from User Management after first login.
+
+## 7) Windows Auto-Start
+
+If you host the app on a Windows machine, use these launcher scripts:
+
+- App server: `scripts/windows/start_app.bat`
+- Cloudflare Tunnel: `scripts/windows/start_tunnel.bat`
+
+Recommended setup:
+
+1. Create a Task Scheduler task for the app server:
+   - Trigger: `At startup`
+   - Action: Start `scripts/windows/start_app.bat`
+   - User: your Windows server account
+2. Create a second Task Scheduler task for the tunnel:
+   - Trigger: `At startup`
+   - Delay: `30 seconds`
+   - Action: Start `scripts/windows/start_tunnel.bat`
+   - User: the same Windows server account
+
+Both scripts write logs into the repo `logs/` folder.
