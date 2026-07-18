@@ -3,3 +3,7 @@ __pycache__/
 *.pyc
 instance/
 *.db
+logs/
+brownberries-migration-bundle.zip
+migration_bundle/
+static/uploads/menu/
