@@ -128,5 +128,25 @@ Notes:
 
 - `start_app.bat` uses `waitress-serve --listen=127.0.0.1:5050 --threads=12 wsgi:app`
 - `start_tunnel.bat` uses `cloudflared` and automatically prefers `%USERPROFILE%\.cloudflared\config.yml` when present
-- `watchdog_services.ps1` checks the `BrownberriesApp` and `cloudflared` services and starts them if they are stopped
+- `watchdog_services.ps1` checks the `BrownberriesApp` and `cloudflared` services, verifies local `/healthz`, and restarts the tunnel if the public domain health check fails while internet is available
 - All scripts write logs into the repo `logs/` folder
+
+### Windows Always-On Checklist
+
+Use this exact setup on the Windows machine that serves production:
+
+1. Run the app as the `BrownberriesApp` Windows service
+2. Run the tunnel as the `cloudflared` Windows service
+3. Set both services to `Automatic (Delayed Start)`
+4. Set service recovery for both to restart on failure
+5. Run `scripts/windows/watchdog_services.ps1` every 5 minutes from Task Scheduler
+6. Do not keep the live site dependent on a foreground `cloudflared tunnel run ...` terminal
+
+Quick verification commands in Administrator PowerShell:
+
+```powershell
+Get-Service BrownberriesApp,cloudflared
+curl http://127.0.0.1:5050/healthz
+curl https://brownberriescafe.com/healthz
+Get-Content "C:\Brownberries\brownberries-cafe-operations\logs\windows-watchdog.log" -Tail 50
+```
