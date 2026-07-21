@@ -9,7 +9,7 @@ from uuid import uuid4
 from zoneinfo import ZoneInfo
 
 import qrcode
-from flask import Blueprint, Response, current_app, flash, g, redirect, render_template, request, send_file, session, url_for
+from flask import Blueprint, Response, current_app, flash, g, jsonify, redirect, render_template, request, send_file, session, url_for
 from sqlalchemy.orm import joinedload
 from werkzeug.security import check_password_hash, generate_password_hash
 from werkzeug.utils import secure_filename
@@ -32,6 +32,7 @@ from .extensions import socketio
 from .extensions import db
 from .deploy_config import load_deployment_config
 from .models import (
+    CafeFeedback,
     CafeOrder,
     CafeOrderItem,
     CafeTable,
@@ -133,6 +134,31 @@ def _set_json_list(items: list[str]) -> str:
         if text and text not in cleaned:
             cleaned.append(text)
     return json.dumps(cleaned)
+
+
+@bp.route("/healthz")
+def healthz():
+    try:
+        db.session.execute(db.select(User.id).limit(1)).scalar()
+        return jsonify(
+            {
+                "ok": True,
+                "service": "brownberries-cafe-operations",
+                "timestamp_ist": datetime.now(IST_TZ).isoformat(),
+            }
+        )
+    except Exception as exc:
+        current_app.logger.exception("Health check failed")
+        return (
+            jsonify(
+                {
+                    "ok": False,
+                    "service": "brownberries-cafe-operations",
+                    "error": str(exc),
+                }
+            ),
+            500,
+        )
 
 
 def _job_skills(job: JobOpening) -> list[str]:
@@ -298,6 +324,64 @@ def _current_ist_day_bounds_utc_naive():
     if leave_days > 1 and notice_days < 7:
         return "Leaves longer than 1 day should ideally be requested at least 7 days in advance."
     return ""
+
+
+def _service_charge_rate_for_public():
+    cfg = load_deployment_config(current_app.instance_path)
+    try:
+        value = float(cfg.get("SERVICE_CHARGE_RATE") or cfg.get("SERVICE_TAX_RATE") or 5.0)
+    except (TypeError, ValueError):
+        value = 5.0
+    return round(min(max(value or 5.0, 5.0), 10.0), 2)
+
+
+def _table_feedback_prompt(table: CafeTable | None) -> dict | None:
+    if not table:
+        return None
+    today_start, today_end = _current_ist_day_bounds_utc_naive()
+    latest_paid_order = (
+        CafeOrder.query.options(joinedload(CafeOrder.table))
+        .filter(
+            CafeOrder.table_id == table.id,
+            CafeOrder.status == "paid",
+            CafeOrder.paid_at.is_not(None),
+            CafeOrder.paid_at >= today_start,
+            CafeOrder.paid_at <= today_end,
+        )
+        .order_by(CafeOrder.paid_at.desc(), CafeOrder.id.desc())
+        .first()
+    )
+    if not latest_paid_order:
+        return None
+    primary_order = (
+        CafeOrder.query.filter(
+            CafeOrder.table_id == latest_paid_order.table_id,
+            CafeOrder.status == "paid",
+            CafeOrder.paid_at == latest_paid_order.paid_at,
+        )
+        .order_by(CafeOrder.created_at.asc(), CafeOrder.id.asc())
+        .first()
+    ) or latest_paid_order
+    feedback = CafeFeedback.query.filter_by(primary_order_id=primary_order.id).order_by(CafeFeedback.id.desc()).first()
+    settlement_total = (
+        db.session.query(db.func.coalesce(db.func.sum(CafeOrder.total_amount), 0))
+        .filter(
+            CafeOrder.table_id == latest_paid_order.table_id,
+            CafeOrder.status == "paid",
+            CafeOrder.paid_at == latest_paid_order.paid_at,
+        )
+        .scalar()
+        or 0
+    )
+    return {
+        "primary_order_id": primary_order.id,
+        "settlement_total": round(float(settlement_total or 0), 2),
+        "feedback_exists": bool(feedback),
+        "feedback_source": (feedback.source if feedback else ""),
+        "feedback_editable": (not feedback) or (feedback.source != "online"),
+        "paid_at": latest_paid_order.paid_at.astimezone(UTC_TZ).isoformat() if getattr(latest_paid_order.paid_at, "tzinfo", None) else (latest_paid_order.paid_at.isoformat() if latest_paid_order.paid_at else ""),
+        "feedback_url": url_for("cafe.public_settlement_feedback", order_id=primary_order.id),
+    }
 
 
 def _public_menu_category_ids(item: MenuItem, category_name_by_id: dict[int, str]) -> list[int]:
@@ -1769,6 +1853,8 @@ def table_qr_page():
         )
         staff_call_cooldown_remaining = _staff_call_cooldown_remaining_seconds(table)
     qr_success_toast = session.pop("qr_success_toast", None)
+    service_charge_rate = _service_charge_rate_for_public()
+    feedback_prompt = _table_feedback_prompt(table) if table else None
     return render_template(
         "table_qr.html",
         table=table,
@@ -1780,9 +1866,33 @@ def table_qr_page():
         item_size_map=item_size_map,
         item_category_names_map=item_category_names_map,
         staff_call_cooldown_remaining=staff_call_cooldown_remaining,
+        service_charge_rate=service_charge_rate,
+        service_charge_enabled=not bool(getattr(table, "service_charge_opt_out_requested", False)),
+        feedback_prompt=feedback_prompt,
         qr_success_toast=qr_success_toast,
         hide_staff_nav=True,
     )
+
+
+@bp.route("/table/service-charge-preference", methods=["POST"])
+def table_service_charge_preference():
+    slug = (request.form.get("slug") or "").strip()
+    table = CafeTable.query.filter_by(qr_slug=slug, active=True).first()
+    if not table:
+        return jsonify({"ok": False, "message": "Table not found."}), 404
+    include_service_charge = request.form.get("apply_service_charge") == "1"
+    table.service_charge_opt_out_requested = not include_service_charge
+    db.session.commit()
+    return jsonify({"ok": True, "apply_service_charge": include_service_charge})
+
+
+@bp.route("/table/feedback-status")
+def table_feedback_status():
+    slug = (request.args.get("slug") or "").strip()
+    table = CafeTable.query.filter_by(qr_slug=slug, active=True).first()
+    if not table:
+        return jsonify({"ok": False, "message": "Table not found."}), 404
+    return jsonify({"ok": True, "feedback_prompt": _table_feedback_prompt(table)})
 
 
 @bp.route("/users", methods=["GET", "POST"])

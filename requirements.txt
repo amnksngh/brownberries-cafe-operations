@@ -6,3 +6,4 @@ qrcode[pil]==7.4.2
 cryptography==46.0.3
 eventlet==0.36.1
 certifi==2026.5.20
+waitress==3.0.2

@@ -108,23 +108,25 @@ Note:
 
 Change this immediately from User Management after first login.
 
-## 7) Windows Auto-Start
+## 7) Windows Production Auto-Start
 
-If you host the app on a Windows machine, use these launcher scripts:
+For a reliable Windows server setup, use:
 
 - App server: `scripts/windows/start_app.bat`
 - Cloudflare Tunnel: `scripts/windows/start_tunnel.bat`
+- Watchdog helper: `scripts/windows/watchdog_services.ps1`
+- WSGI entrypoint: `wsgi.py`
 
-Recommended setup:
+Recommended production stack:
 
-1. Create a Task Scheduler task for the app server:
-   - Trigger: `At startup`
-   - Action: Start `scripts/windows/start_app.bat`
-   - User: your Windows server account
-2. Create a second Task Scheduler task for the tunnel:
-   - Trigger: `At startup`
-   - Delay: `30 seconds`
-   - Action: Start `scripts/windows/start_tunnel.bat`
-   - User: the same Windows server account
+1. Run the Flask app with `waitress-serve` against `wsgi:app`
+2. Run `cloudflared` as a Windows service
+3. Configure both services with automatic restart on failure
+4. Add a small watchdog scheduled task every 5 minutes as a backup
 
-Both scripts write logs into the repo `logs/` folder.
+Notes:
+
+- `start_app.bat` uses `waitress-serve --listen=127.0.0.1:5050 --threads=12 wsgi:app`
+- `start_tunnel.bat` uses `cloudflared` and automatically prefers `%USERPROFILE%\.cloudflared\config.yml` when present
+- `watchdog_services.ps1` checks the `BrownberriesApp` and `cloudflared` services and starts them if they are stopped
+- All scripts write logs into the repo `logs/` folder

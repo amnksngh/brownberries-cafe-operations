@@ -2,6 +2,9 @@
 __pycache__/
 *.pyc
 instance/
+instance/uploads/
+instance/brownberries.db
+instance/deployment_config.json
 instance_windows_backup/
 *.db
 logs/

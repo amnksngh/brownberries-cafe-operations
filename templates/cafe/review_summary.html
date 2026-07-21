@@ -1,0 +1,488 @@
+{% extends "base.html" %}
+{% block content %}
+<style>
+  .review-summary-shell {
+    display: grid;
+    gap: 1rem;
+  }
+  .review-kpi-grid,
+  .review-action-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: 0.9rem;
+  }
+  .review-kpi,
+  .review-action-card {
+    padding: 1rem 1.05rem;
+    border: 1px solid rgba(111, 74, 53, 0.14);
+    border-radius: 14px;
+    background: linear-gradient(180deg, rgba(255,255,255,0.98), rgba(247,241,236,0.98));
+  }
+  .review-kpi strong,
+  .review-action-card strong {
+    display: block;
+    color: #7a5a48;
+    font-size: 0.84rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    margin-bottom: 0.35rem;
+  }
+  .review-kpi span {
+    font-size: 1.8rem;
+    font-weight: 700;
+    color: #2f1e16;
+  }
+  .review-action-card h4 {
+    margin: 0 0 0.28rem 0;
+    font-size: 1.02rem;
+    color: #2f1e16;
+  }
+  .review-action-card p {
+    margin: 0;
+  }
+  .review-two-col {
+    display: grid;
+    grid-template-columns: 1.2fr 1fr;
+    gap: 1rem;
+  }
+  .review-table-wrap {
+    overflow-x: auto;
+  }
+  .review-muted {
+    color: #7a5a48;
+  }
+  .review-pill-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.55rem;
+  }
+  .review-pill {
+    display: inline-flex;
+    align-items: center;
+    padding: 0.34rem 0.62rem;
+    border-radius: 999px;
+    border: 1px solid rgba(111, 74, 53, 0.12);
+    background: #fff8f2;
+    color: #6a4c3b;
+    font-size: 0.82rem;
+    font-weight: 600;
+  }
+  .review-read-btn {
+    min-width: 90px;
+  }
+  .review-summary-text {
+    max-width: 460px;
+    white-space: normal;
+  }
+  .review-modal {
+    position: fixed;
+    inset: 0;
+    z-index: 1200;
+    background: rgba(28, 17, 11, 0.48);
+    display: grid;
+    place-items: center;
+    padding: 1rem;
+  }
+  .review-modal.hidden {
+    display: none;
+  }
+  .review-dialog {
+    width: min(760px, 100%);
+    max-height: min(88vh, 920px);
+    overflow: auto;
+    background: #fffdfa;
+    border-radius: 18px;
+    border: 1px solid rgba(111, 74, 53, 0.14);
+    box-shadow: 0 26px 60px rgba(34, 19, 11, 0.18);
+    padding: 1rem 1rem 1.1rem;
+    display: grid;
+    gap: 0.9rem;
+  }
+  .review-dialog-head {
+    display: flex;
+    justify-content: space-between;
+    gap: 1rem;
+    align-items: flex-start;
+  }
+  .review-detail-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.8rem;
+  }
+  .review-detail-card {
+    border: 1px solid rgba(111, 74, 53, 0.12);
+    border-radius: 12px;
+    padding: 0.85rem;
+    background: #fff;
+  }
+  .review-detail-card strong {
+    display: block;
+    margin-bottom: 0.28rem;
+    color: #7a5a48;
+    font-size: 0.8rem;
+    text-transform: uppercase;
+  }
+  .review-item-list {
+    display: grid;
+    gap: 0.5rem;
+  }
+  .review-item-row {
+    display: flex;
+    justify-content: space-between;
+    gap: 0.8rem;
+    border: 1px solid rgba(111, 74, 53, 0.1);
+    border-radius: 12px;
+    padding: 0.7rem 0.8rem;
+    background: #fff;
+  }
+  .review-item-row small {
+    display: block;
+    margin-top: 0.12rem;
+    color: #7a5a48;
+  }
+  @media (max-width: 920px) {
+    .review-two-col,
+    .review-detail-grid {
+      grid-template-columns: 1fr;
+    }
+  }
+</style>
+
+<div class="review-summary-shell">
+  <section class="panel">
+    <div class="section-heading">
+      <div>
+        <p class="eyebrow">Reviews</p>
+        <h2>Guest Feedback Dashboard</h2>
+      </div>
+      <div style="display:flex; gap:0.65rem; flex-wrap:wrap;">
+        <a class="button-link" href="{{ export_url }}">Download Excel</a>
+      </div>
+    </div>
+    <form method="get" class="grid grid-4">
+      <label>Start Date
+        <input type="date" name="start_date" value="{{ start_date }}" />
+      </label>
+      <label>End Date
+        <input type="date" name="end_date" value="{{ end_date }}" />
+      </label>
+      <label>Table
+        <select name="table_id">
+          <option value="">All Tables</option>
+          {% for table in table_options %}
+          <option value="{{ table.id }}" {% if selected_table_id == table.id %}selected{% endif %}>{{ table.name }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <div style="display:flex; align-items:end; gap:0.65rem;">
+        <button type="submit">Apply</button>
+        <a class="button-link" href="{{ url_for('cafe.review_summary') }}">Reset</a>
+      </div>
+    </form>
+  </section>
+
+  <section class="review-kpi-grid">
+    <article class="review-kpi"><strong>Total Feedback</strong><span>{{ total_feedback_count }}</span></article>
+    <article class="review-kpi"><strong>Average Service</strong><span>{{ "%.2f"|format(average_service_rating) }}</span></article>
+    <article class="review-kpi"><strong>Average Item Rating</strong><span>{{ "%.2f"|format(average_item_rating) }}</span></article>
+    <article class="review-kpi"><strong>Positive Visits</strong><span>{{ "%.1f"|format(positive_rate) }}%</span></article>
+    <article class="review-kpi"><strong>Low Service Alerts</strong><span>{{ low_service_count }}</span></article>
+    <article class="review-kpi"><strong>Item Issue Alerts</strong><span>{{ item_issue_count }}</span></article>
+    <article class="review-kpi"><strong>Reviews With Comments</strong><span>{{ reviews_with_comments }}</span></article>
+    <article class="review-kpi"><strong>Comment Rate</strong><span>{{ "%.1f"|format(comments_rate) }}%</span></article>
+  </section>
+
+  <section class="review-action-grid">
+    <article class="review-action-card">
+      <strong>Needs Attention</strong>
+      {% if top_issue_item %}
+      <h4>{{ top_issue_item.name }}</h4>
+      <p>{{ top_issue_item.low_rating_count }} low ratings out of {{ top_issue_item.count }} reviews. Avg {{ "%.2f"|format(top_issue_item.average_rating) }}.</p>
+      {% else %}
+      <p>No item complaints in this range.</p>
+      {% endif %}
+    </article>
+    <article class="review-action-card">
+      <strong>Table To Check</strong>
+      {% if attention_table %}
+      <h4>{{ attention_table.name }}</h4>
+      <p>Service avg {{ "%.2f"|format(attention_table.service_average) }}, with {{ attention_table.low_service_count }} low-service alerts.</p>
+      {% else %}
+      <p>No table-specific concerns yet.</p>
+      {% endif %}
+    </article>
+    <article class="review-action-card">
+      <strong>Best Performing Table</strong>
+      {% if best_table %}
+      <h4>{{ best_table.name }}</h4>
+      <p>Service avg {{ "%.2f"|format(best_table.service_average) }} and item avg {{ "%.2f"|format(best_table.item_average) }} across {{ best_table.count }} reviews.</p>
+      {% else %}
+      <p>No best table yet.</p>
+      {% endif %}
+    </article>
+    <article class="review-action-card">
+      <strong>Feedback Sources</strong>
+      <div class="review-pill-row">
+        {% for row in source_rows %}
+        <span class="review-pill">{{ row.source }}: {{ row.count }}</span>
+        {% else %}
+        <span class="review-pill">No submissions</span>
+        {% endfor %}
+      </div>
+    </article>
+  </section>
+
+  <section class="panel">
+    <div class="section-heading">
+      <div>
+        <p class="eyebrow">Accountability</p>
+        <h3>Chef Performance</h3>
+      </div>
+    </div>
+    <div class="review-table-wrap">
+      <table>
+        <tr><th>Chef</th><th>Assigned Items</th><th>Paid Sales</th><th>Qty Sold</th><th>Review Count</th><th>Avg Rating</th><th>Complaints</th></tr>
+        {% for row in chef_rows %}
+        <tr>
+          <td>{{ row.chef_name }}</td>
+          <td>{{ row.assigned_items }}</td>
+          <td>₹{{ "%.2f"|format(row.sales_total) }}</td>
+          <td>{{ row.sold_qty }}</td>
+          <td>{{ row.review_count }}</td>
+          <td>{% if row.review_count %}{{ "%.2f"|format(row.average_rating) }}{% else %}-{% endif %}</td>
+          <td>{{ row.complaint_count }}</td>
+        </tr>
+        {% else %}
+        <tr><td colspan="7">No chef accountability data available yet.</td></tr>
+        {% endfor %}
+      </table>
+    </div>
+  </section>
+
+  <section class="review-two-col">
+    <section class="panel">
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">Attention</p>
+          <h3>Items Needing Attention</h3>
+        </div>
+      </div>
+      <div class="review-table-wrap">
+        <table>
+          <tr><th>Item</th><th>Avg Rating</th><th>Reviews</th><th>Low Ratings</th><th>Parcel</th></tr>
+          {% for row in attention_item_rows[:20] %}
+          <tr>
+            <td>{{ row.name }}</td>
+            <td>{{ "%.2f"|format(row.average_rating) }}</td>
+            <td>{{ row.count }}</td>
+            <td>{{ row.low_rating_count }}</td>
+            <td>{{ row.parcel_count }}</td>
+          </tr>
+          {% else %}
+          <tr><td colspan="5">No item complaints yet in this range.</td></tr>
+          {% endfor %}
+        </table>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">Wins</p>
+          <h3>Top Rated Items</h3>
+        </div>
+      </div>
+      <div class="review-table-wrap">
+        <table>
+          <tr><th>Item</th><th>Avg Rating</th><th>Reviews</th><th>Parcel</th></tr>
+          {% for row in item_rows[:20] %}
+          <tr>
+            <td>{{ row.name }}</td>
+            <td>{{ "%.2f"|format(row.average_rating) }}</td>
+            <td>{{ row.count }}</td>
+            <td>{{ row.parcel_count }}</td>
+          </tr>
+          {% else %}
+          <tr><td colspan="4">No item reviews yet in this range.</td></tr>
+          {% endfor %}
+        </table>
+      </div>
+    </section>
+  </section>
+
+  <section class="review-two-col">
+    <section class="panel">
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">Tables</p>
+          <h3>Table-wise Feedback</h3>
+        </div>
+      </div>
+      <div class="review-table-wrap">
+        <table>
+          <tr><th>Table</th><th>Feedbacks</th><th>Service</th><th>Items</th><th>Low Service</th><th>Item Issues</th></tr>
+          {% for row in table_rows %}
+          <tr>
+            <td>{{ row.name }}</td>
+            <td>{{ row.count }}</td>
+            <td>{{ "%.2f"|format(row.service_average) }}</td>
+            <td>{{ "%.2f"|format(row.item_average) }}</td>
+            <td>{{ row.low_service_count }}</td>
+            <td>{{ row.item_issue_count }}</td>
+          </tr>
+          {% else %}
+          <tr><td colspan="6">No table feedback available.</td></tr>
+          {% endfor %}
+        </table>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">Days</p>
+          <h3>Day-wise Summary</h3>
+        </div>
+      </div>
+      <div class="review-table-wrap">
+        <table>
+          <tr><th>Day</th><th>Feedbacks</th><th>Service</th><th>Items</th></tr>
+          {% for row in day_rows %}
+          <tr>
+            <td>{{ row.day }}</td>
+            <td>{{ row.count }}</td>
+            <td>{{ "%.2f"|format(row.service_average) }}</td>
+            <td>{{ "%.2f"|format(row.item_average) }}</td>
+          </tr>
+          {% else %}
+          <tr><td colspan="4">No day-wise feedback yet.</td></tr>
+          {% endfor %}
+        </table>
+      </div>
+    </section>
+  </section>
+
+  <section class="panel">
+    <div class="section-heading">
+      <div>
+        <p class="eyebrow">Reviews</p>
+        <h3>All Filtered Reviews</h3>
+      </div>
+    </div>
+    <div class="review-table-wrap">
+      <table>
+        <tr><th>When</th><th>Table</th><th>Service</th><th>Items</th><th>Source</th><th>Comment</th><th>Action</th></tr>
+        {% for row in all_reviews %}
+        <tr>
+          <td>{{ row.submitted_at }}</td>
+          <td>{{ row.table }}</td>
+          <td>{{ row.service_rating }}/5</td>
+          <td>{{ "%.2f"|format(row.item_average) }}</td>
+          <td>{{ row.source }}</td>
+          <td class="review-summary-text">{{ row.summary_excerpt or row.items_preview or "-" }}</td>
+          <td><button type="button" class="review-read-btn" data-review-id="{{ row.id }}">Read Review</button></td>
+        </tr>
+        {% else %}
+        <tr><td colspan="7">No reviews submitted yet.</td></tr>
+        {% endfor %}
+      </table>
+    </div>
+  </section>
+</div>
+
+<div id="review-detail-modal" class="review-modal hidden">
+  <div class="review-dialog">
+    <div class="review-dialog-head">
+      <div>
+        <p class="eyebrow">Review Detail</p>
+        <h3 id="review-detail-title">Review</h3>
+      </div>
+      <button type="button" id="review-detail-close">Close</button>
+    </div>
+    <div class="review-detail-grid">
+      <div class="review-detail-card"><strong>Submitted</strong><span id="review-detail-submitted">-</span></div>
+      <div class="review-detail-card"><strong>Source</strong><span id="review-detail-source">-</span></div>
+      <div class="review-detail-card"><strong>Service Rating</strong><span id="review-detail-service">-</span></div>
+      <div class="review-detail-card"><strong>Item Average</strong><span id="review-detail-items-average">-</span></div>
+      <div class="review-detail-card"><strong>Submitted By</strong><span id="review-detail-submitted-by">-</span></div>
+      <div class="review-detail-card"><strong>Orders</strong><span id="review-detail-orders">-</span></div>
+    </div>
+    <div class="review-detail-card">
+      <strong>Full Summary</strong>
+      <p id="review-detail-summary" class="review-muted">-</p>
+    </div>
+    <div class="review-detail-card">
+      <strong>Rated Items</strong>
+      <div id="review-detail-items" class="review-item-list"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+  const reviewModal = document.getElementById("review-detail-modal");
+  const reviewCloseBtn = document.getElementById("review-detail-close");
+  const reviewTitle = document.getElementById("review-detail-title");
+  const reviewSubmitted = document.getElementById("review-detail-submitted");
+  const reviewSource = document.getElementById("review-detail-source");
+  const reviewService = document.getElementById("review-detail-service");
+  const reviewItemsAverage = document.getElementById("review-detail-items-average");
+  const reviewSubmittedBy = document.getElementById("review-detail-submitted-by");
+  const reviewOrders = document.getElementById("review-detail-orders");
+  const reviewSummary = document.getElementById("review-detail-summary");
+  const reviewItems = document.getElementById("review-detail-items");
+
+  function starLabel(value) {
+    const rating = Math.max(0, Number(value || 0));
+    return `${"★".repeat(rating)}${"☆".repeat(Math.max(0, 5 - rating))} (${rating}/5)`;
+  }
+
+  function escapeHtml(value) {
+    return String(value ?? "")
+      .replaceAll("&", "&amp;")
+      .replaceAll("<", "&lt;")
+      .replaceAll(">", "&gt;")
+      .replaceAll('"', "&quot;")
+      .replaceAll("'", "&#39;");
+  }
+
+  function closeReviewModal() {
+    reviewModal?.classList.add("hidden");
+  }
+
+  async function openReviewModal(reviewId) {
+    const res = await fetch(`{{ url_for('cafe.review_summary_detail', feedback_id=0) }}`.replace(/0$/, String(reviewId)));
+    const data = await res.json();
+    if (!data?.ok || !data.review) {
+      alert(data?.error || "Could not load the review right now.");
+      return;
+    }
+    const review = data.review;
+    reviewTitle.textContent = `${review.table} • Review #${review.id}`;
+    reviewSubmitted.textContent = review.submitted_at || "-";
+    reviewSource.textContent = review.source || "-";
+    reviewService.textContent = starLabel(review.service_rating);
+    reviewItemsAverage.textContent = review.item_average ? `${Number(review.item_average).toFixed(2)}/5` : "-";
+    reviewSubmittedBy.textContent = review.submitted_by_name || "-";
+    reviewOrders.textContent = review.order_ids?.length ? review.order_ids.join(", ") : "-";
+    reviewSummary.textContent = review.summary_text || "No written summary was submitted.";
+    reviewItems.innerHTML = (review.items || []).map((item) => `
+      <div class="review-item-row">
+        <div>
+          <strong style="display:block; margin:0; color:#2f1e16; text-transform:none; font-size:1rem;">${escapeHtml(item.name)}</strong>
+          <small>${escapeHtml(item.size_label || "Standard")}${item.is_parcel ? " • Parcel" : ""}</small>
+        </div>
+        <div>${starLabel(item.rating)}</div>
+      </div>
+    `).join("") || `<p class="review-muted">No item ratings recorded.</p>`;
+    reviewModal.classList.remove("hidden");
+  }
+
+  document.querySelectorAll(".review-read-btn").forEach((btn) => {
+    btn.addEventListener("click", () => openReviewModal(btn.dataset.reviewId));
+  });
+  reviewCloseBtn?.addEventListener("click", closeReviewModal);
+  reviewModal?.addEventListener("click", (event) => {
+    if (event.target === reviewModal) closeReviewModal();
+  });
+</script>
+{% endblock %}

@@ -31,6 +31,8 @@ from .auth_helpers import login_required, roles_required, user_has_any_role, use
 from .deploy_config import load_deployment_config, save_deployment_config
 from .extensions import db, socketio
 from .models import (
+    CafeFeedback,
+    CafeFeedbackItem,
     CafeOrder,
     CafeOrderItem,
     CafeTable,
@@ -135,6 +137,17 @@ def _all_workstations(include_inactive: bool = False):
     if not include_inactive:
         query = query.filter_by(active=True)
     return query.order_by(Workstation.display_order.asc(), Workstation.name.asc()).all()
+
+
+def _chef_options(include_inactive: bool = False) -> list[User]:
+    users = User.query.order_by(User.full_name.asc(), User.email.asc()).all()
+    result: list[User] = []
+    for user in users:
+        if not include_inactive and not user.active:
+            continue
+        if user.has_role("chef"):
+            result.append(user)
+    return result
 
 
 def _workstation_slug_set(include_inactive: bool = False) -> set[str]:
@@ -324,6 +337,14 @@ def _google_review_link() -> str:
     return "https://g.page/r/CZclLI_Be-puEAI/review"
 
 
+def _clamp_star_rating(value, default: int = 3) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        parsed = default
+    return max(1, min(5, parsed))
+
+
 def _staff_call_cooldown_remaining_seconds(table: CafeTable | None) -> int:
     if not table or not table.last_staff_call_at:
         return 0
@@ -379,6 +400,148 @@ def _receipt_orders_for_settlement(order: CafeOrder) -> list[CafeOrder]:
         query = query.filter(CafeOrder.id == order.id)
     related = query.order_by(CafeOrder.created_at.asc(), CafeOrder.id.asc()).all()
     return related or [order]
+
+
+def _feedback_line_items_for_orders(receipt_orders: list[CafeOrder]) -> list[dict]:
+    grouped = {}
+    for order in receipt_orders:
+        for oi in order.order_items:
+            if (oi.approval_status or "pending") == "rejected":
+                continue
+            key = (
+                int(oi.menu_item_id or 0),
+                (oi.size_label or "").strip(),
+                1 if oi.is_parcel else 0,
+            )
+            entry = grouped.get(key)
+            if not entry:
+                entry = {
+                    "menu_item_id": oi.menu_item_id,
+                    "order_item_id": oi.id,
+                    "item_name": (oi.menu_item.name if oi.menu_item else "Item"),
+                    "size_label": (oi.size_label or "").strip(),
+                    "is_parcel": bool(oi.is_parcel),
+                    "quantity": 0,
+                }
+                grouped[key] = entry
+            entry["quantity"] += int(oi.quantity or 0)
+    rows = list(grouped.values())
+    rows.sort(key=lambda row: (row["item_name"].lower(), row["size_label"].lower(), row["is_parcel"]))
+    for index, row in enumerate(rows, start=1):
+        extras = []
+        if row["size_label"]:
+            extras.append(row["size_label"])
+        if row["is_parcel"]:
+            extras.append("Parcel")
+        row["display_name"] = row["item_name"] + (f" ({' | '.join(extras)})" if extras else "")
+        row["form_key"] = f"item_{index}"
+    return rows
+
+
+def _feedback_for_settlement(order: CafeOrder | None) -> CafeFeedback | None:
+    if not order:
+        return None
+    receipt_orders = _receipt_orders_for_settlement(order)
+    primary_order = receipt_orders[0]
+    return (
+        CafeFeedback.query.options(joinedload(CafeFeedback.items), joinedload(CafeFeedback.table))
+        .filter(CafeFeedback.primary_order_id == primary_order.id)
+        .order_by(CafeFeedback.submitted_at.desc().nullslast(), CafeFeedback.id.desc())
+        .first()
+    )
+
+
+def _latest_paid_order_for_table(table_id: int | None) -> CafeOrder | None:
+    if not table_id:
+        return None
+    today_start, today_end = _current_ist_day_bounds()
+    return (
+        CafeOrder.query.options(joinedload(CafeOrder.table), joinedload(CafeOrder.order_items).joinedload(CafeOrderItem.menu_item))
+        .filter(
+            CafeOrder.table_id == table_id,
+            CafeOrder.status == "paid",
+            CafeOrder.paid_at.is_not(None),
+            CafeOrder.paid_at >= today_start,
+            CafeOrder.paid_at < today_end,
+        )
+        .order_by(CafeOrder.paid_at.desc(), CafeOrder.id.desc())
+        .first()
+    )
+
+
+def _feedback_prompt_payload(order: CafeOrder | None) -> dict | None:
+    if not order:
+        return None
+    receipt_orders = _receipt_orders_for_settlement(order)
+    primary_order = receipt_orders[0]
+    feedback = _feedback_for_settlement(primary_order)
+    return {
+        "primary_order_id": primary_order.id,
+        "table_name": primary_order.table.name if primary_order.table else "-",
+        "settlement_total": round(
+            sum(float(settled_order.total_amount or 0) for settled_order in receipt_orders),
+            2,
+        ),
+        "paid_at": _format_ist(primary_order.paid_at, "%d %b %Y, %I:%M %p") if primary_order.paid_at else "",
+        "feedback_exists": bool(feedback),
+        "feedback_source": (feedback.source if feedback else ""),
+    }
+
+
+def _upsert_feedback_for_settlement(
+    order: CafeOrder,
+    *,
+    source: str,
+    item_rows: list[dict],
+    default_rating: int,
+    submitted_by_user: User | None = None,
+    submitted_by_name: str = "",
+) -> tuple[CafeFeedback, bool]:
+    receipt_orders = _receipt_orders_for_settlement(order)
+    primary_order = receipt_orders[0]
+    feedback = _feedback_for_settlement(primary_order)
+    created = False
+    if not feedback:
+        feedback = CafeFeedback(
+            table_id=primary_order.table_id,
+            primary_order_id=primary_order.id,
+        )
+        db.session.add(feedback)
+        created = True
+    feedback.order_ids_json = json.dumps([int(settled_order.id) for settled_order in receipt_orders])
+    feedback.source = source
+    feedback.service_rating = _clamp_star_rating(request.form.get("service_rating"), default_rating)
+    feedback.summary_text = (request.form.get("summary_text") or "").strip()
+    feedback.submitted_by_user_id = submitted_by_user.id if submitted_by_user else None
+    feedback.submitted_by_name = (
+        submitted_by_name.strip()
+        or (submitted_by_user.full_name if submitted_by_user else "")
+        or feedback.submitted_by_name
+    )
+    feedback.submitted_at = datetime.utcnow()
+    existing_items = {(item.menu_item_id, item.size_label or "", bool(item.is_parcel)): item for item in feedback.items}
+    seen_keys = set()
+    for row in item_rows:
+        key = (row["menu_item_id"], row["size_label"] or "", bool(row["is_parcel"]))
+        seen_keys.add(key)
+        feedback_item = existing_items.get(key)
+        if not feedback_item:
+            feedback_item = CafeFeedbackItem(
+                feedback=feedback,
+                menu_item_id=row["menu_item_id"],
+                order_item_id=row["order_item_id"],
+                item_name=row["item_name"],
+                size_label=row["size_label"] or None,
+                is_parcel=bool(row["is_parcel"]),
+            )
+            db.session.add(feedback_item)
+        feedback_item.item_name = row["item_name"]
+        feedback_item.order_item_id = row["order_item_id"]
+        feedback_item.rating = _clamp_star_rating(request.form.get(f'item_rating_{row["form_key"]}'), default_rating)
+    for key, stale_item in existing_items.items():
+        if key not in seen_keys:
+            db.session.delete(stale_item)
+    return feedback, created
 
 
 def _has_valid_kiosk_access(token: str | None) -> bool:
@@ -543,6 +706,7 @@ def _menu_form_state_from_request():
         "menu_type_id": form.get("menu_type_id", "").strip(),
         "name": form.get("name", "").strip(),
         "prep_station": _normalize_prep_station(form.get("prep_station")),
+        "chef_user_id": form.get("chef_user_id", "").strip(),
         "image_url": form.get("image_url", "").strip(),
         "short_description": form.get("short_description", "").strip(),
         "description": form.get("description", "").strip(),
@@ -560,6 +724,7 @@ def _default_menu_form_state():
         "menu_type_id": "",
         "name": "",
         "prep_station": "",
+        "chef_user_id": "",
         "image_url": "",
         "short_description": "",
         "description": "",
@@ -577,7 +742,9 @@ def _render_menu_page(active_menu_section: str = "catalog", add_form_state: dict
     deleted_items = MenuItem.query.filter(MenuItem.is_deleted.is_(True)).order_by(MenuItem.updated_at.desc(), MenuItem.name.asc()).all()
     all_categories = MenuCategory.query.order_by(MenuCategory.name).all()
     workstation_options = _all_workstations(include_inactive=True)
+    chef_options = _chef_options()
     workstation_name_map = {station.slug: station.name for station in workstation_options}
+    chef_name_map = {chef.id: chef.full_name for chef in chef_options}
     item_category_map = {}
     item_size_map = {}
     for item in items + deleted_items:
@@ -620,6 +787,8 @@ def _render_menu_page(active_menu_section: str = "catalog", add_form_state: dict
         menu_types=MenuType.query.order_by(MenuType.name).all(),
         workstation_options=workstation_options,
         workstation_name_map=workstation_name_map,
+        chef_options=chef_options,
+        chef_name_map=chef_name_map,
         item_category_map=item_category_map,
         item_size_map=item_size_map,
         active_menu_section=active_menu_section,
@@ -641,6 +810,16 @@ def _safe_int(value, default=0):
         return int(value)
     except (TypeError, ValueError):
         return int(default)
+
+
+def _parse_time_only(raw_value: str | None):
+    value = (raw_value or "").strip()
+    if not value:
+        return None
+    try:
+        return datetime.strptime(value, "%H:%M").time()
+    except ValueError:
+        return None
 
 
 def _parse_cutoff_time(raw_value: str | None):
@@ -2000,6 +2179,16 @@ def menu():
         if not category_ids:
             flash("Please select at least one category.", "error")
             return _render_menu_page("add_item", form_state)
+        chef_user = None
+        chef_user_id_raw = request.form.get("chef_user_id", "").strip()
+        if chef_user_id_raw:
+            if not chef_user_id_raw.isdigit():
+                flash("Please select a valid chef responsibility.", "error")
+                return _render_menu_page("add_item", form_state)
+            chef_user = User.query.get(int(chef_user_id_raw))
+            if not chef_user or not chef_user.active or not chef_user.has_role("chef"):
+                flash("Please select a valid chef responsibility.", "error")
+                return _render_menu_page("add_item", form_state)
         name = request.form.get("name", "").strip()
         if not name:
             flash("Please enter the item name.", "error")
@@ -2029,6 +2218,7 @@ def menu():
             has_size_variants=True if request.form.get("has_size_variants") else False,
             size_pricing_json=None,
             prep_station=_normalize_prep_station(request.form.get("prep_station")),
+            chef_user_id=chef_user.id if chef_user else None,
             available=True if request.form.get("available") else False,
             is_deleted=False,
         )
@@ -2366,6 +2556,20 @@ def update_menu_item(item_id):
 
     if "prep_station" in request.form:
         item.prep_station = _normalize_prep_station(request.form.get("prep_station"))
+    if "chef_user_id" in request.form:
+        chef_user_id_raw = request.form.get("chef_user_id", "").strip()
+        if not chef_user_id_raw:
+            item.chef_user_id = None
+        elif chef_user_id_raw.isdigit():
+            chef_user = User.query.get(int(chef_user_id_raw))
+            if chef_user and chef_user.active and chef_user.has_role("chef"):
+                item.chef_user_id = chef_user.id
+            else:
+                flash("Please select a valid chef responsibility.", "error")
+                return redirect(url_for("cafe.menu", section="items"))
+        else:
+            flash("Please select a valid chef responsibility.", "error")
+            return redirect(url_for("cafe.menu", section="items"))
 
     item.available = True if request.form.get("available") else False
     db.session.commit()
@@ -2687,6 +2891,7 @@ def _clear_table_orders_impl(table_id: int, next_url: str = ""):
         socketio.emit("order_updated", payload, namespace="/kitchen")
         socketio.emit("order_updated", payload, namespace="/table")
         count += 1
+    table.service_charge_opt_out_requested = False
     db.session.commit()
     sms_message = ""
     if request.form.get("send_receipt_sms"):
@@ -2876,6 +3081,8 @@ def _render_cashier_view(kiosk_mode: bool = False, access_key: str = ""):
     table_settle_total = 0
     payable_order_id_map = {}
     pending_order_item_map = {}
+    latest_settled_order = None
+    latest_settled_feedback = None
     if selected_table:
         unpaid_orders = (
             CafeOrder.query.options(
@@ -2902,6 +3109,8 @@ def _render_cashier_view(kiosk_mode: bool = False, access_key: str = ""):
             sum(float(o.total_amount or 0) for o in unpaid_orders if payable_order_id_map.get(o.id)),
             2,
         )
+        latest_settled_order = _latest_paid_order_for_table(selected_table.id)
+        latest_settled_feedback = _feedback_for_settlement(latest_settled_order)
     running_order_time_map = {
         o.id: _format_ist(o.created_at, "%I:%M:%S %p")
         for o in unpaid_orders
@@ -2976,6 +3185,8 @@ def _render_cashier_view(kiosk_mode: bool = False, access_key: str = ""):
         running_order_time_map=running_order_time_map,
         table_total=table_total,
         table_settle_total=table_settle_total,
+        latest_settled_order=latest_settled_order,
+        latest_settled_feedback=latest_settled_feedback,
         service_charge_rate=tax_settings["service_charge_rate"],
         total_sale_today=round(float(total_sale_today), 2),
         all_orders=all_orders,
@@ -3080,7 +3291,114 @@ def public_receipt(order_id):
         paid_at_display=_format_ist(primary_order.paid_at, "%d %b %Y, %I:%M %p") if primary_order.paid_at else "",
         receipt_location=_receipt_location_text(),
         review_link=_google_review_link(),
+        feedback_link=url_for("cafe.public_settlement_feedback", order_id=primary_order.id),
     )
+
+
+def _render_feedback_form(
+    order: CafeOrder,
+    *,
+    source: str,
+    kiosk_mode: bool = False,
+    kiosk_access_key: str = "",
+):
+    receipt_orders = _receipt_orders_for_settlement(order)
+    primary_order = receipt_orders[0]
+    feedback = _feedback_for_settlement(primary_order)
+    item_rows = _feedback_line_items_for_orders(receipt_orders)
+    existing_item_map = {}
+    if feedback:
+        existing_item_map = {
+            (item.menu_item_id, item.size_label or "", bool(item.is_parcel)): item.rating
+            for item in feedback.items
+        }
+    default_rating = 3 if source == "offline" else 5
+    for row in item_rows:
+        row["current_rating"] = existing_item_map.get(
+            (row["menu_item_id"], row["size_label"] or "", bool(row["is_parcel"])),
+            default_rating,
+        )
+    feedback_locked = bool(source == "offline" and feedback and feedback.source == "online")
+    if request.method == "POST":
+        if feedback_locked:
+            flash("Customer feedback is already submitted for this settlement.", "error")
+        else:
+            saved_feedback, _ = _upsert_feedback_for_settlement(
+                primary_order,
+                source=source,
+                item_rows=item_rows,
+                default_rating=default_rating,
+                submitted_by_user=g.current_user if source == "offline" else None,
+                submitted_by_name=("Guest Feedback" if source == "online" else (g.current_user.full_name if g.current_user else "Cashier Feedback")),
+            )
+            db.session.commit()
+            flash("Feedback saved. Thank you.", "success")
+            feedback = saved_feedback
+            feedback_locked = bool(source == "offline" and feedback.source == "online")
+            existing_item_map = {
+                (item.menu_item_id, item.size_label or "", bool(item.is_parcel)): item.rating
+                for item in feedback.items
+            }
+            for row in item_rows:
+                row["current_rating"] = existing_item_map.get(
+                    (row["menu_item_id"], row["size_label"] or "", bool(row["is_parcel"])),
+                    default_rating,
+                )
+    pickup_numbers = [f"#{_format_pickup_number(settled_order)}" for settled_order in receipt_orders]
+    settlement_total = round(sum(float(settled_order.total_amount or 0) for settled_order in receipt_orders), 2)
+    back_url = (request.args.get("next") or "").strip()
+    if not back_url:
+        if source == "online":
+            back_url = url_for("cafe.public_receipt", order_id=primary_order.id)
+        elif kiosk_mode:
+            back_url = url_for("cafe.reception_kiosk", access_key=kiosk_access_key, table_id=primary_order.table_id, tab="running")
+        else:
+            back_url = url_for("cafe.cashier", table_id=primary_order.table_id, tab="running")
+    return render_template(
+        "cafe/feedback_form.html",
+        order=primary_order,
+        receipt_orders=receipt_orders,
+        pickup_numbers=pickup_numbers,
+        settlement_total=settlement_total,
+        paid_at_display=_format_ist(primary_order.paid_at, "%d %b %Y, %I:%M %p") if primary_order.paid_at else "",
+        item_rows=item_rows,
+        feedback=feedback,
+        existing_item_map=existing_item_map,
+        default_rating=default_rating,
+        feedback_locked=feedback_locked,
+        source=source,
+        back_url=back_url,
+        review_link=_google_review_link(),
+        receipt_location=_receipt_location_text(),
+        hide_staff_nav=(source == "online" or kiosk_mode),
+        topbar_home_url=(
+            url_for("main.public_home")
+            if source == "online"
+            else (url_for("cafe.reception_kiosk_orders", access_key=kiosk_access_key) if kiosk_mode else url_for("main.dashboard"))
+        ),
+    )
+
+
+@bp.route("/receipt/<int:order_id>/feedback", methods=["GET", "POST"])
+def public_settlement_feedback(order_id):
+    order = CafeOrder.query.options(
+        joinedload(CafeOrder.table),
+        joinedload(CafeOrder.order_items).joinedload(CafeOrderItem.menu_item),
+    ).get_or_404(order_id)
+    if order.status != "paid":
+        flash("Feedback is available after settlement.", "error")
+        return redirect(url_for("main.table_qr_page", slug=order.table.qr_slug) if order.table else url_for("main.public_home"))
+    return _render_feedback_form(order, source="online")
+
+
+@bp.route("/orders/<int:order_id>/feedback", methods=["GET", "POST"])
+@roles_required("admin", "manager", "cashier")
+def settlement_feedback(order_id):
+    order = CafeOrder.query.options(
+        joinedload(CafeOrder.table),
+        joinedload(CafeOrder.order_items).joinedload(CafeOrderItem.menu_item),
+    ).get_or_404(order_id)
+    return _render_feedback_form(order, source="offline")
 
 
 @bp.route("/orders/<int:order_id>/send-receipt-sms", methods=["POST"])
@@ -3300,6 +3618,17 @@ def reception_kiosk_send_order_receipt_sms(access_key, order_id):
     if not _has_valid_reception_kiosk_access(access_key):
         return jsonify({"ok": False, "message": "Invalid reception kiosk access key."}), 403
     return _send_order_receipt_sms_impl(order_id)
+
+
+@bp.route("/reception/<string:access_key>/orders/<int:order_id>/feedback", methods=["GET", "POST"])
+def reception_kiosk_settlement_feedback(access_key, order_id):
+    if not _has_valid_reception_kiosk_access(access_key):
+        return Response("Invalid reception kiosk access key.", status=403)
+    order = CafeOrder.query.options(
+        joinedload(CafeOrder.table),
+        joinedload(CafeOrder.order_items).joinedload(CafeOrderItem.menu_item),
+    ).get_or_404(order_id)
+    return _render_feedback_form(order, source="offline", kiosk_mode=True, kiosk_access_key=access_key)
 
 
 def _render_kitchen_display(station: str = "kitchen", kiosk_mode: bool = False, access_key: str = ""):
@@ -4589,6 +4918,482 @@ def export_stats():
     )
 
 
+@bp.route("/reviews")
+@roles_required("admin")
+def review_summary():
+    start_date = request.args.get("start_date", "").strip()
+    end_date = request.args.get("end_date", "").strip()
+    table_filter = request.args.get("table_id", type=int)
+    today_ist = datetime.now(IST_TZ).date()
+    default_start = today_ist - timedelta(days=29)
+    start_value = _parse_date_only(start_date) or default_start
+    end_value = _parse_date_only(end_date) or today_ist
+    if end_value < start_value:
+        start_value, end_value = end_value, start_value
+    payload = _build_review_summary_payload(start_value, end_value, table_filter)
+    return render_template(
+        "cafe/review_summary.html",
+        table_options=CafeTable.query.filter_by(active=True).order_by(CafeTable.name.asc()).all(),
+        selected_table_id=table_filter,
+        start_date=start_value.isoformat(),
+        end_date=end_value.isoformat(),
+        export_url=url_for(
+            "cafe.review_summary_export",
+            start_date=start_value.isoformat(),
+            end_date=end_value.isoformat(),
+            table_id=table_filter,
+        ),
+        **payload,
+    )
+
+
+def _build_review_summary_payload(start_value: date, end_value: date, table_filter: int | None):
+    if end_value < start_value:
+        start_value, end_value = end_value, start_value
+    start_dt = _utc_naive_from_ist(datetime.combine(start_value, time.min))
+    end_dt = _utc_naive_from_ist(datetime.combine(end_value + timedelta(days=1), time.min))
+    query = CafeFeedback.query.options(
+        joinedload(CafeFeedback.table),
+        joinedload(CafeFeedback.primary_order),
+        joinedload(CafeFeedback.items),
+        joinedload(CafeFeedback.items).joinedload(CafeFeedbackItem.menu_item),
+    ).filter(
+        CafeFeedback.submitted_at.is_not(None),
+        CafeFeedback.submitted_at >= start_dt,
+        CafeFeedback.submitted_at < end_dt,
+    )
+    if table_filter:
+        query = query.filter(CafeFeedback.table_id == table_filter)
+    feedback_entries = query.order_by(CafeFeedback.submitted_at.desc(), CafeFeedback.id.desc()).all()
+    total_feedback_count = len(feedback_entries)
+    average_service_rating = round(
+        sum(int(entry.service_rating or 0) for entry in feedback_entries) / total_feedback_count,
+        2,
+    ) if total_feedback_count else 0.0
+    item_rollup = {}
+    table_rollup = {}
+    day_rollup = {}
+    chef_rollup = {}
+    recent_reviews = []
+    all_reviews = []
+    source_rollup = {}
+    total_item_ratings = 0
+    total_item_score = 0
+    reviews_with_comments = 0
+    low_service_count = 0
+    item_issue_count = 0
+    positive_feedback_count = 0
+    for chef in _chef_options(include_inactive=True):
+        chef_rollup[chef.id] = {
+            "chef_name": chef.full_name,
+            "assigned_items": 0,
+            "sales_total": 0.0,
+            "sold_qty": 0,
+            "review_count": 0,
+            "rating_sum": 0,
+            "complaint_count": 0,
+        }
+    for item in MenuItem.query.filter(
+        MenuItem.chef_user_id.is_not(None),
+        MenuItem.is_deleted.is_(False),
+    ).all():
+        row = chef_rollup.setdefault(
+            item.chef_user_id,
+            {
+                "chef_name": item.chef.full_name if item.chef else "Unknown Chef",
+                "assigned_items": 0,
+                "sales_total": 0.0,
+                "sold_qty": 0,
+                "review_count": 0,
+                "rating_sum": 0,
+                "complaint_count": 0,
+            },
+        )
+        row["assigned_items"] += 1
+    paid_order_items = CafeOrderItem.query.options(
+        joinedload(CafeOrderItem.menu_item),
+        joinedload(CafeOrderItem.order),
+    ).join(CafeOrder).filter(
+        CafeOrder.status == "paid",
+        CafeOrder.created_at >= start_dt,
+        CafeOrder.created_at < end_dt,
+    ).all()
+    for order_item in paid_order_items:
+        menu_item = order_item.menu_item
+        if not menu_item or not menu_item.chef_user_id:
+            continue
+        row = chef_rollup.setdefault(
+            menu_item.chef_user_id,
+            {
+                "chef_name": menu_item.chef.full_name if menu_item.chef else "Unknown Chef",
+                "assigned_items": 0,
+                "sales_total": 0.0,
+                "sold_qty": 0,
+                "review_count": 0,
+                "rating_sum": 0,
+                "complaint_count": 0,
+            },
+        )
+        quantity = int(order_item.quantity or 0)
+        row["sold_qty"] += quantity
+        row["sales_total"] += float(order_item.unit_price or 0) * quantity
+    for entry in feedback_entries:
+        entry_day = _format_ist(entry.submitted_at or entry.created_at, "%Y-%m-%d")
+        day_info = day_rollup.setdefault(entry_day, {"count": 0, "service_sum": 0, "item_sum": 0, "item_count": 0})
+        day_info["count"] += 1
+        service_rating = int(entry.service_rating or 0)
+        day_info["service_sum"] += service_rating
+        table_name = entry.table.name if entry.table else "Unknown"
+        table_info = table_rollup.setdefault(
+            table_name,
+            {"count": 0, "service_sum": 0, "item_sum": 0, "item_count": 0, "low_service_count": 0, "item_issue_count": 0},
+        )
+        table_info["count"] += 1
+        table_info["service_sum"] += service_rating
+        source_label = (entry.source or "online").replace("_", " ").title()
+        source_rollup[source_label] = source_rollup.get(source_label, 0) + 1
+        has_comment = bool((entry.summary_text or "").strip())
+        if has_comment:
+            reviews_with_comments += 1
+        if service_rating <= 2:
+            low_service_count += 1
+            table_info["low_service_count"] += 1
+        raw_order_ids = []
+        if entry.order_ids_json:
+            try:
+                parsed_order_ids = json.loads(entry.order_ids_json)
+                if isinstance(parsed_order_ids, list):
+                    raw_order_ids = [int(order_id) for order_id in parsed_order_ids if str(order_id).isdigit()]
+            except Exception:
+                raw_order_ids = []
+        if not raw_order_ids and entry.primary_order_id:
+            raw_order_ids = [int(entry.primary_order_id)]
+        entry_item_ratings = []
+        entry_items_preview = []
+        entry_item_details = []
+        for item in entry.items:
+            item_rating = int(item.rating or 0)
+            total_item_ratings += 1
+            total_item_score += item_rating
+            entry_item_ratings.append(item_rating)
+            entry_items_preview.append(item.item_name)
+            entry_item_details.append(
+                {
+                    "name": item.item_name,
+                    "rating": item_rating,
+                    "size_label": item.size_label or "",
+                    "is_parcel": bool(item.is_parcel),
+                }
+            )
+            item_key = item.menu_item_id or item.item_name
+            item_info = item_rollup.setdefault(
+                item_key,
+                {"name": item.item_name, "count": 0, "rating_sum": 0, "parcel_count": 0, "low_rating_count": 0},
+            )
+            item_info["count"] += 1
+            item_info["rating_sum"] += item_rating
+            if item.is_parcel:
+                item_info["parcel_count"] += 1
+            if item_rating <= 2:
+                item_info["low_rating_count"] += 1
+            if item.menu_item and item.menu_item.chef_user_id:
+                chef_row = chef_rollup.setdefault(
+                    item.menu_item.chef_user_id,
+                    {
+                        "chef_name": item.menu_item.chef.full_name if item.menu_item.chef else "Unknown Chef",
+                        "assigned_items": 0,
+                        "sales_total": 0.0,
+                        "sold_qty": 0,
+                        "review_count": 0,
+                        "rating_sum": 0,
+                        "complaint_count": 0,
+                    },
+                )
+                chef_row["review_count"] += 1
+                chef_row["rating_sum"] += item_rating
+                if item_rating <= 2:
+                    chef_row["complaint_count"] += 1
+            day_info["item_sum"] += item_rating
+            day_info["item_count"] += 1
+            table_info["item_sum"] += item_rating
+            table_info["item_count"] += 1
+        if any(rating <= 2 for rating in entry_item_ratings):
+            item_issue_count += 1
+            table_info["item_issue_count"] += 1
+        item_average = round(sum(entry_item_ratings) / len(entry_item_ratings), 2) if entry_item_ratings else 0.0
+        if service_rating >= 4 and (not entry_item_ratings or item_average >= 4):
+            positive_feedback_count += 1
+        recent_reviews.append(
+            {
+                "id": entry.id,
+                "table": table_name,
+                "service_rating": service_rating,
+                "item_average": item_average,
+                "summary_text": (entry.summary_text or "").strip(),
+                "source": source_label,
+                "submitted_at": _format_ist(entry.submitted_at or entry.created_at, "%d %b %Y, %I:%M %p"),
+                "items": ", ".join(item.item_name for item in entry.items[:4]),
+            }
+        )
+        all_reviews.append(
+            {
+                "id": entry.id,
+                "table": table_name,
+                "service_rating": service_rating,
+                "item_average": item_average,
+                "summary_text": (entry.summary_text or "").strip(),
+                "summary_excerpt": ((entry.summary_text or "").strip()[:120] + "…") if len((entry.summary_text or "").strip()) > 120 else (entry.summary_text or "").strip(),
+                "source": source_label,
+                "submitted_at": _format_ist(entry.submitted_at or entry.created_at, "%d %b %Y, %I:%M %p"),
+                "items_preview": ", ".join(entry_items_preview[:4]),
+                "item_count": len(entry_item_details),
+                "has_comment": has_comment,
+                "order_count": len(raw_order_ids),
+                "submitted_by_name": (entry.submitted_by_name or (entry.submitted_by_user.full_name if entry.submitted_by_user else "") or "-"),
+            }
+        )
+    avg_item_rating = round(total_item_score / total_item_ratings, 2) if total_item_ratings else 0.0
+    item_rows = sorted(
+        [
+            {
+                "name": row["name"],
+                "count": row["count"],
+                "average_rating": round(row["rating_sum"] / row["count"], 2) if row["count"] else 0.0,
+                "parcel_count": row["parcel_count"],
+                "low_rating_count": row["low_rating_count"],
+            }
+            for row in item_rollup.values()
+        ],
+        key=lambda row: (-row["average_rating"], -row["count"], row["name"].lower()),
+    )
+    table_rows = sorted(
+        [
+            {
+                "name": name,
+                "count": row["count"],
+                "service_average": round(row["service_sum"] / row["count"], 2) if row["count"] else 0.0,
+                "item_average": round(row["item_sum"] / row["item_count"], 2) if row["item_count"] else 0.0,
+                "low_service_count": row["low_service_count"],
+                "item_issue_count": row["item_issue_count"],
+            }
+            for name, row in table_rollup.items()
+        ],
+        key=lambda row: (-row["count"], row["name"].lower()),
+    )
+    day_rows = sorted(
+        [
+            {
+                "day": day,
+                "count": row["count"],
+                "service_average": round(row["service_sum"] / row["count"], 2) if row["count"] else 0.0,
+                "item_average": round(row["item_sum"] / row["item_count"], 2) if row["item_count"] else 0.0,
+            }
+            for day, row in day_rollup.items()
+        ],
+        key=lambda row: row["day"],
+        reverse=True,
+    )
+    chef_rows = sorted(
+        [
+            {
+                "chef_name": row["chef_name"],
+                "assigned_items": row["assigned_items"],
+                "sales_total": round(row["sales_total"], 2),
+                "sold_qty": row["sold_qty"],
+                "review_count": row["review_count"],
+                "average_rating": round(row["rating_sum"] / row["review_count"], 2) if row["review_count"] else 0.0,
+                "complaint_count": row["complaint_count"],
+            }
+            for row in chef_rollup.values()
+            if row["assigned_items"] or row["sold_qty"] or row["review_count"]
+        ],
+        key=lambda row: (-row["sales_total"], row["chef_name"].lower()),
+    )
+    source_rows = sorted(
+        [{"source": source, "count": count} for source, count in source_rollup.items()],
+        key=lambda row: (-row["count"], row["source"].lower()),
+    )
+    attention_item_rows = sorted(
+        [row for row in item_rows if row["low_rating_count"] or row["average_rating"] <= 3],
+        key=lambda row: (-row["low_rating_count"], row["average_rating"], -row["count"], row["name"].lower()),
+    )
+    comments_rate = round((reviews_with_comments / total_feedback_count) * 100, 1) if total_feedback_count else 0.0
+    positive_rate = round((positive_feedback_count / total_feedback_count) * 100, 1) if total_feedback_count else 0.0
+    attention_table = None
+    if table_rows:
+        attention_table = sorted(
+            table_rows,
+            key=lambda row: (-row["low_service_count"], -row["item_issue_count"], row["service_average"], -row["count"], row["name"].lower()),
+        )[0]
+    best_table = None
+    if table_rows:
+        best_table = sorted(
+            table_rows,
+            key=lambda row: (-row["service_average"], -row["item_average"], -row["count"], row["name"].lower()),
+        )[0]
+    top_issue_item = attention_item_rows[0] if attention_item_rows else None
+    return {
+        "feedback_entries": feedback_entries,
+        "total_feedback_count": total_feedback_count,
+        "average_service_rating": average_service_rating,
+        "average_item_rating": avg_item_rating,
+        "low_service_count": low_service_count,
+        "item_issue_count": item_issue_count,
+        "reviews_with_comments": reviews_with_comments,
+        "comments_rate": comments_rate,
+        "positive_feedback_count": positive_feedback_count,
+        "positive_rate": positive_rate,
+        "item_rows": item_rows,
+        "attention_item_rows": attention_item_rows,
+        "table_rows": table_rows,
+        "day_rows": day_rows,
+        "chef_rows": chef_rows,
+        "recent_reviews": recent_reviews[:20],
+        "all_reviews": all_reviews,
+        "source_rows": source_rows,
+        "top_issue_item": top_issue_item,
+        "attention_table": attention_table,
+        "best_table": best_table,
+    }
+
+
+@bp.route("/reviews/export")
+@roles_required("admin")
+def review_summary_export():
+    start_date = request.args.get("start_date", "").strip()
+    end_date = request.args.get("end_date", "").strip()
+    table_filter = request.args.get("table_id", type=int)
+    today_ist = datetime.now(IST_TZ).date()
+    default_start = today_ist - timedelta(days=29)
+    start_value = _parse_date_only(start_date) or default_start
+    end_value = _parse_date_only(end_date) or today_ist
+    if end_value < start_value:
+        start_value, end_value = end_value, start_value
+    payload = _build_review_summary_payload(start_value, end_value, table_filter)
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Summary"
+    ws.append(["Review Dashboard Export"])
+    ws.append(["Start Date", start_value.isoformat()])
+    ws.append(["End Date", end_value.isoformat()])
+    ws.append(["Table Filter", next((table.name for table in CafeTable.query.filter_by(active=True).all() if table.id == table_filter), "All Tables") if table_filter else "All Tables"])
+    ws.append([])
+    ws.append(["Total Feedback", payload["total_feedback_count"]])
+    ws.append(["Average Service Rating", payload["average_service_rating"]])
+    ws.append(["Average Item Rating", payload["average_item_rating"]])
+    ws.append(["Low Service Alerts", payload["low_service_count"]])
+    ws.append(["Item Issue Alerts", payload["item_issue_count"]])
+    ws.append(["Reviews With Comments", payload["reviews_with_comments"]])
+    ws.append(["Positive Review Rate %", payload["positive_rate"]])
+
+    ws_reviews = wb.create_sheet(title="Reviews")
+    ws_reviews.append(["When", "Table", "Source", "Submitted By", "Service Rating", "Item Average", "Order Count", "Items", "Summary"])
+    for row in payload["all_reviews"]:
+        ws_reviews.append([
+            row["submitted_at"],
+            row["table"],
+            row["source"],
+            row["submitted_by_name"],
+            row["service_rating"],
+            row["item_average"],
+            row["order_count"],
+            row["items_preview"],
+            row["summary_text"],
+        ])
+
+    ws_items = wb.create_sheet(title="Items")
+    ws_items.append(["Item", "Average Rating", "Reviews", "Parcel Count", "Low Rating Count"])
+    for row in payload["item_rows"]:
+        ws_items.append([row["name"], row["average_rating"], row["count"], row["parcel_count"], row["low_rating_count"]])
+
+    ws_tables = wb.create_sheet(title="Tables")
+    ws_tables.append(["Table", "Feedback Count", "Service Average", "Item Average", "Low Service Count", "Item Issue Count"])
+    for row in payload["table_rows"]:
+        ws_tables.append([row["name"], row["count"], row["service_average"], row["item_average"], row["low_service_count"], row["item_issue_count"]])
+
+    ws_days = wb.create_sheet(title="Days")
+    ws_days.append(["Day", "Feedback Count", "Service Average", "Item Average"])
+    for row in payload["day_rows"]:
+        ws_days.append([row["day"], row["count"], row["service_average"], row["item_average"]])
+
+    ws_chefs = wb.create_sheet(title="Chefs")
+    ws_chefs.append(["Chef", "Assigned Items", "Paid Sales", "Qty Sold", "Review Count", "Average Rating", "Complaints"])
+    for row in payload["chef_rows"]:
+        ws_chefs.append([row["chef_name"], row["assigned_items"], row["sales_total"], row["sold_qty"], row["review_count"], row["average_rating"], row["complaint_count"]])
+
+    ws_sources = wb.create_sheet(title="Sources")
+    ws_sources.append(["Source", "Count"])
+    for row in payload["source_rows"]:
+        ws_sources.append([row["source"], row["count"]])
+
+    output = BytesIO()
+    wb.save(output)
+    output.seek(0)
+    filename_suffix = f"{start_value.isoformat()}_{end_value.isoformat()}"
+    return Response(
+        output.getvalue(),
+        headers={
+            "Content-Disposition": f'attachment; filename="cafe_reviews_{filename_suffix}.xlsx"',
+            "Content-Type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        },
+    )
+
+
+@bp.route("/reviews/<int:feedback_id>")
+@roles_required("admin")
+def review_summary_detail(feedback_id):
+    entry = CafeFeedback.query.options(
+        joinedload(CafeFeedback.table),
+        joinedload(CafeFeedback.primary_order),
+        joinedload(CafeFeedback.submitted_by_user),
+        joinedload(CafeFeedback.items).joinedload(CafeFeedbackItem.menu_item),
+    ).filter(CafeFeedback.id == feedback_id).first()
+    if not entry:
+        return jsonify({"ok": False, "error": "Review not found."}), 404
+    order_ids = []
+    if entry.order_ids_json:
+        try:
+            parsed = json.loads(entry.order_ids_json)
+            if isinstance(parsed, list):
+                order_ids = [str(order_id) for order_id in parsed]
+        except Exception:
+            order_ids = []
+    if not order_ids and entry.primary_order_id:
+        order_ids = [str(entry.primary_order_id)]
+    item_rows = []
+    item_ratings = []
+    for item in entry.items:
+        rating = int(item.rating or 0)
+        item_ratings.append(rating)
+        item_rows.append(
+            {
+                "name": item.item_name,
+                "rating": rating,
+                "size_label": item.size_label or "",
+                "is_parcel": bool(item.is_parcel),
+            }
+        )
+    item_average = round(sum(item_ratings) / len(item_ratings), 2) if item_ratings else 0.0
+    return jsonify(
+        {
+            "ok": True,
+            "review": {
+                "id": entry.id,
+                "table": entry.table.name if entry.table else "Unknown",
+                "submitted_at": _format_ist(entry.submitted_at or entry.created_at, "%d %b %Y, %I:%M %p"),
+                "source": (entry.source or "online").replace("_", " ").title(),
+                "submitted_by_name": (entry.submitted_by_name or (entry.submitted_by_user.full_name if entry.submitted_by_user else "") or "-"),
+                "service_rating": int(entry.service_rating or 0),
+                "item_average": item_average,
+                "summary_text": (entry.summary_text or "").strip(),
+                "order_ids": order_ids,
+                "primary_order_reference": (entry.primary_order.internal_ref if entry.primary_order else ""),
+                "items": item_rows,
+            },
+        }
+    )
+
+
 _STATS_CACHE = {}
 _STATS_CACHE_TTL_SECONDS = 120
 _STAT_FILTER_PRESETS = {
@@ -5541,6 +6346,8 @@ def staff():
             profile.dob = date.fromisoformat(request.form["dob"]) if request.form.get("dob") else None
             profile.marital_status = request.form.get("marital_status", "").strip() or None
             profile.gender = request.form.get("gender", "").strip() or None
+            profile.shift_start_time = _parse_time_only(request.form.get("shift_start_time"))
+            profile.shift_end_time = _parse_time_only(request.form.get("shift_end_time"))
             profile.salary_type = request.form.get("salary_type", "").strip() or "monthly"
             salary_amount_raw = request.form.get("salary_amount", "").strip()
             profile.salary_amount = float(salary_amount_raw) if salary_amount_raw else None
@@ -5577,6 +6384,8 @@ def staff():
             profile.dob = date.fromisoformat(request.form["dob"]) if request.form.get("dob") else None
             profile.marital_status = request.form.get("marital_status", "").strip() or None
             profile.gender = request.form.get("gender", "").strip() or None
+            profile.shift_start_time = _parse_time_only(request.form.get("shift_start_time"))
+            profile.shift_end_time = _parse_time_only(request.form.get("shift_end_time"))
             profile.phone = request.form.get("phone", "").strip() or None
             profile.alternate_contact = request.form.get("alternate_contact", "").strip() or None
             profile.emergency_contact = request.form.get("emergency_contact", "").strip() or None
