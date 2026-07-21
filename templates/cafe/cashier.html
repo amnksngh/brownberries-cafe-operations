@@ -196,15 +196,27 @@
 
 <section class="panel cashier-settlement-panel">
   <div class="cashier-section-headline">
-    <h3>Table Settlement</h3>
-    <p><strong>Approved Orders Ready To Settle:</strong> <span id="settlement-grand-total">₹{{ "%.2f"|format(table_settle_total) }}</span></p>
+    <div>
+      <h3>Table Settlement</h3>
+      <p><strong>Approved Orders Ready To Settle:</strong> <span id="settlement-grand-total">₹{{ "%.2f"|format(table_settle_total) }}</span></p>
+    </div>
+    {% if latest_settled_order %}
+    <div class="cashier-feedback-cta">
+      <a class="button-link" href="{% if kiosk_mode %}{{ url_for('cafe.reception_kiosk_settlement_feedback', access_key=kiosk_access_key, order_id=latest_settled_order.id, next=current_cashier_url) }}{% else %}{{ url_for('cafe.settlement_feedback', order_id=latest_settled_order.id, next=current_cashier_url) }}{% endif %}">
+        {% if latest_settled_feedback %}Edit Feedback{% else %}Add Feedback{% endif %}
+      </a>
+      {% if latest_settled_feedback %}
+      <div class="muted">Saved via {{ (latest_settled_feedback.source or "offline")|replace("_", " ")|title }}</div>
+      {% endif %}
+    </div>
+    {% endif %}
   </div>
   <form method="post" action="{% if kiosk_mode %}{{ url_for('cafe.reception_kiosk_clear_table_orders', access_key=kiosk_access_key, table_id=selected_table.id) }}{% else %}{{ url_for('cafe.clear_table_orders', table_id=selected_table.id) }}{% endif %}" class="grid" id="table-settlement-form" data-service-charge-rate="{{ '%.2f'|format(service_charge_rate or 5) }}">
     <input type="hidden" name="next" value="{{ current_cashier_url }}" />
     <input type="hidden" name="payment_row_count" id="payment-row-count" value="1" />
     <input type="hidden" name="tax_controls_present" value="1" />
     <div class="grid cashier-tax-toggle-grid">
-      <label><input type="checkbox" id="apply-service-charge" name="apply_service_charge" value="1" checked /> Service Charge (Voluntary) {% if service_charge_rate %}({{ '%.2f'|format(service_charge_rate) }}%){% endif %}</label>
+      <label><input type="checkbox" id="apply-service-charge" name="apply_service_charge" value="1" {% if not selected_table.service_charge_opt_out_requested %}checked{% endif %} /> Service Charge (Voluntary) {% if service_charge_rate %}({{ '%.2f'|format(service_charge_rate) }}%){% endif %}</label>
     </div>
     <div class="muted" id="settlement-breakdown-hint">Base: ₹{{ "%.2f"|format(table_settle_total or 0) }}</div>
     <table>

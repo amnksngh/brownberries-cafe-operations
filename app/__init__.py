@@ -23,7 +23,19 @@ from .deploy_config import load_deployment_config
 from .extensions import db, socketio
 from .library import bp as library_bp
 from .main import bp as main_bp
-from .models import InventoryCategory, InventoryExpenseLog, InventoryItem, InventoryVendor, SubscriptionPlan, User, Workstation
+from .mobile_attendance import bp as mobile_attendance_bp
+from .models import (
+    CafeFeedback,
+    CafeFeedbackItem,
+    InventoryCategory,
+    InventoryExpenseLog,
+    InventoryItem,
+    InventoryVendor,
+    StaffMobileSession,
+    SubscriptionPlan,
+    User,
+    Workstation,
+)
 
 
 def _ensure_sqlite_schema_columns():
@@ -36,6 +48,7 @@ def _ensure_sqlite_schema_columns():
             "size_pricing_json": "TEXT",
             "short_description": "TEXT",
             "is_deleted": "BOOLEAN NOT NULL DEFAULT 0",
+            "chef_user_id": "INTEGER",
         },
         "staff_profile": {
             "dob": "DATE",
@@ -49,6 +62,8 @@ def _ensure_sqlite_schema_columns():
             "govt_id_number": "TEXT",
             "govt_id_file_path": "TEXT",
             "photo_file_path": "TEXT",
+            "shift_start_time": "TIME",
+            "shift_end_time": "TIME",
         },
         "library_member": {
             "member_code": "TEXT",
@@ -65,7 +80,16 @@ def _ensure_sqlite_schema_columns():
             "check_in_lng": "FLOAT",
             "check_in_distance_m": "FLOAT",
             "check_in_method": "TEXT",
+            "check_out_lat": "FLOAT",
+            "check_out_lng": "FLOAT",
+            "check_out_distance_m": "FLOAT",
             "check_out_method": "TEXT",
+            "last_heartbeat_at": "DATETIME",
+            "last_heartbeat_lat": "FLOAT",
+            "last_heartbeat_lng": "FLOAT",
+            "last_heartbeat_distance_m": "FLOAT",
+            "mobile_device_id": "TEXT",
+            "auto_checkout_reason": "TEXT",
         },
         "user": {
             "user_type_id": "INTEGER",
@@ -80,6 +104,7 @@ def _ensure_sqlite_schema_columns():
         },
         "cafe_table": {
             "last_staff_call_at": "DATETIME",
+            "service_charge_opt_out_requested": "BOOLEAN NOT NULL DEFAULT 0",
         },
         "cafe_order": {
             "is_delivery": "BOOLEAN NOT NULL DEFAULT 0",
@@ -114,6 +139,23 @@ def _ensure_sqlite_schema_columns():
             "approval_status": "TEXT NOT NULL DEFAULT 'pending'",
             "is_parcel": "BOOLEAN NOT NULL DEFAULT 0",
             "prep_status": "TEXT NOT NULL DEFAULT 'pending'",
+        },
+        "cafe_feedback": {
+            "order_ids_json": "TEXT",
+            "source": "TEXT NOT NULL DEFAULT 'online'",
+            "service_rating": "INTEGER NOT NULL DEFAULT 3",
+            "summary_text": "TEXT",
+            "submitted_by_user_id": "INTEGER",
+            "submitted_by_name": "TEXT",
+            "submitted_at": "DATETIME",
+        },
+        "cafe_feedback_item": {
+            "menu_item_id": "INTEGER",
+            "order_item_id": "INTEGER",
+            "item_name": "TEXT",
+            "size_label": "TEXT",
+            "is_parcel": "BOOLEAN NOT NULL DEFAULT 0",
+            "rating": "INTEGER NOT NULL DEFAULT 3",
         },
         "inventory_item": {
             "item_code": "TEXT",
@@ -231,6 +273,15 @@ def _ensure_sqlite_schema_columns():
         text("CREATE INDEX IF NOT EXISTS idx_cafe_order_delivery_created ON cafe_order (is_delivery, created_at)")
     )
     db.session.execute(
+        text("CREATE INDEX IF NOT EXISTS idx_menu_item_chef_user_id ON menu_item (chef_user_id)")
+    )
+    db.session.execute(
+        text("CREATE INDEX IF NOT EXISTS idx_staff_mobile_session_user_active ON staff_mobile_session (user_id, active)")
+    )
+    db.session.execute(
+        text("CREATE INDEX IF NOT EXISTS idx_staff_mobile_session_device ON staff_mobile_session (device_id)")
+    )
+    db.session.execute(
         text("CREATE INDEX IF NOT EXISTS idx_cafe_order_item_order ON cafe_order_item (order_id)")
     )
     db.session.execute(
@@ -238,6 +289,15 @@ def _ensure_sqlite_schema_columns():
     )
     db.session.execute(
         text("CREATE INDEX IF NOT EXISTS idx_cafe_order_item_prep_status ON cafe_order_item (prep_status)")
+    )
+    db.session.execute(
+        text("CREATE INDEX IF NOT EXISTS idx_cafe_feedback_primary_order ON cafe_feedback (primary_order_id)")
+    )
+    db.session.execute(
+        text("CREATE INDEX IF NOT EXISTS idx_cafe_feedback_table_submitted ON cafe_feedback (table_id, submitted_at)")
+    )
+    db.session.execute(
+        text("CREATE INDEX IF NOT EXISTS idx_cafe_feedback_item_feedback_menu ON cafe_feedback_item (feedback_id, menu_item_id)")
     )
     db.session.execute(
         text("UPDATE cafe_order_item SET prep_status = 'pending' WHERE prep_status IS NULL OR prep_status = ''")
@@ -421,6 +481,7 @@ def create_app():
     app.register_blueprint(main_bp)
     app.register_blueprint(cafe_bp)
     app.register_blueprint(library_bp)
+    app.register_blueprint(mobile_attendance_bp)
 
     @app.cli.command("init-db")
     def init_db():

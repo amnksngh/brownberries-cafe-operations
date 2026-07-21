@@ -90,6 +90,7 @@ class CafeTable(TimestampMixin, db.Model):
     metadata_note = db.Column(db.String(255), nullable=True)
     qr_slug = db.Column(db.String(120), unique=True, nullable=False)
     last_staff_call_at = db.Column(db.DateTime, nullable=True)
+    service_charge_opt_out_requested = db.Column(db.Boolean, default=False, nullable=False)
     active = db.Column(db.Boolean, default=True, nullable=False)
 
 
@@ -135,10 +136,12 @@ class MenuItem(TimestampMixin, db.Model):
     has_size_variants = db.Column(db.Boolean, default=False, nullable=False)
     size_pricing_json = db.Column(db.String(1000), nullable=True)
     prep_station = db.Column(db.String(40), nullable=False, default="kitchen")
+    chef_user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=True)
     available = db.Column(db.Boolean, default=True, nullable=False)
     is_deleted = db.Column(db.Boolean, default=False, nullable=False)
     category = db.relationship("MenuCategory", backref="items")
     subcategory = db.relationship("MenuSubcategory", backref="items")
+    chef = db.relationship("User", foreign_keys=[chef_user_id])
 
 
 class CafeOrder(TimestampMixin, db.Model):
@@ -182,6 +185,36 @@ class CafeOrderItem(TimestampMixin, db.Model):
     prep_status = db.Column(db.String(20), nullable=False, default="pending")
     order = db.relationship("CafeOrder", backref="order_items")
     menu_item = db.relationship("MenuItem")
+
+
+class CafeFeedback(TimestampMixin, db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    table_id = db.Column(db.Integer, db.ForeignKey("cafe_table.id"), nullable=True)
+    primary_order_id = db.Column(db.Integer, db.ForeignKey("cafe_order.id"), nullable=False)
+    order_ids_json = db.Column(db.Text, nullable=True)
+    source = db.Column(db.String(20), nullable=False, default="online")
+    service_rating = db.Column(db.Integer, nullable=False, default=3)
+    summary_text = db.Column(db.Text, nullable=True)
+    submitted_by_user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=True)
+    submitted_by_name = db.Column(db.String(120), nullable=True)
+    submitted_at = db.Column(db.DateTime, nullable=True)
+    table = db.relationship("CafeTable", backref="feedback_entries")
+    primary_order = db.relationship("CafeOrder", backref="feedback_entries")
+    submitted_by_user = db.relationship("User", backref="submitted_feedback_entries")
+
+
+class CafeFeedbackItem(TimestampMixin, db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    feedback_id = db.Column(db.Integer, db.ForeignKey("cafe_feedback.id"), nullable=False)
+    menu_item_id = db.Column(db.Integer, db.ForeignKey("menu_item.id"), nullable=True)
+    order_item_id = db.Column(db.Integer, db.ForeignKey("cafe_order_item.id"), nullable=True)
+    item_name = db.Column(db.String(160), nullable=False)
+    size_label = db.Column(db.String(80), nullable=True)
+    is_parcel = db.Column(db.Boolean, nullable=False, default=False)
+    rating = db.Column(db.Integer, nullable=False, default=3)
+    feedback = db.relationship("CafeFeedback", backref=db.backref("items", cascade="all, delete-orphan"))
+    menu_item = db.relationship("MenuItem")
+    order_item = db.relationship("CafeOrderItem")
 
 
 class InventoryItem(TimestampMixin, db.Model):
@@ -359,6 +392,8 @@ class StaffProfile(TimestampMixin, db.Model):
     govt_id_number = db.Column(db.String(80), nullable=True)
     govt_id_file_path = db.Column(db.String(255), nullable=True)
     photo_file_path = db.Column(db.String(255), nullable=True)
+    shift_start_time = db.Column(db.Time, nullable=True)
+    shift_end_time = db.Column(db.Time, nullable=True)
     archived = db.Column(db.Boolean, default=False, nullable=False)
     user = db.relationship("User", backref=db.backref("staff_profile", uselist=False))
 
@@ -375,9 +410,36 @@ class StaffAttendance(TimestampMixin, db.Model):
     check_in_lng = db.Column(db.Float, nullable=True)
     check_in_distance_m = db.Column(db.Float, nullable=True)
     check_in_method = db.Column(db.String(40), nullable=True)
+    check_out_lat = db.Column(db.Float, nullable=True)
+    check_out_lng = db.Column(db.Float, nullable=True)
+    check_out_distance_m = db.Column(db.Float, nullable=True)
     check_out_method = db.Column(db.String(40), nullable=True)
+    last_heartbeat_at = db.Column(db.DateTime, nullable=True)
+    last_heartbeat_lat = db.Column(db.Float, nullable=True)
+    last_heartbeat_lng = db.Column(db.Float, nullable=True)
+    last_heartbeat_distance_m = db.Column(db.Float, nullable=True)
+    mobile_device_id = db.Column(db.String(120), nullable=True)
+    auto_checkout_reason = db.Column(db.String(120), nullable=True)
     notes = db.Column(db.String(255), nullable=True)
     user = db.relationship("User", backref="attendance_logs")
+
+
+class StaffMobileSession(TimestampMixin, db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False)
+    device_id = db.Column(db.String(120), nullable=False)
+    device_name = db.Column(db.String(120), nullable=True)
+    platform = db.Column(db.String(40), nullable=False, default="android")
+    app_version = db.Column(db.String(40), nullable=True)
+    token_hash = db.Column(db.String(128), nullable=False, unique=True)
+    active = db.Column(db.Boolean, default=True, nullable=False)
+    last_seen_at = db.Column(db.DateTime, nullable=True)
+    last_lat = db.Column(db.Float, nullable=True)
+    last_lng = db.Column(db.Float, nullable=True)
+    last_distance_m = db.Column(db.Float, nullable=True)
+    last_sync_status = db.Column(db.String(40), nullable=True)
+    last_sync_message = db.Column(db.String(255), nullable=True)
+    user = db.relationship("User", backref="mobile_sessions")
 
 
 class StaffLeaveRequest(TimestampMixin, db.Model):

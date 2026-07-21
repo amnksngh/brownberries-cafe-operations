@@ -48,6 +48,27 @@ SHORT_ATTENDANCE_MINUTES = math.ceil(SHIFT_REQUIRED_MINUTES * 0.25)
 MANUAL_ONLY_STATUSES = {"on_leave", "sick_leave", "weekly_off", "absent"}
 
 
+def shift_window_for_profile(profile) -> tuple[time, time]:
+    start = getattr(profile, "shift_start_time", None) or SHIFT_START
+    end = getattr(profile, "shift_end_time", None) or SHIFT_END
+    return start, end
+
+
+def shift_window_for_row(row) -> tuple[time, time]:
+    profile = getattr(getattr(row, "user", None), "staff_profile", None)
+    return shift_window_for_profile(profile)
+
+
+def shift_required_minutes_for_row(row) -> int:
+    shift_start, shift_end = shift_window_for_row(row)
+    start_minutes = (shift_start.hour * 60) + shift_start.minute
+    end_minutes = (shift_end.hour * 60) + shift_end.minute
+    span_minutes = max(60, end_minutes - start_minutes)
+    default_span = max(60, ((SHIFT_END.hour * 60) + SHIFT_END.minute) - ((SHIFT_START.hour * 60) + SHIFT_START.minute))
+    ratio = SHIFT_REQUIRED_MINUTES / default_span
+    return max(30, math.ceil(span_minutes * ratio))
+
+
 def attendance_status_label(status: str | None) -> str:
     if not status:
         return "-"
@@ -77,7 +98,8 @@ def worked_hours_for_row(row) -> float:
 def late_minutes_for_row(row) -> int:
     if not row or not row.check_in_at:
         return 0
-    shift_start_dt = datetime.combine(row.attendance_date, SHIFT_START)
+    shift_start, _ = shift_window_for_row(row)
+    shift_start_dt = datetime.combine(row.attendance_date, shift_start)
     delta = int((row.check_in_at - shift_start_dt).total_seconds() // 60)
     return max(0, delta - LATE_GRACE_MINUTES)
 
@@ -85,7 +107,8 @@ def late_minutes_for_row(row) -> int:
 def early_exit_minutes_for_row(row) -> int:
     if not row or not row.check_out_at:
         return 0
-    shift_end_dt = datetime.combine(row.attendance_date, SHIFT_END)
+    _, shift_end = shift_window_for_row(row)
+    shift_end_dt = datetime.combine(row.attendance_date, shift_end)
     delta = int((shift_end_dt - row.check_out_at).total_seconds() // 60)
     return max(0, delta - EARLY_EXIT_GRACE_MINUTES)
 
@@ -96,11 +119,15 @@ def calculate_status_from_times(row) -> str:
     if row.check_in_at and not row.check_out_at:
         return "pending_correction"
     worked_minutes = worked_minutes_for_row(row)
-    if worked_minutes >= PRESENT_MINUTES:
+    required_minutes = shift_required_minutes_for_row(row)
+    present_minutes = math.ceil(required_minutes * 0.85)
+    half_day_minutes = math.ceil(required_minutes * 0.50)
+    short_attendance_minutes = math.ceil(required_minutes * 0.25)
+    if worked_minutes >= present_minutes:
         return "present_all_day"
-    if worked_minutes >= HALF_DAY_MINUTES:
+    if worked_minutes >= half_day_minutes:
         return "first_half"
-    if worked_minutes >= SHORT_ATTENDANCE_MINUTES:
+    if worked_minutes >= short_attendance_minutes:
         return "short_attendance"
     return "absent"
 
@@ -130,11 +157,15 @@ def attendance_flags_for_row(row) -> list[str]:
         flags.append(f"Early exit by {early_exit_minutes} min")
     if row.check_in_at and not row.check_out_at:
         flags.append("Pending checkout")
-    if worked_minutes >= PRESENT_MINUTES:
+    required_minutes = shift_required_minutes_for_row(row)
+    present_minutes = math.ceil(required_minutes * 0.85)
+    half_day_minutes = math.ceil(required_minutes * 0.50)
+    short_attendance_minutes = math.ceil(required_minutes * 0.25)
+    if worked_minutes >= present_minutes:
         flags.append("Full shift")
-    elif worked_minutes >= HALF_DAY_MINUTES:
+    elif worked_minutes >= half_day_minutes:
         flags.append("Half shift")
-    elif worked_minutes >= SHORT_ATTENDANCE_MINUTES:
+    elif worked_minutes >= short_attendance_minutes:
         flags.append("Short attendance")
     if getattr(row, "manager_override", False):
         flags.append("Admin override")

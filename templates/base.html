@@ -62,6 +62,7 @@
         <a href="{{ url_for('cafe.kitchen_display') }}">Kitchen Display</a>
         {% if user_has_any_role(g.current_user, "admin") %}
         <a href="{{ url_for('cafe.staff') }}">Staff</a>
+        <a href="{{ url_for('cafe.review_summary') }}">Reviews</a>
         {% endif %}
         <a href="{{ url_for('library.home') }}">Library</a>
         <a href="{{ url_for('main.logout') }}">Logout</a>

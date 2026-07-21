@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Brownberries Attendance</string>
+    <string name="monitor_channel_name">Attendance Monitoring</string>
+    <string name="monitor_channel_desc">Tracks cafe geofence attendance in the background.</string>
+</resources>

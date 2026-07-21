@@ -49,6 +49,8 @@
           </div>
         </div>
         <label>Joining Date<input type="date" name="joining_date" /></label>
+        <label>Shift Start<input type="time" name="shift_start_time" value="09:00" /></label>
+        <label>Shift End<input type="time" name="shift_end_time" value="18:00" /></label>
         <label>DOB<input type="date" name="dob" /></label>
         <label>Gender<input name="gender" /></label>
         <button type="submit">Add Staff Member</button>
@@ -75,6 +77,7 @@
                 {{ s.user.email }}<br />
                 {{ user_display_roles(s.user) }}<br />
                 Joined: {{ s.joining_date or "-" }}<br />
+                Shift: {{ s.shift_start_time.strftime("%H:%M") if s.shift_start_time else "09:00" }} - {{ s.shift_end_time.strftime("%H:%M") if s.shift_end_time else "18:00" }}<br />
                 DOB: {{ s.dob or "-" }}<br />
                 {{ s.gender or "-" }}, {{ s.marital_status or "-" }}<br />
                 Govt ID: {{ s.govt_id_type or "-" }} / {{ s.govt_id_number or "-" }}<br />
@@ -110,6 +113,8 @@
                     </div>
                   </div>
                   <label>Joining<input type="date" name="joining_date" value="{{ s.joining_date or '' }}" /></label>
+                  <label>Shift Start<input type="time" name="shift_start_time" value="{{ s.shift_start_time.strftime('%H:%M') if s.shift_start_time else '' }}" /></label>
+                  <label>Shift End<input type="time" name="shift_end_time" value="{{ s.shift_end_time.strftime('%H:%M') if s.shift_end_time else '' }}" /></label>
                   <label>DOB<input type="date" name="dob" value="{{ s.dob or '' }}" /></label>
                   <label>Marital Status<input name="marital_status" value="{{ s.marital_status or '' }}" /></label>
                   <label>Gender<input name="gender" value="{{ s.gender or '' }}" /></label>

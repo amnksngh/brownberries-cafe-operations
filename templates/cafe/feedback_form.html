@@ -1,0 +1,192 @@
+{% extends "base.html" %}
+{% block content %}
+<style>
+  .feedback-shell {
+    max-width: 860px;
+    margin: 0 auto;
+    display: grid;
+    gap: 1rem;
+  }
+  .feedback-card {
+    padding: 1.1rem;
+  }
+  .feedback-meta-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+    gap: 0.85rem;
+  }
+  .feedback-meta-chip {
+    background: rgba(111, 74, 53, 0.08);
+    border: 1px solid rgba(111, 74, 53, 0.15);
+    border-radius: 12px;
+    padding: 0.8rem 0.9rem;
+  }
+  .feedback-meta-chip strong {
+    display: block;
+    font-size: 0.82rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: #7a5a48;
+    margin-bottom: 0.25rem;
+  }
+  .feedback-rating-list {
+    display: grid;
+    gap: 0.9rem;
+  }
+  .feedback-rating-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 0.85rem;
+    align-items: center;
+    padding: 0.95rem 1rem;
+    border: 1px solid rgba(111, 74, 53, 0.14);
+    border-radius: 14px;
+    background: #fff;
+  }
+  .feedback-rating-copy strong {
+    display: block;
+    font-size: 1rem;
+  }
+  .feedback-rating-copy span {
+    color: #7b716c;
+    font-size: 0.94rem;
+  }
+  .star-group {
+    display: inline-flex;
+    flex-direction: row-reverse;
+    gap: 0.18rem;
+  }
+  .star-group input {
+    display: none;
+  }
+  .star-group label {
+    font-size: 1.65rem;
+    line-height: 1;
+    color: #d6c5b9;
+    cursor: pointer;
+    transition: transform 0.15s ease, color 0.15s ease;
+  }
+  .star-group label:hover,
+  .star-group label:hover ~ label,
+  .star-group input:checked ~ label {
+    color: #e2a93b;
+  }
+  .star-group label:hover {
+    transform: translateY(-1px);
+  }
+  .feedback-summary-box textarea {
+    min-height: 130px;
+    resize: vertical;
+  }
+  .feedback-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.8rem;
+    align-items: center;
+  }
+  .feedback-note {
+    color: #7b716c;
+    font-size: 0.94rem;
+  }
+  @media (max-width: 720px) {
+    .feedback-card {
+      padding: 0.95rem;
+    }
+    .feedback-rating-row {
+      grid-template-columns: 1fr;
+    }
+    .star-group {
+      justify-content: flex-end;
+    }
+  }
+</style>
+
+<div class="feedback-shell">
+  <section class="panel feedback-card">
+    <div class="section-heading">
+      <div>
+        <p class="eyebrow">{% if source == "online" %}Guest Feedback{% else %}Offline Feedback{% endif %}</p>
+        <h2>{% if source == "online" %}Rate Your Table Experience{% else %}Record Table Feedback{% endif %}</h2>
+      </div>
+      <a class="button-link" href="{{ back_url }}">Back</a>
+    </div>
+    <div class="feedback-meta-grid">
+      <div class="feedback-meta-chip">
+        <strong>Table</strong>
+        {{ "For Delivery" if order.is_delivery else (order.table.name if order.table else "-") }}
+      </div>
+      <div class="feedback-meta-chip">
+        <strong>Order IDs</strong>
+        {{ pickup_numbers|join(", ") }}
+      </div>
+      <div class="feedback-meta-chip">
+        <strong>Paid</strong>
+        {{ paid_at_display or "-" }}
+      </div>
+      <div class="feedback-meta-chip">
+        <strong>Settlement Total</strong>
+        ₹{{ "%.2f"|format(settlement_total or 0) }}
+      </div>
+    </div>
+    {% if feedback and feedback.source == "online" and source == "offline" %}
+    <p class="flash success" style="margin-top:1rem;">Customer feedback is already saved for this settlement. You can review it here, but offline edits are locked.</p>
+    {% endif %}
+  </section>
+
+  <form method="post" class="panel feedback-card">
+    <div class="section-heading">
+      <div>
+        <p class="eyebrow">Ratings</p>
+        <h3>Rate Each Item</h3>
+      </div>
+      <p class="feedback-note">{% if source == "offline" %}Offline entries default to 3 stars so the cashier can save quickly if no detailed review was received.{% else %}Please rate the items you received and the service experience.{% endif %}</p>
+    </div>
+
+    <div class="feedback-rating-list">
+      <div class="feedback-rating-row">
+        <div class="feedback-rating-copy">
+          <strong>Service</strong>
+          <span>Overall experience with staff, speed, and support.</span>
+        </div>
+        <div class="star-group" aria-label="Service rating">
+          {% set selected_service = feedback.service_rating if feedback else default_rating %}
+          {% for star in [5, 4, 3, 2, 1] %}
+          <input type="radio" id="service-rating-{{ star }}" name="service_rating" value="{{ star }}" {% if selected_service == star %}checked{% endif %} {% if feedback_locked %}disabled{% endif %} />
+          <label for="service-rating-{{ star }}" title="{{ star }} star{% if star != 1 %}s{% endif %}">★</label>
+          {% endfor %}
+        </div>
+      </div>
+
+      {% for row in item_rows %}
+      <div class="feedback-rating-row">
+        <div class="feedback-rating-copy">
+          <strong>{{ row.display_name }}</strong>
+          <span>Ordered quantity: {{ row.quantity }}</span>
+        </div>
+        <div class="star-group" aria-label="{{ row.display_name }} rating">
+          {% for star in [5, 4, 3, 2, 1] %}
+          <input type="radio" id="{{ row.form_key }}-{{ star }}" name="item_rating_{{ row.form_key }}" value="{{ star }}" {% if row.current_rating == star %}checked{% endif %} {% if feedback_locked %}disabled{% endif %} />
+          <label for="{{ row.form_key }}-{{ star }}" title="{{ star }} star{% if star != 1 %}s{% endif %}">★</label>
+          {% endfor %}
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+
+    <div class="feedback-summary-box" style="margin-top:1rem;">
+      <label for="summary_text">Summary of the overall experience</label>
+      <textarea id="summary_text" name="summary_text" placeholder="Tell us what went well or what we should improve..." {% if feedback_locked %}disabled{% endif %}>{{ feedback.summary_text if feedback else "" }}</textarea>
+    </div>
+
+    <div class="feedback-actions" style="margin-top:1rem;">
+      {% if not feedback_locked %}
+      <button type="submit">Save Feedback</button>
+      {% endif %}
+      <a class="button-link" href="{{ back_url }}">Back</a>
+      {% if source == "online" %}
+      <a class="button-link" href="{{ review_link }}" target="_blank" rel="noopener">Leave Google Review</a>
+      {% endif %}
+    </div>
+  </form>
+</div>
+{% endblock %}
