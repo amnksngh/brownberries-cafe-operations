@@ -129,10 +129,10 @@
             {% for st in workstation_options %}<option value="{{ st.slug }}" {% if add_form.prep_station == st.slug %}selected{% endif %}>{{ st.name }}</option>{% endfor %}
           </select>
         </label>
-        <label>Chef Responsibility
+        <label>Preparation Responsibility
           <select name="chef_user_id">
             <option value="" {% if not add_form.chef_user_id %}selected{% endif %}>Unassigned</option>
-            {% for chef in chef_options %}<option value="{{ chef.id }}" {% if add_form.chef_user_id == (chef.id|string) %}selected{% endif %}>{{ chef.full_name }}</option>{% endfor %}
+            {% for chef in chef_options %}<option value="{{ chef.id }}" {% if add_form.chef_user_id == (chef.id|string) %}selected{% endif %}>{{ chef.full_name }} ({{ user_display_roles(chef) }})</option>{% endfor %}
           </select>
         </label>
         <label>Image URL <input name="image_url" value="{{ add_form.image_url }}" /></label>
@@ -162,7 +162,7 @@
       <h3>Menu Items</h3>
       <label>Search Item <input id="menu-item-search" placeholder="Search by name/category/type..." /></label>
       <table id="menu-items-table">
-        <tr><th>Category</th><th>Item</th><th>Type</th><th>Workstation</th><th>Chef</th><th>Price</th><th>Image</th><th>Actions</th></tr>
+        <tr><th>Category</th><th>Item</th><th>Type</th><th>Workstation</th><th>Responsible Staff</th><th>Price</th><th>Image</th><th>Actions</th></tr>
         {% for item in items %}
         {% set selected_cats = item_category_map.get(item.id, []) %}
         <tr>
@@ -206,10 +206,10 @@
                     {% for st in workstation_options %}<option value="{{ st.slug }}" {% if item.prep_station == st.slug %}selected{% endif %}>{{ st.name }}</option>{% endfor %}
                   </select>
                 </label>
-                <label>Chef Responsibility
+                <label>Preparation Responsibility
                   <select name="chef_user_id">
                     <option value="" {% if not item.chef_user_id %}selected{% endif %}>Unassigned</option>
-                    {% for chef in chef_options %}<option value="{{ chef.id }}" {% if item.chef_user_id == chef.id %}selected{% endif %}>{{ chef.full_name }}</option>{% endfor %}
+                    {% for chef in chef_options %}<option value="{{ chef.id }}" {% if item.chef_user_id == chef.id %}selected{% endif %}>{{ chef.full_name }} ({{ user_display_roles(chef) }})</option>{% endfor %}
                   </select>
                 </label>
                 <label>Image URL <input name="image_url" value="{{ item.image_url or '' }}" /></label>
@@ -248,7 +248,7 @@
     <section class="panel">
       <h3>Deleted Items</h3>
       <table>
-        <tr><th>Item</th><th>Category</th><th>Type</th><th>Workstation</th><th>Chef</th><th>Actions</th></tr>
+        <tr><th>Item</th><th>Category</th><th>Type</th><th>Workstation</th><th>Responsible Staff</th><th>Actions</th></tr>
         {% for item in deleted_items %}
         {% set selected_cats = item_category_map.get(item.id, []) %}
         <tr>

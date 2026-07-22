@@ -236,12 +236,12 @@
     <div class="section-heading">
       <div>
         <p class="eyebrow">Accountability</p>
-        <h3>Chef Performance</h3>
+        <h3>Preparation Staff Performance</h3>
       </div>
     </div>
     <div class="review-table-wrap">
       <table>
-        <tr><th>Chef</th><th>Assigned Items</th><th>Paid Sales</th><th>Qty Sold</th><th>Review Count</th><th>Avg Rating</th><th>Complaints</th></tr>
+        <tr><th>Responsible Staff</th><th>Assigned Items</th><th>Paid Sales</th><th>Qty Sold</th><th>Review Count</th><th>Avg Rating</th><th>Complaints</th></tr>
         {% for row in chef_rows %}
         <tr>
           <td>{{ row.chef_name }}</td>
@@ -253,7 +253,7 @@
           <td>{{ row.complaint_count }}</td>
         </tr>
         {% else %}
-        <tr><td colspan="7">No chef accountability data available yet.</td></tr>
+        <tr><td colspan="7">No preparation staff accountability data available yet.</td></tr>
         {% endfor %}
       </table>
     </div>

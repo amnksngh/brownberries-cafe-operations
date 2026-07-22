@@ -141,14 +141,25 @@ def _all_workstations(include_inactive: bool = False):
 
 
 def _chef_options(include_inactive: bool = False) -> list[User]:
+    """Return active staff who can be accountable for menu preparation.
+
+    A menu item's preparation responsibility is not limited to the kitchen:
+    Baristas own beverage and counter-prepared items as well. Keep the helper
+    name for compatibility with the existing review/statistics payloads while
+    applying the shared Chef-or-Barista rule in one place.
+    """
     users = User.query.order_by(User.full_name.asc(), User.email.asc()).all()
     result: list[User] = []
     for user in users:
         if not include_inactive and not user.active:
             continue
-        if user.has_role("chef"):
+        if user.has_role("chef") or user.has_role("barista"):
             result.append(user)
     return result
+
+
+def _is_preparation_responsibility_user(user: User | None) -> bool:
+    return bool(user and (user.has_role("chef") or user.has_role("barista")))
 
 
 def _workstation_slug_set(include_inactive: bool = False) -> set[str]:
@@ -2184,11 +2195,11 @@ def menu():
         chef_user_id_raw = request.form.get("chef_user_id", "").strip()
         if chef_user_id_raw:
             if not chef_user_id_raw.isdigit():
-                flash("Please select a valid chef responsibility.", "error")
+                flash("Please select a valid preparation responsibility.", "error")
                 return _render_menu_page("add_item", form_state)
             chef_user = User.query.get(int(chef_user_id_raw))
-            if not chef_user or not chef_user.active or not chef_user.has_role("chef"):
-                flash("Please select a valid chef responsibility.", "error")
+            if not chef_user or not chef_user.active or not _is_preparation_responsibility_user(chef_user):
+                flash("Please select a valid preparation responsibility.", "error")
                 return _render_menu_page("add_item", form_state)
         name = request.form.get("name", "").strip()
         if not name:
@@ -2563,13 +2574,13 @@ def update_menu_item(item_id):
             item.chef_user_id = None
         elif chef_user_id_raw.isdigit():
             chef_user = User.query.get(int(chef_user_id_raw))
-            if chef_user and chef_user.active and chef_user.has_role("chef"):
+            if chef_user and chef_user.active and _is_preparation_responsibility_user(chef_user):
                 item.chef_user_id = chef_user.id
             else:
-                flash("Please select a valid chef responsibility.", "error")
+                flash("Please select a valid preparation responsibility.", "error")
                 return redirect(url_for("cafe.menu", section="items"))
         else:
-            flash("Please select a valid chef responsibility.", "error")
+            flash("Please select a valid preparation responsibility.", "error")
             return redirect(url_for("cafe.menu", section="items"))
 
     item.available = True if request.form.get("available") else False
@@ -5001,7 +5012,7 @@ def _build_review_summary_payload(start_value: date, end_value: date, table_filt
         row = chef_rollup.setdefault(
             item.chef_user_id,
             {
-                "chef_name": item.chef.full_name if item.chef else "Unknown Chef",
+                "chef_name": item.chef.full_name if item.chef else "Unknown Staff",
                 "assigned_items": 0,
                 "sales_total": 0.0,
                 "sold_qty": 0,
@@ -5026,7 +5037,7 @@ def _build_review_summary_payload(start_value: date, end_value: date, table_filt
         row = chef_rollup.setdefault(
             menu_item.chef_user_id,
             {
-                "chef_name": menu_item.chef.full_name if menu_item.chef else "Unknown Chef",
+                "chef_name": menu_item.chef.full_name if menu_item.chef else "Unknown Staff",
                 "assigned_items": 0,
                 "sales_total": 0.0,
                 "sold_qty": 0,
@@ -5101,7 +5112,7 @@ def _build_review_summary_payload(start_value: date, end_value: date, table_filt
                 chef_row = chef_rollup.setdefault(
                     item.menu_item.chef_user_id,
                     {
-                        "chef_name": item.menu_item.chef.full_name if item.menu_item.chef else "Unknown Chef",
+                        "chef_name": item.menu_item.chef.full_name if item.menu_item.chef else "Unknown Staff",
                         "assigned_items": 0,
                         "sales_total": 0.0,
                         "sold_qty": 0,
@@ -5317,8 +5328,8 @@ def review_summary_export():
     for row in payload["day_rows"]:
         ws_days.append([row["day"], row["count"], row["service_average"], row["item_average"]])
 
-    ws_chefs = wb.create_sheet(title="Chefs")
-    ws_chefs.append(["Chef", "Assigned Items", "Paid Sales", "Qty Sold", "Review Count", "Average Rating", "Complaints"])
+    ws_chefs = wb.create_sheet(title="Preparation Staff")
+    ws_chefs.append(["Responsible Staff", "Assigned Items", "Paid Sales", "Qty Sold", "Review Count", "Average Rating", "Complaints"])
     for row in payload["chef_rows"]:
         ws_chefs.append([row["chef_name"], row["assigned_items"], row["sales_total"], row["sold_qty"], row["review_count"], row["average_rating"], row["complaint_count"]])
 
