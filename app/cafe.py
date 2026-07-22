@@ -5387,7 +5387,11 @@ def review_summary_detail(feedback_id):
                 "item_average": item_average,
                 "summary_text": (entry.summary_text or "").strip(),
                 "order_ids": order_ids,
-                "primary_order_reference": (entry.primary_order.internal_ref if entry.primary_order else ""),
+                "primary_order_reference": (
+                    (entry.primary_order.display_code or _format_internal_order_code(entry.primary_order))
+                    if entry.primary_order
+                    else ""
+                ),
                 "items": item_rows,
             },
         }

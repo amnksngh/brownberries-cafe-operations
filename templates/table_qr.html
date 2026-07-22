@@ -255,6 +255,48 @@
     background: rgba(70, 137, 112, 0.08);
     border: 1px solid rgba(70, 137, 112, 0.16);
   }
+  .bill-receipt-footer {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    padding: 1rem;
+    border-top: 1px solid rgba(111, 74, 53, 0.14);
+    border-radius: 14px;
+    background: linear-gradient(135deg, rgba(70, 137, 112, 0.11), rgba(255, 247, 226, 0.95));
+  }
+  .bill-receipt-footer.hidden {
+    display: none;
+  }
+  .bill-receipt-footer > div:first-child {
+    display: grid;
+    gap: 0.18rem;
+  }
+  .bill-receipt-footer > div:first-child strong {
+    color: #315f4d;
+  }
+  .bill-receipt-footer > div:first-child .muted {
+    font-size: 0.82rem;
+  }
+  .bill-receipt-actions {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 0.5rem;
+  }
+  @media (max-width: 640px) {
+    .bill-receipt-footer {
+      align-items: stretch;
+      flex-direction: column;
+    }
+    .bill-receipt-actions {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+    .bill-receipt-actions .button-link {
+      text-align: center;
+    }
+  }
   @keyframes qrDockPulse {
     0% { transform: scale(1); box-shadow: 0 0 0 rgba(212, 160, 23, 0); }
     22% { transform: scale(1.01); background: linear-gradient(135deg, #2f68cf, #c98a11); box-shadow: 0 0 0 6px rgba(212, 160, 23, 0.15); }
@@ -538,6 +580,16 @@
             <a id="feedback-prompt-link" class="button-link {% if feedback_prompt and feedback_prompt.feedback_exists and not feedback_prompt.feedback_editable %}hidden{% endif %}" href="{% if feedback_prompt %}{{ feedback_prompt.feedback_url }}{% else %}#{% endif %}">{% if feedback_prompt and feedback_prompt.feedback_exists %}Add Your Feedback{% else %}Leave Feedback{% endif %}</a>
           </div>
         </div>
+        <footer class="bill-receipt-footer {% if not feedback_prompt %}hidden{% endif %}" id="bill-receipt-footer">
+          <div>
+            <strong>Your receipt is ready</strong>
+            <span class="muted" id="bill-receipt-footer-copy">Download or print the receipt for all orders settled together at this table.</span>
+          </div>
+          <div class="bill-receipt-actions">
+            <a id="bill-receipt-view" class="button-link" href="{% if feedback_prompt %}{{ feedback_prompt.receipt_url }}{% else %}#{% endif %}" target="_blank" rel="noopener">View Receipt</a>
+            <a id="bill-receipt-print" class="button-link" href="{% if feedback_prompt %}{{ feedback_prompt.receipt_url }}?print=1{% else %}#{% endif %}" target="_blank" rel="noopener">Print / Save PDF</a>
+          </div>
+        </footer>
       </div>
     </section>
     {% endif %}
@@ -666,6 +718,9 @@
   const feedbackPromptTitle = document.getElementById("feedback-prompt-title");
   const feedbackPromptCopy = document.getElementById("feedback-prompt-copy");
   const feedbackPromptLink = document.getElementById("feedback-prompt-link");
+  const billReceiptFooter = document.getElementById("bill-receipt-footer");
+  const billReceiptView = document.getElementById("bill-receipt-view");
+  const billReceiptPrint = document.getElementById("bill-receipt-print");
   const serviceChargeRate = Number({{ service_charge_rate or 5 }});
   let orderSubmitLocked = false;
   let toastTimer = null;
@@ -838,9 +893,16 @@
     if (!prompt) {
       feedbackPrompt.classList.add("hidden");
       if (feedbackPromptLink) feedbackPromptLink.href = "#";
+      billReceiptFooter?.classList.add("hidden");
+      if (billReceiptView) billReceiptView.href = "#";
+      if (billReceiptPrint) billReceiptPrint.href = "#";
       return;
     }
     feedbackPrompt.classList.remove("hidden");
+    const receiptUrl = prompt.receipt_url || "#";
+    billReceiptFooter?.classList.remove("hidden");
+    if (billReceiptView) billReceiptView.href = receiptUrl;
+    if (billReceiptPrint) billReceiptPrint.href = receiptUrl === "#" ? "#" : `${receiptUrl}?print=1`;
     if (feedbackPromptTitle) {
       if (prompt.feedback_exists && !prompt.feedback_editable) {
         feedbackPromptTitle.textContent = "Feedback already saved";

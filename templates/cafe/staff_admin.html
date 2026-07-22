@@ -14,6 +14,7 @@
   {% if user_has_any_role(g.current_user, "admin") %}
   <p><a class="button-link" href="{{ url_for('cafe.user_types') }}">Manage Roles</a></p>
   {% endif %}
+  <p><a class="button-link" href="{{ url_for('main.staff_app') }}">Open Staff Attendance App Page</a></p>
 </section>
 
 <section class="library-layout">

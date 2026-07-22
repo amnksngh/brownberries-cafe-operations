@@ -3,8 +3,10 @@ import os
 import calendar
 import math
 import re
+import zipfile
 from datetime import date, datetime, time
 from io import BytesIO
+from pathlib import Path
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
@@ -96,12 +98,37 @@ RECRUITMENT_SKILL_OPTIONS = [
 PUBLIC_JOB_DEPARTMENTS = [
     "Barista", "Kitchen", "Service", "Cashier", "Library", "Inventory", "Housekeeping", "Delivery",
 ]
+STAFF_APP_APK_FILENAME = "BrownberriesAttendance.apk"
 
 
 def _is_cafe_admin(user: User) -> bool:
     return user.email == PROTECTED_ADMIN_EMAIL or (
         user_has_any_role(user, "admin") and user.full_name.strip().lower() == "cafe admin"
     )
+
+
+def _staff_app_apk_path() -> Path:
+    return Path(current_app.static_folder) / "downloads" / STAFF_APP_APK_FILENAME
+
+
+def _staff_app_source_dir() -> Path:
+    return Path(current_app.root_path).parent / "android" / "BrownberriesAttendance"
+
+
+def _staff_app_download_context() -> dict:
+    apk_path = _staff_app_apk_path()
+    source_dir = _staff_app_source_dir()
+    apk_available = apk_path.exists() and apk_path.is_file()
+    return {
+        "apk_available": apk_available,
+        "apk_filename": STAFF_APP_APK_FILENAME,
+        "apk_download_url": url_for("main.download_staff_app_apk") if apk_available else "",
+        "source_download_url": url_for("main.download_staff_app_source"),
+        "source_available": source_dir.exists() and source_dir.is_dir(),
+        "server_base_url": (load_deployment_config(current_app.instance_path).get("PUBLIC_BASE_URL") or request.host_url.rstrip("/")).strip(),
+        "attendance_app_page_url": url_for("main.staff_app", _external=True),
+        "apk_publish_path": str(Path(current_app.static_folder) / "downloads" / STAFF_APP_APK_FILENAME),
+    }
 
 
 def _slugify_text(value: str) -> str:
@@ -159,6 +186,53 @@ def healthz():
             ),
             500,
         )
+
+
+@bp.route("/staff/app")
+@login_required
+def staff_app():
+    download_ctx = _staff_app_download_context()
+    return render_template(
+        "staff_app.html",
+        **download_ctx,
+    )
+
+
+@bp.route("/staff/app/download")
+@login_required
+def download_staff_app_apk():
+    apk_path = _staff_app_apk_path()
+    if not apk_path.exists() or not apk_path.is_file():
+        flash("Attendance APK is not published on the server yet. Use the source bundle for now or ask admin to upload the APK build.", "error")
+        return redirect(url_for("main.staff_app"))
+    return send_file(
+        apk_path,
+        as_attachment=True,
+        download_name=STAFF_APP_APK_FILENAME,
+        mimetype="application/vnd.android.package-archive",
+    )
+
+
+@bp.route("/staff/app/source")
+@login_required
+def download_staff_app_source():
+    source_dir = _staff_app_source_dir()
+    if not source_dir.exists() or not source_dir.is_dir():
+        flash("Android attendance source bundle is not available in this installation.", "error")
+        return redirect(url_for("main.staff_app"))
+
+    memory_file = BytesIO()
+    with zipfile.ZipFile(memory_file, "w", zipfile.ZIP_DEFLATED) as archive:
+        for path in source_dir.rglob("*"):
+            if path.is_file():
+                archive.write(path, path.relative_to(source_dir.parent))
+    memory_file.seek(0)
+    return send_file(
+        memory_file,
+        as_attachment=True,
+        download_name=f"BrownberriesAttendance-source-{date.today().isoformat()}.zip",
+        mimetype="application/zip",
+    )
 
 
 def _job_skills(job: JobOpening) -> list[str]:
@@ -381,6 +455,7 @@ def _table_feedback_prompt(table: CafeTable | None) -> dict | None:
         "feedback_editable": (not feedback) or (feedback.source != "online"),
         "paid_at": latest_paid_order.paid_at.astimezone(UTC_TZ).isoformat() if getattr(latest_paid_order.paid_at, "tzinfo", None) else (latest_paid_order.paid_at.isoformat() if latest_paid_order.paid_at else ""),
         "feedback_url": url_for("cafe.public_settlement_feedback", order_id=primary_order.id),
+        "receipt_url": url_for("cafe.public_receipt", order_id=primary_order.id),
     }
 
 

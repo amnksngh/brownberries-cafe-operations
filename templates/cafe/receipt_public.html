@@ -208,7 +208,7 @@
 <body>
   <div class="receipt-page">
     <div class="print-actions">
-      <button type="button" onclick="window.print()">Print / Download</button>
+      <button type="button" onclick="window.print()">Print / Save as PDF</button>
     </div>
     <article class="receipt-paper">
       <header class="receipt-header">
@@ -293,5 +293,10 @@
       </footer>
     </article>
   </div>
+  <script>
+    if (new URLSearchParams(window.location.search).get("print") === "1") {
+      window.addEventListener("load", () => window.setTimeout(() => window.print(), 350));
+    }
+  </script>
 </body>
 </html>

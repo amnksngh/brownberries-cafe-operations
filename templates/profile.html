@@ -230,6 +230,9 @@
     <section class="panel">
       <h3>Attendance</h3>
       <p class="muted">Use one tap only: check in when you arrive, check out when you leave. The system calculates late marks and attendance status automatically.</p>
+      <p style="margin-bottom:0.8rem;">
+        <a href="{{ url_for('main.staff_app') }}" class="button-link">Download Staff App</a>
+      </p>
       <form method="get" class="grid grid-4" style="margin-bottom:0.8rem;">
         <input type="hidden" name="section" value="attendance" />
         {% if can_admin_view %}<input type="hidden" name="user_id" value="{{ profile_user.id }}" />{% endif %}

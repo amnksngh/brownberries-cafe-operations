@@ -1,0 +1,55 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="panel">
+  <h2>Brownberries Attendance</h2>
+  <p class="muted">
+    This is the Android staff attendance app for automatic geo-fence check-in, one-minute heartbeat sync,
+    auto check-out after grace periods, and shift-aware attendance tracking.
+  </p>
+</section>
+
+<section class="grid grid-2">
+  <div class="panel">
+    <h3>Download</h3>
+    {% if apk_available %}
+    <p class="flash success">
+      The Android install package is published on this server and ready for staff download.
+    </p>
+    <p><a class="button-link" href="{{ apk_download_url }}">Download Staff App (.apk)</a></p>
+    {% else %}
+    <p class="flash error">
+      The Android APK is not published on this server yet. The attendance system backend is ready, but the installable app file still needs to be built and uploaded once.
+    </p>
+    {% endif %}
+    {% if source_available %}
+    <p><a class="button-link" href="{{ source_download_url }}">Download Android Source Bundle</a></p>
+    {% endif %}
+    <p class="muted">Server URL for the app: <strong>{{ server_base_url }}</strong></p>
+  </div>
+
+  <div class="panel">
+    <h3>How Staff Use It</h3>
+    <ol>
+      <li>Install the app on an Android phone.</li>
+      <li>Sign in with the same Brownberries staff email and password.</li>
+      <li>Allow fine location, background location, and notifications.</li>
+      <li>Leave monitoring enabled while working.</li>
+      <li>The app checks position roughly every minute and syncs attendance automatically.</li>
+    </ol>
+    <p class="muted">
+      If a staff member leaves the cafe geofence, the app starts the checkout grace timer. If internet is unavailable, it waits longer and syncs the checkout when the phone reconnects.
+    </p>
+  </div>
+</section>
+
+<section class="panel">
+  <h3>Admin Publish Step</h3>
+  <p class="muted">
+    To make the install button live for staff, build the Android app once in Android Studio and place the generated APK here on the server:
+  </p>
+  <pre><code>{{ apk_publish_path }}</code></pre>
+  <p class="muted">
+    After that, this page automatically switches from source-only mode to direct APK download mode.
+  </p>
+</section>
+{% endblock %}
