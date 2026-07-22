@@ -60,6 +60,7 @@ from .models import (
     Workstation,
 )
 from .sms_gateway import send_sms_from_config
+from .staff_lifecycle import retire_staff_account
 
 bp = Blueprint("cafe", __name__, url_prefix="/cafe")
 
@@ -6421,13 +6422,11 @@ def staff():
             if _is_protected_admin(user):
                 flash("Cafe Admin cannot be deleted.", "error")
                 return _staff_redirect("active_staff")
-            if user.staff_profile:
-                db.session.delete(user.staff_profile)
-            StaffAttendance.query.filter_by(user_id=user.id).delete()
-            StaffLeaveRequest.query.filter_by(user_id=user.id).delete()
-            db.session.delete(user)
-            db.session.commit()
-            flash("Staff member deleted.", "success")
+            result = retire_staff_account(user)
+            if result == "archived":
+                flash("Staff member has historical records, so the login was disabled and the account was archived.", "success")
+            else:
+                flash("Staff member deleted.", "success")
             return _staff_redirect("active_staff")
 
         if action == "archive":

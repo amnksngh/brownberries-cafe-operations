@@ -55,6 +55,7 @@ from .models import (
     UserType,
     User,
 )
+from .staff_lifecycle import retire_staff_account
 
 bp = Blueprint("main", __name__)
 PROTECTED_ADMIN_EMAIL = "admin@brownberries.local"
@@ -1989,11 +1990,9 @@ def delete_user(user_id):
     if _is_cafe_admin(user):
         flash("Cafe Admin cannot be deleted.", "error")
         return redirect(url_for("cafe.staff"))
-    if user.staff_profile:
-        db.session.delete(user.staff_profile)
-    StaffAttendance.query.filter_by(user_id=user.id).delete()
-    StaffLeaveRequest.query.filter_by(user_id=user.id).delete()
-    db.session.delete(user)
-    db.session.commit()
-    flash("Staff member deleted.", "success")
+    result = retire_staff_account(user)
+    if result == "archived":
+        flash("Staff member has historical records, so the login was disabled and the account was archived.", "success")
+    else:
+        flash("Staff member deleted.", "success")
     return redirect(url_for("cafe.staff"))
