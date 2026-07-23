@@ -25,6 +25,8 @@
     <a href="{{ url_for('cafe.staff', section='attendance_calendar', attendance_user_id=attendance_user_id, attendance_month=attendance_month, attendance_year=attendance_year) }}" class="{% if active_staff_section == 'attendance_calendar' %}active{% endif %}">Attendance Calendar</a>
     <a href="{{ url_for('cafe.staff', section='attendance_entry', attendance_user_id=attendance_user_id, attendance_month=attendance_month, attendance_year=attendance_year) }}" class="{% if active_staff_section == 'attendance_entry' %}active{% endif %}">Attendance Entry</a>
     <a href="{{ url_for('cafe.staff', section='leave_requests') }}" class="{% if active_staff_section == 'leave_requests' %}active{% endif %}">Leave Requests</a>
+    <a href="{{ url_for('cafe.staff', section='leave_settings') }}" class="{% if active_staff_section == 'leave_settings' %}active{% endif %}">Leave Settings</a>
+    <a href="{{ url_for('cafe.staff', section='rulebook') }}" class="{% if active_staff_section == 'rulebook' %}active{% endif %}">Attendance Rule Book</a>
     <a href="{{ url_for('cafe.staff', section='docs_review') }}" class="{% if active_staff_section == 'docs_review' %}active{% endif %}">Docs Review</a>
     <a href="{{ url_for('cafe.staff', section='payroll_summary', payroll_month=payroll_month, payroll_year=payroll_year) }}" class="{% if active_staff_section == 'payroll_summary' %}active{% endif %}">Payroll Summary</a>
   </aside>
@@ -93,7 +95,9 @@
               </td>
               <td>
                 {% set leaves = leave_summary.get(s.user_id, {"pending": 0, "approved": 0}) %}
-                Pending: {{ leaves.pending }}<br />Approved: {{ leaves.approved }}
+                Pending: {{ leaves.pending }}<br />Approved: {{ leaves.approved }}<br />
+                {% set balance = staff_leave_balances.get(s.user_id) %}
+                Earned: {{ "%.1f"|format(balance.earned_balance if balance else 0) }}<br />Urgent: {{ "%.1f"|format(balance.urgent_balance if balance else 0) }}
               </td>
               <td>
                 <form method="post" enctype="multipart/form-data" class="grid">
@@ -253,7 +257,7 @@
         <label>Year<input type="number" min="2000" max="2100" name="attendance_year" value="{{ attendance_year }}" /></label>
         <button type="submit">View Calendar</button>
       </form>
-      <p class="muted">Present = green, Half Day = yellow, Short Attendance = amber, Absent = red, On Leave = blue, Pending Correction = soft brown.</p>
+      <p class="muted">Present = green, Half Day = yellow, Short Attendance = amber, Absent = red, Earned Leave = blue, Urgent Leave = red, Company Holiday = purple, Weekly Off = gray.</p>
       <div class="attendance-calendar">
         <div class="cal-head">Mon</div><div class="cal-head">Tue</div><div class="cal-head">Wed</div><div class="cal-head">Thu</div><div class="cal-head">Fri</div><div class="cal-head">Sat</div><div class="cal-head">Sun</div>
         {% for week in attendance_month_rows %}
@@ -262,7 +266,7 @@
             <div class="cal-cell empty"></div>
             {% else %}
             {% set st = selected_attendance_map.get(day) %}
-            <div class="cal-cell"><span class="day-dot {% if st in ['present','present_all_day'] %}st-present{% elif st in ['half-day','first_half','second_half'] %}st-half{% elif st == 'short_attendance' %}st-half{% elif st == 'absent' %}st-absent{% elif st in ['on-leave','on_leave'] %}st-leave{% elif st in ['pending_correction', 'missed_checkout'] %}st-leave{% endif %}">{{ day }}</span></div>
+            <div class="cal-cell"><span class="day-dot {% if st in ['present','present_all_day'] %}st-present{% elif st in ['half-day','first_half','second_half','half_day_leave','half_day_earned_leave','half_day_urgent_leave'] %}st-half{% elif st in ['short_attendance','absent','urgent_leave'] %}st-absent{% elif st in ['on-leave','on_leave','earned_leave'] %}st-leave{% elif st in ['company_holiday'] %}st-holiday{% elif st in ['weekly_off'] %}st-weekly-off{% elif st in ['pending_correction', 'missed_checkout'] %}st-leave{% endif %}" title="{{ st or 'No attendance record' }}">{{ day }}</span></div>
             {% endif %}
           {% endfor %}
         {% endfor %}
@@ -343,13 +347,14 @@
       <h3>Leave Requests</h3>
       <div style="overflow:auto">
         <table>
-          <thead><tr><th>Staff</th><th>Type</th><th>Dates</th><th>Reason</th><th>Status</th><th>Admin Action</th></tr></thead>
+          <thead><tr><th>Staff</th><th>Type</th><th>Dates / Shifts</th><th>Duration</th><th>Reason</th><th>Status</th><th>Admin Action</th></tr></thead>
           <tbody>
             {% for leave in leave_requests %}
             <tr>
               <td>{{ leave.user.full_name }}</td>
               <td>{{ leave.leave_type }}</td>
-              <td>{{ leave.start_date }} to {{ leave.end_date }}</td>
+              <td>{{ leave.start_date }} {{ leave.from_shift.replace('_', ' ') }} to {{ leave.end_date }} {{ leave.to_shift.replace('_', ' ') }}</td>
+              <td>{{ "%.1f"|format(leave.duration_days or 0) }} day(s)</td>
               <td>{{ leave.reason or "-" }}</td>
               <td>{{ leave.status }}</td>
               <td>
@@ -357,10 +362,12 @@
                   <input type="hidden" name="action" value="leave_decision" />
                   <input type="hidden" name="leave_id" value="{{ leave.id }}" />
                   <label>Decision
-                    <select name="decision">
+                  <select name="decision">
                       <option value="pending" {% if leave.status == "pending" %}selected{% endif %}>Pending</option>
                       <option value="approved" {% if leave.status == "approved" %}selected{% endif %}>Approved</option>
                       <option value="rejected" {% if leave.status == "rejected" %}selected{% endif %}>Rejected</option>
+                      <option value="requested_changes" {% if leave.status == "requested_changes" %}selected{% endif %}>Request Changes</option>
+                      <option value="cancelled" {% if leave.status == "cancelled" %}selected{% endif %}>Cancelled</option>
                     </select>
                   </label>
                   <label>Remarks<input name="admin_remarks" value="{{ leave.admin_remarks or '' }}" /></label>
@@ -369,11 +376,134 @@
               </td>
             </tr>
             {% else %}
-            <tr><td colspan="6">No leave requests yet.</td></tr>
+            <tr><td colspan="7">No leave requests yet.</td></tr>
             {% endfor %}
           </tbody>
         </table>
       </div>
+    </section>
+    {% endif %}
+
+    {% if active_staff_section == "leave_settings" %}
+    <section class="panel">
+      <h3>Leave Policy & Calendar</h3>
+      <p class="muted">All rules are stored in the database. Credits and annual urgent-leave resets are idempotent and run automatically when the server starts.</p>
+      {% if user_has_any_role(g.current_user, "admin") %}
+      <form method="post" class="grid grid-4">
+        <input type="hidden" name="action" value="save_leave_settings" />
+        <label>Credit on 15th<input type="number" min="0" step="0.5" name="monthly_earned_credit" value="{{ leave_policy.monthly_earned_credit }}" /></label>
+        <label>Credit at month end<input type="number" min="0" step="0.5" name="month_end_earned_credit" value="{{ leave_policy.month_end_earned_credit }}" /></label>
+        <label>Max continuous days<input type="number" min="1" name="max_continuous_days" value="{{ leave_policy.max_continuous_days }}" /></label>
+        <label>Max company leaves<input type="number" min="1" name="max_company_leaves" value="{{ leave_policy.max_company_leaves }}" /></label>
+        <label>Urgent leaves / year<input type="number" min="0" step="0.5" name="urgent_leaves_per_year" value="{{ leave_policy.urgent_leaves_per_year }}" /></label>
+        <label>Urgent leave monthly limit<input type="number" min="0" step="0.5" name="max_monthly_urgent_leaves" value="{{ leave_policy.max_monthly_urgent_leaves }}" /></label>
+        <label>Role cooldown days<input type="number" min="0" name="role_cooldown_days" value="{{ leave_policy.role_cooldown_days }}" /></label>
+        <label><input type="checkbox" name="urgent_requires_probation" {% if leave_policy.urgent_requires_probation %}checked{% endif %} /> Urgent leave requires completed probation</label>
+        <label><input type="checkbox" name="weekly_off_enabled" {% if weekly_off_config.enabled %}checked{% endif %} /> Enable weekly off</label>
+        <label>Weekly off weekday
+          <select name="weekly_off_weekday">
+            {% for value, label in [(0,"Monday"),(1,"Tuesday"),(2,"Wednesday"),(3,"Thursday"),(4,"Friday"),(5,"Saturday"),(6,"Sunday")] %}
+            <option value="{{ value }}" {% if weekly_off_config.weekday == value %}selected{% endif %}>{{ label }}</option>
+            {% endfor %}
+          </select>
+        </label>
+        <label>Weekly off label<input name="weekly_off_label" value="{{ weekly_off_config.label }}" /></label>
+        <button type="submit">Save Leave Settings</button>
+      </form>
+      {% else %}
+      <p class="muted">Only Cafe Admin can change policy settings.</p>
+      {% endif %}
+    </section>
+
+    <section class="panel">
+      <h3>Company Holidays</h3>
+      {% if user_has_any_role(g.current_user, "admin") %}
+      <form method="post" class="grid grid-4">
+        <input type="hidden" name="action" value="add_holiday" />
+        <label>Date<input type="date" name="holiday_date" required /></label>
+        <label>Name<input name="holiday_name" placeholder="Diwali / special closing" required /></label>
+        <button type="submit">Add Holiday</button>
+      </form>
+      {% endif %}
+      <table>
+        <thead><tr><th>Date</th><th>Holiday</th><th>Action</th></tr></thead>
+        <tbody>
+          {% for holiday in company_holidays %}
+          <tr>
+            <td>{{ holiday.holiday_date }}</td><td>{{ holiday.name }}</td>
+            <td>{% if user_has_any_role(g.current_user, "admin") %}<form method="post" class="inline"><input type="hidden" name="action" value="delete_holiday" /><input type="hidden" name="holiday_id" value="{{ holiday.id }}" /><button type="submit">Remove</button></form>{% else %}-{% endif %}</td>
+          </tr>
+          {% else %}<tr><td colspan="3">No company holidays configured.</td></tr>{% endfor %}
+        </tbody>
+      </table>
+    </section>
+
+    <section class="panel">
+      <h3>Role Leave Rules</h3>
+      <p class="muted">Rules apply to every assigned role, including future roles. A matching role blocks overlapping leave and its configured cooldown period.</p>
+      <table>
+        <thead><tr><th>Role</th><th>Enabled</th><th>Max Concurrent</th><th>Cooldown Days</th><th>Action</th></tr></thead>
+        <tbody>
+          {% for rule in role_leave_rules %}
+          <tr>
+            <td>
+              <form id="role-rule-{{ rule.id }}" method="post">
+                <input type="hidden" name="action" value="update_role_leave_rule" />
+                <input type="hidden" name="role_name" value="{{ rule.role_name }}" />
+              </form>
+              {{ rule.role_name.replace('_', ' ').title() }}
+            </td>
+            <td><input form="role-rule-{{ rule.id }}" type="checkbox" name="enabled" {% if rule.enabled %}checked{% endif %} {% if not user_has_any_role(g.current_user, "admin") %}disabled{% endif %} /></td>
+            <td><input form="role-rule-{{ rule.id }}" type="number" min="1" name="max_concurrent_on_leave" value="{{ rule.max_concurrent_on_leave }}" {% if not user_has_any_role(g.current_user, "admin") %}disabled{% endif %} /></td>
+            <td><input form="role-rule-{{ rule.id }}" type="number" min="0" name="cooldown_days" value="{{ rule.cooldown_days }}" {% if not user_has_any_role(g.current_user, "admin") %}disabled{% endif %} /></td>
+            <td>{% if user_has_any_role(g.current_user, "admin") %}<button form="role-rule-{{ rule.id }}" type="submit">Save</button>{% else %}-{% endif %}</td>
+          </tr>
+          {% else %}<tr><td colspan="5">No role rules configured.</td></tr>{% endfor %}
+        </tbody>
+      </table>
+    </section>
+    {% endif %}
+
+    {% if active_staff_section == "rulebook" %}
+    <section class="panel">
+      <h3>Attendance Rule Book</h3>
+      <p class="muted">Employees can read the current version from Profile. Publishing an edit or upload archives the previous version and makes the new one current.</p>
+      <div class="flash success">
+        <strong>Current: v{{ current_rulebook.version }} · {{ current_rulebook.title }}</strong><br />
+        Published {{ current_rulebook.published_at.strftime("%d %b %Y, %I:%M %p") }} IST{% if current_rulebook.published_by %} by {{ current_rulebook.published_by.full_name }}{% endif %}
+        {% if current_rulebook.file_path %}<br /><a href="{{ url_for('main.attendance_rulebook_file') }}" target="_blank" rel="noopener">Open current attachment</a>{% endif %}
+      </div>
+      <div style="background:#fffdf8;border:1px solid #eadfd1;border-radius:12px;padding:1rem;white-space:pre-wrap;line-height:1.6;max-height:45vh;overflow:auto;">{{ current_rulebook.content_text or "The current rule book is available as an attachment." }}</div>
+      {% if user_has_any_role(g.current_user, "admin") %}
+      <form method="post" enctype="multipart/form-data" class="grid grid-4" style="margin-top:1rem;">
+        <input type="hidden" name="action" value="save_rulebook" />
+        <label>Rule Book Title<input name="rulebook_title" value="{{ current_rulebook.title }}" maxlength="160" /></label>
+        <label>Upload Updated File <input type="file" name="rulebook_file" accept=".pdf,.txt,.md,.doc,.docx" /></label>
+        <label class="full">Edit Rule Book Text
+          <textarea name="rulebook_content" rows="24" style="width:100%;font:inherit;line-height:1.5;">{{ current_rulebook.content_text or "" }}</textarea>
+        </label>
+        <button type="submit">Publish New Version</button>
+      </form>
+      {% else %}
+      <p class="muted">Only Cafe Admin can modify or publish the rule book.</p>
+      {% endif %}
+    </section>
+    <section class="panel">
+      <h3>Previous Versions</h3>
+      <table>
+        <thead><tr><th>Version</th><th>Published</th><th>Published By</th><th>Status</th><th>Attachment</th></tr></thead>
+        <tbody>
+          {% for rulebook in rulebook_versions %}
+          <tr>
+            <td>v{{ rulebook.version }}<br /><small>{{ rulebook.title }}</small></td>
+            <td>{{ rulebook.published_at.strftime("%d %b %Y, %I:%M %p") }} IST</td>
+            <td>{{ rulebook.published_by.full_name if rulebook.published_by else "System" }}</td>
+            <td>{{ "Current" if rulebook.active else "Archived" }}</td>
+            <td>{{ rulebook.file_name or "Text version" }}</td>
+          </tr>
+          {% else %}<tr><td colspan="5">No rule-book versions yet.</td></tr>{% endfor %}
+        </tbody>
+      </table>
     </section>
     {% endif %}
 

@@ -12,6 +12,7 @@
     <a href="{{ url_for('main.profile', section='documents', user_id=profile_user.id if can_admin_view else None) }}" class="{% if active_section == 'documents' %}active{% endif %}">Documents</a>
     <a href="{{ url_for('main.profile', section='salary', user_id=profile_user.id if can_admin_view else None) }}" class="{% if active_section == 'salary' %}active{% endif %}">Salary Receipts</a>
     <a href="{{ url_for('main.profile', section='attendance', user_id=profile_user.id if can_admin_view else None) }}" class="{% if active_section == 'attendance' %}active{% endif %}">Attendance</a>
+    <a href="{{ url_for('main.profile', section='rulebook', user_id=profile_user.id if can_admin_view else None) }}" class="{% if active_section == 'rulebook' %}active{% endif %}">Attendance Rule Book</a>
   </aside>
 
   <div class="profile-content">
@@ -230,6 +231,18 @@
     <section class="panel">
       <h3>Attendance</h3>
       <p class="muted">Use one tap only: check in when you arrive, check out when you leave. The system calculates late marks and attendance status automatically.</p>
+      {% if staff_notifications %}
+      <div class="flash success">
+        <strong>Staff updates</strong>
+        {% for notification in staff_notifications[:5] %}<div>{{ notification.message }} <small>({{ notification.created_at.strftime("%d %b %Y, %I:%M %p") }})</small></div>{% endfor %}
+      </div>
+      {% endif %}
+      <div class="grid grid-4" style="margin-bottom:0.8rem;">
+        <div class="flash success"><strong>Earned Leave:</strong> {{ "%.1f"|format(leave_balance.earned_balance or 0) }} day(s)</div>
+        <div class="flash success"><strong>Urgent Leave:</strong> {{ "%.1f"|format(leave_balance.urgent_balance or 0) }} day(s)</div>
+        <div class="flash success"><strong>Max Continuous:</strong> {{ leave_policy.max_continuous_days }} day(s)</div>
+        <div class="flash success"><strong>Pending Requests:</strong> {{ leave_logs|selectattr("status", "equalto", "pending")|list|length }}</div>
+      </div>
       <p style="margin-bottom:0.8rem;">
         <a href="{{ url_for('main.staff_app') }}" class="button-link">Download Staff App</a>
       </p>
@@ -328,7 +341,7 @@
       </form>
       {% endif %}
       {% if profile_user.id == g.current_user.id %}
-      <form method="post" class="grid grid-4" style="margin-top:0.8rem;">
+      <form method="post" id="leave-request-form" enctype="multipart/form-data" class="grid grid-4" style="margin-top:0.8rem;">
         <input type="hidden" name="action" value="leave_request" />
         <label>Leave Type
           <select name="leave_type">
@@ -339,23 +352,69 @@
         </label>
         <label>Start Date<input type="date" name="start_date" required /></label>
         <label>End Date<input type="date" name="end_date" required /></label>
+        <label>From Shift
+          <select name="from_shift"><option value="first_half">First Half</option><option value="second_half">Second Half</option></select>
+        </label>
+        <label>To Shift
+          <select name="to_shift"><option value="first_half">First Half</option><option value="second_half" selected>Second Half</option></select>
+        </label>
         <label>Reason<input name="reason" /></label>
+        <label>Supporting Document<input type="file" name="supporting_document" accept="image/*,.pdf" /></label>
         <button type="submit">Submit Leave Request</button>
       </form>
+      <script>
+        (() => {
+          const form = document.getElementById("leave-request-form");
+          const availability = {{ leave_availability|tojson }};
+          if (!form) return;
+          form.addEventListener("submit", (event) => {
+            const start = form.elements.start_date.value;
+            const end = form.elements.end_date.value;
+            if (!start || !end) return;
+            const cursor = new Date(`${start}T00:00:00`);
+            const final = new Date(`${end}T00:00:00`);
+            while (cursor <= final) {
+              const key = cursor.toISOString().slice(0, 10);
+              if (availability[key] && !availability[key].available) {
+                event.preventDefault();
+                window.alert(`Leave is unavailable on ${key}: ${availability[key].reason}`);
+                return;
+              }
+              cursor.setDate(cursor.getDate() + 1);
+            }
+          });
+        })();
+      </script>
       {% endif %}
+      <h4>Leave Availability Calendar</h4>
+      <p class="muted">Green dates can be requested. Red dates show the first reason they are blocked.</p>
+      <div class="attendance-calendar">
+        <div class="cal-head">Mon</div><div class="cal-head">Tue</div><div class="cal-head">Wed</div><div class="cal-head">Thu</div><div class="cal-head">Fri</div><div class="cal-head">Sat</div><div class="cal-head">Sun</div>
+        {% for week in leave_month_rows %}
+          {% for day in week %}
+            {% if day == 0 %}<div class="cal-cell empty"></div>{% else %}
+              {% set availability = leave_availability.get('%04d-%02d-%02d'|format(leave_year, leave_month, day)) %}
+              <div class="cal-cell"><span class="day-dot {% if availability and availability.available %}st-present{% else %}st-absent{% endif %}" title="{{ availability.reason if availability else 'Unavailable' }}">{{ day }}</span></div>
+            {% endif %}
+          {% endfor %}
+        {% endfor %}
+      </div>
+      {% if leave_holidays %}<p class="muted"><strong>Upcoming holidays:</strong> {% for holiday in leave_holidays[:6] %}{{ holiday.holiday_date }} {{ holiday.name }}{% if not loop.last %} · {% endif %}{% endfor %}</p>{% endif %}
       <h4>Leave Requests</h4>
       <table>
-        <thead><tr><th>Type</th><th>Dates</th><th>Status</th><th>Remarks</th></tr></thead>
+        <thead><tr><th>Type</th><th>Dates / Shifts</th><th>Duration</th><th>Status</th><th>Remarks</th><th>Action</th></tr></thead>
         <tbody>
           {% for leave in leave_logs %}
           <tr>
             <td>{{ leave.leave_type|title }}</td>
-            <td>{{ leave.start_date }} to {{ leave.end_date }}</td>
+            <td>{{ leave.start_date }} {{ leave.from_shift.replace('_', ' ') }} to {{ leave.end_date }} {{ leave.to_shift.replace('_', ' ') }}</td>
+            <td>{{ "%.1f"|format(leave.duration_days or 0) }} day(s)</td>
             <td>{{ leave.status|title }}</td>
             <td>{{ leave.admin_remarks or "-" }}</td>
+            <td>{% if leave.status in ["pending", "requested_changes"] and leave.user_id == g.current_user.id %}<form method="post" class="inline"><input type="hidden" name="action" value="cancel_leave_request" /><input type="hidden" name="leave_id" value="{{ leave.id }}" /><button type="submit">Cancel</button></form>{% else %}-{% endif %}</td>
           </tr>
           {% else %}
-          <tr><td colspan="4">No leave requests yet.</td></tr>
+          <tr><td colspan="6">No leave requests yet.</td></tr>
           {% endfor %}
         </tbody>
       </table>
@@ -380,6 +439,20 @@
           {% endfor %}
         </tbody>
       </table>
+    </section>
+    {% endif %}
+
+    {% if active_section == "rulebook" %}
+    <section class="panel">
+      <div style="display:flex;justify-content:space-between;gap:1rem;align-items:flex-start;flex-wrap:wrap;">
+        <div>
+          <h3>{{ current_rulebook.title }}</h3>
+          <p class="muted">Current published version: <strong>v{{ current_rulebook.version }}</strong> · Published {{ current_rulebook.published_at.strftime("%d %b %Y, %I:%M %p") }} IST{% if current_rulebook.published_by %} by {{ current_rulebook.published_by.full_name }}{% endif %}</p>
+        </div>
+        {% if current_rulebook.file_path %}<a class="button-link" href="{{ url_for('main.attendance_rulebook_file') }}" target="_blank" rel="noopener">Open / Download Attachment</a>{% endif %}
+      </div>
+      <div style="background:#fffdf8;border:1px solid #eadfd1;border-radius:12px;padding:1rem;white-space:pre-wrap;line-height:1.65;max-height:70vh;overflow:auto;">{{ current_rulebook.content_text or "The current rule book is available as the attached document." }}</div>
+      <p class="muted" style="margin-bottom:0;">Please read the latest version before applying for leave or requesting an attendance correction. The version published by management is the controlling version.</p>
     </section>
     {% endif %}
   </div>

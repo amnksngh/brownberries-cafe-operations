@@ -9,8 +9,14 @@ ATTENDANCE_STATUS_LABELS = {
     "short_attendance": "Short Attendance",
     "pending_correction": "Pending Correction",
     "on_leave": "On Leave",
+    "earned_leave": "Earned Leave",
+    "urgent_leave": "Urgent Leave",
+    "half_day_leave": "Half Day Leave",
+    "half_day_earned_leave": "Half Day Earned Leave",
+    "half_day_urgent_leave": "Half Day Urgent Leave",
     "sick_leave": "Sick Leave",
     "weekly_off": "Weekly Off",
+    "company_holiday": "Company Holiday",
     "late_entry": "Late Entry",
     "early_exit": "Early Exit",
     "missed_checkout": "Missed Checkout",
@@ -24,17 +30,18 @@ ATTENDANCE_STATUS_OPTIONS = [
     ("short_attendance", "Short Attendance"),
     ("pending_correction", "Pending Correction"),
     ("on_leave", "On Leave"),
+    ("earned_leave", "Earned Leave"),
+    ("urgent_leave", "Urgent Leave / Absent"),
+    ("half_day_leave", "Half Day Leave"),
     ("sick_leave", "Sick Leave"),
     ("weekly_off", "Weekly Off"),
+    ("company_holiday", "Company Holiday"),
     ("absent", "Absent"),
 ]
 
 SELF_LEAVE_TYPE_OPTIONS = [
-    ("casual", "Casual"),
-    ("sick", "Sick"),
-    ("planned", "Planned"),
-    ("earned", "Earned"),
-    ("emergency", "Emergency"),
+    ("earned", "Earned Leave"),
+    ("urgent", "Urgent Leave"),
 ]
 
 SHIFT_START = time(9, 0)
@@ -173,9 +180,17 @@ def attendance_flags_for_row(row) -> list[str]:
 
 
 def attendance_pay_fraction(status: str | None) -> float:
-    if status in ["present_all_day", "weekly_off", "late_entry", "early_exit", "on_leave"]:
+    if status in [
+        "present_all_day",
+        "weekly_off",
+        "late_entry",
+        "early_exit",
+        "on_leave",
+        "earned_leave",
+        "company_holiday",
+    ]:
         return 1.0
-    if status in ["first_half", "second_half"]:
+    if status in ["first_half", "second_half", "half_day_earned_leave", "half_day_leave"]:
         return 0.5
     if status == "short_attendance":
         return 0.25
@@ -194,6 +209,9 @@ def build_attendance_summary(attendance_logs: list):
         "half_days": 0,
         "short_days": 0,
         "leave_days": 0,
+        "earned_leave_days": 0,
+        "urgent_leave_days": 0,
+        "company_holiday_days": 0,
         "sick_days": 0,
         "weekly_off_days": 0,
         "late_marks": 0,
@@ -212,6 +230,20 @@ def build_attendance_summary(attendance_logs: list):
             summary["short_days"] += 1
         elif status == "on_leave":
             summary["leave_days"] += 1
+        elif status == "earned_leave":
+            summary["leave_days"] += 1
+            summary["earned_leave_days"] += 1
+        elif status in ["half_day_earned_leave", "half_day_leave"]:
+            summary["leave_days"] += 0.5
+            summary["half_days"] += 1
+            summary["earned_leave_days"] += 0.5
+        elif status == "urgent_leave":
+            summary["urgent_leave_days"] += 1
+        elif status == "half_day_urgent_leave":
+            summary["urgent_leave_days"] += 0.5
+            summary["half_days"] += 1
+        elif status == "company_holiday":
+            summary["company_holiday_days"] += 1
         elif status == "sick_leave":
             summary["sick_days"] += 1
         elif status == "weekly_off":

@@ -22,8 +22,10 @@ from .cafe import (
 from .deploy_config import load_deployment_config
 from .extensions import db, socketio
 from .library import bp as library_bp
+from .leave_logic import ensure_leave_defaults, run_leave_maintenance
 from .main import bp as main_bp
 from .mobile_attendance import bp as mobile_attendance_bp
+from .rulebook import ensure_rulebook_default
 from .models import (
     CafeFeedback,
     CafeFeedbackItem,
@@ -101,6 +103,17 @@ def _ensure_sqlite_schema_columns():
             "mobile_device_id": "TEXT",
             "auto_checkout_reason": "TEXT",
             "notes": "TEXT",
+        },
+        "staff_leave_request": {
+            "from_shift": "TEXT NOT NULL DEFAULT 'first_half'",
+            "to_shift": "TEXT NOT NULL DEFAULT 'second_half'",
+            "duration_days": "FLOAT NOT NULL DEFAULT 1",
+            "supporting_document_path": "TEXT",
+            "approved_at": "DATETIME",
+            "decided_by_user_id": "INTEGER",
+            "debited_amount": "FLOAT NOT NULL DEFAULT 0",
+            "cancelled_at": "DATETIME",
+            "cancelled_by_user_id": "INTEGER",
         },
         "user": {
             "user_type_id": "INTEGER",
@@ -320,6 +333,15 @@ def _ensure_sqlite_schema_columns():
         text("CREATE INDEX IF NOT EXISTS idx_staff_attendance_user_date ON staff_attendance (user_id, attendance_date)")
     )
     db.session.execute(
+        text("CREATE INDEX IF NOT EXISTS idx_staff_leave_user_status_dates ON staff_leave_request (user_id, status, start_date, end_date)")
+    )
+    db.session.execute(
+        text("CREATE INDEX IF NOT EXISTS idx_leave_transaction_user_period ON leave_transaction (user_id, period_key)")
+    )
+    db.session.execute(
+        text("CREATE INDEX IF NOT EXISTS idx_staff_notification_user_read ON staff_notification (user_id, read_at, created_at)")
+    )
+    db.session.execute(
         text("CREATE INDEX IF NOT EXISTS idx_inventory_item_category_name ON inventory_item (category_name, name)")
     )
     db.session.execute(
@@ -447,6 +469,7 @@ def create_app():
     (uploads_root / "library_docs").mkdir(parents=True, exist_ok=True)
     (uploads_root / "recruitment").mkdir(parents=True, exist_ok=True)
     (uploads_root / "salary_receipts").mkdir(parents=True, exist_ok=True)
+    (uploads_root / "rulebooks").mkdir(parents=True, exist_ok=True)
     app.config["UPLOADS_ROOT"] = str(uploads_root)
 
     db.init_app(app)
@@ -458,6 +481,9 @@ def create_app():
         _backfill_order_codes()
         _backfill_paid_timestamps()
         _ensure_default_workstations()
+        ensure_leave_defaults()
+        run_leave_maintenance()
+        ensure_rulebook_default()
         default_inventory_categories = [
             ("Groceries", "package", "#b08968"),
             ("Dairy", "milk", "#6ea8fe"),
@@ -525,6 +551,14 @@ def create_app():
                 )
         db.session.commit()
         print("Database initialized. Default admin: admin@brownberries.local / admin123")
+
+    @app.cli.command("maintain-leaves")
+    def maintain_leaves():
+        """Apply idempotent earned/urgent leave maintenance for today."""
+        with app.app_context():
+            ensure_leave_defaults()
+            run_leave_maintenance()
+        print("Leave maintenance completed.")
 
     return app
 

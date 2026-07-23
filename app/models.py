@@ -448,10 +448,112 @@ class StaffLeaveRequest(TimestampMixin, db.Model):
     leave_type = db.Column(db.String(40), nullable=False, default="casual")
     start_date = db.Column(db.Date, nullable=False)
     end_date = db.Column(db.Date, nullable=False)
+    from_shift = db.Column(db.String(20), nullable=False, default="first_half")
+    to_shift = db.Column(db.String(20), nullable=False, default="second_half")
+    duration_days = db.Column(db.Float, nullable=False, default=1)
     reason = db.Column(db.String(500), nullable=True)
+    supporting_document_path = db.Column(db.String(255), nullable=True)
     status = db.Column(db.String(20), nullable=False, default="pending")
     admin_remarks = db.Column(db.String(255), nullable=True)
-    user = db.relationship("User", backref="leave_requests")
+    approved_at = db.Column(db.DateTime, nullable=True)
+    decided_by_user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=True)
+    debited_amount = db.Column(db.Float, nullable=False, default=0)
+    cancelled_at = db.Column(db.DateTime, nullable=True)
+    cancelled_by_user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=True)
+    user = db.relationship("User", foreign_keys=[user_id], backref="leave_requests")
+    decided_by = db.relationship("User", foreign_keys=[decided_by_user_id])
+    cancelled_by = db.relationship("User", foreign_keys=[cancelled_by_user_id])
+
+
+class LeaveType(TimestampMixin, db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    code = db.Column(db.String(40), nullable=False, unique=True)
+    name = db.Column(db.String(80), nullable=False)
+    paid = db.Column(db.Boolean, nullable=False, default=True)
+    uses_balance = db.Column(db.Boolean, nullable=False, default=True)
+    active = db.Column(db.Boolean, nullable=False, default=True)
+
+
+class LeavePolicy(TimestampMixin, db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    monthly_earned_credit = db.Column(db.Float, nullable=False, default=1)
+    month_end_earned_credit = db.Column(db.Float, nullable=False, default=1)
+    max_continuous_days = db.Column(db.Integer, nullable=False, default=7)
+    max_company_leaves = db.Column(db.Integer, nullable=False, default=2)
+    urgent_leaves_per_year = db.Column(db.Float, nullable=False, default=12)
+    max_monthly_urgent_leaves = db.Column(db.Float, nullable=False, default=3)
+    urgent_requires_probation = db.Column(db.Boolean, nullable=False, default=True)
+    role_cooldown_days = db.Column(db.Integer, nullable=False, default=1)
+
+
+class WeeklyOffConfig(TimestampMixin, db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    enabled = db.Column(db.Boolean, nullable=False, default=False)
+    weekday = db.Column(db.Integer, nullable=False, default=6)
+    label = db.Column(db.String(80), nullable=False, default="Weekly Off")
+
+
+class CompanyHoliday(TimestampMixin, db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    holiday_date = db.Column(db.Date, nullable=False, unique=True)
+    name = db.Column(db.String(120), nullable=False)
+    active = db.Column(db.Boolean, nullable=False, default=True)
+
+
+class RoleLeaveRule(TimestampMixin, db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    role_name = db.Column(db.String(80), nullable=False, unique=True)
+    enabled = db.Column(db.Boolean, nullable=False, default=True)
+    max_concurrent_on_leave = db.Column(db.Integer, nullable=False, default=1)
+    cooldown_days = db.Column(db.Integer, nullable=False, default=1)
+
+
+class AttendanceRuleBook(TimestampMixin, db.Model):
+    """Versioned attendance policy published to staff profiles."""
+
+    id = db.Column(db.Integer, primary_key=True)
+    version = db.Column(db.Integer, nullable=False, unique=True)
+    title = db.Column(db.String(160), nullable=False, default="Staff Attendance Rule Book")
+    content_text = db.Column(db.Text, nullable=True)
+    file_path = db.Column(db.String(255), nullable=True)
+    file_name = db.Column(db.String(255), nullable=True)
+    active = db.Column(db.Boolean, nullable=False, default=True)
+    published_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
+    published_by_user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=True)
+    published_by = db.relationship("User", foreign_keys=[published_by_user_id])
+
+
+class LeaveBalance(TimestampMixin, db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False, unique=True)
+    earned_balance = db.Column(db.Float, nullable=False, default=0)
+    urgent_balance = db.Column(db.Float, nullable=False, default=0)
+    urgent_year = db.Column(db.Integer, nullable=True)
+    user = db.relationship("User", backref=db.backref("leave_balance", uselist=False))
+
+
+class LeaveTransaction(TimestampMixin, db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False)
+    leave_request_id = db.Column(db.Integer, db.ForeignKey("staff_leave_request.id"), nullable=True)
+    leave_type = db.Column(db.String(40), nullable=False)
+    amount = db.Column(db.Float, nullable=False, default=0)
+    transaction_type = db.Column(db.String(40), nullable=False)
+    period_key = db.Column(db.String(120), nullable=True)
+    note = db.Column(db.String(255), nullable=True)
+    created_by_user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=True)
+    user = db.relationship("User", foreign_keys=[user_id], backref="leave_transactions")
+    leave_request = db.relationship("StaffLeaveRequest", backref="leave_transactions")
+    created_by = db.relationship("User", foreign_keys=[created_by_user_id])
+
+
+class StaffNotification(TimestampMixin, db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False)
+    category = db.Column(db.String(40), nullable=False, default="staff")
+    message = db.Column(db.String(500), nullable=False)
+    read_at = db.Column(db.DateTime, nullable=True)
+    user = db.relationship("User", backref="staff_notifications")
 
 
 class Customer(TimestampMixin, db.Model):

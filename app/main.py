@@ -33,6 +33,13 @@ from .auth_helpers import login_required, roles_required, user_has_any_role, use
 from .extensions import socketio
 from .extensions import db
 from .deploy_config import load_deployment_config
+from .leave_logic import (
+    apply_leave_decision,
+    business_today,
+    leave_dashboard_context,
+    run_leave_maintenance,
+    validate_leave_request,
+)
 from .models import (
     CafeFeedback,
     CafeOrder,
@@ -51,11 +58,17 @@ from .models import (
     StaffLeaveRequest,
     StaffProfile,
     SalaryReceipt,
+    CompanyHoliday,
+    LeaveBalance,
+    LeaveTransaction,
+    StaffNotification,
+    AttendanceRuleBook,
     TableBooking,
     UserType,
     User,
 )
 from .staff_lifecycle import retire_staff_account
+from .rulebook import ensure_rulebook_default
 
 bp = Blueprint("main", __name__)
 PROTECTED_ADMIN_EMAIL = "admin@brownberries.local"
@@ -1430,6 +1443,8 @@ def _save_profile_file(file_obj, subdir: str, prefix: str):
 @login_required
 def profile():
     current_user = g.current_user
+    run_leave_maintenance()
+    current_rulebook = ensure_rulebook_default()
     target_user_id = request.args.get("user_id", type=int)
     can_admin_view = user_has_any_role(current_user, "admin", "manager") or user_has_permission(current_user, "can_view_staff_profiles")
     if target_user_id and can_admin_view:
@@ -1547,28 +1562,65 @@ def profile():
         if action == "leave_request":
             if current_user.id != user.id:
                 return redirect(url_for("main.profile"))
-            start_date = date.fromisoformat(request.form["start_date"])
-            end_date = date.fromisoformat(request.form["end_date"])
-            if end_date < start_date:
-                flash("Leave end date cannot be before start date.", "error")
+            try:
+                start_date = date.fromisoformat(request.form["start_date"])
+                end_date = date.fromisoformat(request.form["end_date"])
+            except (KeyError, TypeError, ValueError):
+                flash("Please enter valid leave dates.", "error")
                 return redirect(url_for("main.profile", section="attendance"))
-            notice_warning = _leave_notice_message(start_date, end_date)
+            leave_type = request.form.get("leave_type", "earned").strip().lower()
+            from_shift = request.form.get("from_shift", "first_half").strip().lower()
+            to_shift = request.form.get("to_shift", "second_half").strip().lower()
+            errors, duration = validate_leave_request(
+                user, leave_type, start_date, end_date, from_shift, to_shift
+            )
+            if errors:
+                db.session.rollback()
+                flash(" ".join(errors), "error")
+                return redirect(url_for("main.profile", section="attendance"))
+            supporting_document = request.files.get("supporting_document")
+            supporting_document_path = None
+            if supporting_document and supporting_document.filename:
+                supporting_document_path = _save_profile_file(
+                    supporting_document, "staff_docs", f"leave-{user.id}"
+                )
             db.session.add(
                 StaffLeaveRequest(
                     user_id=user.id,
-                    leave_type=request.form.get("leave_type", "casual").strip() or "casual",
+                    leave_type=leave_type,
                     start_date=start_date,
                     end_date=end_date,
+                    from_shift=from_shift,
+                    to_shift=to_shift,
+                    duration_days=duration,
                     reason=request.form.get("reason", "").strip() or None,
+                    supporting_document_path=supporting_document_path,
                     status="pending",
-                    admin_remarks=notice_warning or None,
                 )
             )
             db.session.commit()
-            if notice_warning:
-                flash(f"Leave request submitted. Notice warning: {notice_warning}", "error")
-            else:
-                flash("Leave request submitted.", "success")
+            flash(f"Leave request submitted for {duration:g} day(s).", "success")
+            return redirect(url_for("main.profile", section="attendance"))
+
+        if action == "cancel_leave_request":
+            if current_user.id != user.id:
+                return redirect(url_for("main.profile"))
+            leave = StaffLeaveRequest.query.get_or_404(int(request.form["leave_id"]))
+            if leave.user_id != user.id or leave.status not in ["pending", "requested_changes"]:
+                flash("Only pending leave requests can be cancelled.", "error")
+                return redirect(url_for("main.profile", section="attendance"))
+            leave.status = "cancelled"
+            leave.cancelled_at = datetime.utcnow()
+            leave.cancelled_by_user_id = current_user.id
+            db.session.add(
+                StaffNotification(
+                    user_id=user.id,
+                    category="leave",
+                    message=f"Leave request #{leave.id} was cancelled.",
+                )
+            )
+            db.session.commit()
+            flash("Leave request cancelled.", "success")
             return redirect(url_for("main.profile", section="attendance"))
 
         if action == "upload_document":
@@ -1704,12 +1756,19 @@ def profile():
     )
     managed_users = User.query.filter_by(active=True).order_by(User.full_name.asc()).all() if can_admin_view else []
     active_section = (request.args.get("section") or "personal").strip().lower()
-    if active_section not in ["personal", "bank", "documents", "salary", "attendance"]:
+    if active_section not in ["personal", "bank", "documents", "salary", "attendance", "rulebook"]:
         active_section = "personal"
     leave_logs = (
         StaffLeaveRequest.query.filter_by(user_id=user.id)
         .order_by(StaffLeaveRequest.created_at.desc())
         .limit(40)
+        .all()
+    )
+    leave_context = leave_dashboard_context(user, summary_month, summary_year)
+    staff_notifications = (
+        StaffNotification.query.filter_by(user_id=user.id)
+        .order_by(StaffNotification.created_at.desc())
+        .limit(20)
         .all()
     )
     today_attendance = next((row for row in attendance_logs if row.attendance_date == date.today()), None)
@@ -1750,6 +1809,16 @@ def profile():
         active_section=active_section,
         summary_month=summary_month,
         summary_year=summary_year,
+        leave_balance=leave_context["leave_balance"],
+        leave_policy=leave_context["leave_policy"],
+        leave_availability=leave_context["leave_availability"],
+        leave_holidays=leave_context["leave_holidays"],
+        weekly_off_config=leave_context["weekly_off_config"],
+        leave_month=leave_context["leave_month"],
+        leave_year=leave_context["leave_year"],
+        leave_month_rows=leave_context["leave_month_rows"],
+        staff_notifications=staff_notifications,
+        current_rulebook=current_rulebook,
     )
 
 
@@ -1806,6 +1875,34 @@ def staff_attendance_check_in():
         cafe_lat=settings["cafe_lat"],
         cafe_lng=settings["cafe_lng"],
         attendance_radius_m=settings["radius_m"],
+    )
+
+
+@bp.route("/profile/attendance-rulebook/file")
+@login_required
+def attendance_rulebook_file():
+    """Serve only the currently published rule-book attachment to staff."""
+    rulebook = AttendanceRuleBook.query.filter_by(active=True).order_by(AttendanceRuleBook.version.desc()).first()
+    if not rulebook or not rulebook.file_path:
+        flash("The current rule book has no downloadable attachment.", "error")
+        return redirect(url_for("main.profile", section="rulebook"))
+    full_path = os.path.join(current_app.config["UPLOADS_ROOT"], rulebook.file_path)
+    if not os.path.exists(full_path):
+        flash("The current rule-book file is missing from the server.", "error")
+        return redirect(url_for("main.profile", section="rulebook"))
+    extension = os.path.splitext(full_path)[1].lower()
+    mimetypes = {
+        ".pdf": "application/pdf",
+        ".txt": "text/plain; charset=utf-8",
+        ".md": "text/plain; charset=utf-8",
+        ".doc": "application/msword",
+        ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    }
+    return send_file(
+        full_path,
+        as_attachment=False,
+        download_name=rulebook.file_name or os.path.basename(full_path),
+        mimetype=mimetypes.get(extension, "application/octet-stream"),
     )
 
 

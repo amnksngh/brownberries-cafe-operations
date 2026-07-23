@@ -150,3 +150,39 @@ curl http://127.0.0.1:5050/healthz
 curl https://brownberriescafe.com/healthz
 Get-Content "C:\Brownberries\brownberries-cafe-operations\logs\windows-watchdog.log" -Tail 50
 ```
+
+## 8) Attendance Rule Book
+
+- Employees open **Profile → Attendance Rule Book** to read the currently published policy.
+- Admins open **Staff → Attendance Rule Book** to edit the text or upload a PDF/TXT/MD/DOC/DOCX version.
+- Every publish creates a new version and archives the previous one. The app seeds version 1 automatically if the table is empty.
+- The rule book is stored in SQLite metadata and optional attachments are stored under `instance/uploads/rulebooks/`; both are intentionally ignored by Git.
+
+## 9) Safe Mac-to-Windows Source Migration
+
+The Windows machine owns production data. Push source code from the Mac only; do not push `instance/`, `instance/uploads/`, `instance/brownberries.db`, `instance/deployment_config.json`, or `static/uploads/`.
+
+### On the Mac
+
+```bash
+cd "/Users/amnksngh/Documents/Codex/2026-04-27/Brownberries Cafe Operations"
+git pull --ff-only origin main
+git status --short --ignored
+bash scripts/migration/publish_source.sh "Attendance rule book and leave workflow"
+```
+
+The publish script refuses to push runtime data and publishes only tracked source files.
+
+### On the Windows server (Administrator PowerShell)
+
+```powershell
+Set-Location "C:\Brownberries\brownberries-cafe-operations"
+Set-ExecutionPolicy -Scope Process Bypass
+PowerShell -ExecutionPolicy Bypass -File .\scripts\windows\update_live_server.ps1
+Invoke-WebRequest http://127.0.0.1:5050/healthz
+Invoke-WebRequest https://brownberriescafe.com/healthz
+```
+
+`update_live_server.ps1` checks for uncommitted tracked source, stops `BrownberriesApp`, backs up `instance` and `static\uploads` into `instance_windows_backup\<timestamp>`, pulls the selected branch, installs dependencies, restarts the app, and refuses to finish unless the local health endpoint returns HTTP 200. It does not stop or replace the Cloudflare Tunnel service.
+
+If the update fails, inspect `logs\windows-app-service.log` and restore only after checking the backup. Do not delete the Windows `instance` directory during a code deployment.

@@ -30,6 +30,17 @@ from .attendance_logic import (
 from .auth_helpers import login_required, roles_required, user_has_any_role, user_has_permission
 from .deploy_config import load_deployment_config, save_deployment_config
 from .extensions import db, socketio
+from .leave_logic import (
+    apply_leave_decision,
+    business_today,
+    calculate_leave_duration,
+    ensure_leave_defaults,
+    leave_dashboard_context,
+    leave_policy,
+    run_leave_maintenance,
+    validate_leave_request,
+    weekly_off_config,
+)
 from .models import (
     CafeFeedback,
     CafeFeedbackItem,
@@ -55,12 +66,19 @@ from .models import (
     UserType,
     StaffLeaveRequest,
     StaffProfile,
+    CompanyHoliday,
+    LeaveBalance,
+    LeaveTransaction,
+    RoleLeaveRule,
+    StaffNotification,
+    AttendanceRuleBook,
     TableBooking,
     User,
     Workstation,
 )
 from .sms_gateway import send_sms_from_config
 from .staff_lifecycle import retire_staff_account
+from .rulebook import ensure_rulebook_default, next_rulebook_version
 
 bp = Blueprint("cafe", __name__, url_prefix="/cafe")
 
@@ -6308,6 +6326,8 @@ def api_stats_inventory_consumption():
 @roles_required("admin", "manager")
 def staff():
     _ensure_role_templates_exist()
+    ensure_leave_defaults()
+    run_leave_maintenance()
     allowed_sections = {
         "add_new_staff",
         "active_staff",
@@ -6315,6 +6335,8 @@ def staff():
         "attendance_calendar",
         "attendance_entry",
         "leave_requests",
+        "leave_settings",
+        "rulebook",
         "docs_review",
         "payroll_summary",
     }
@@ -6332,6 +6354,46 @@ def staff():
 
     if request.method == "POST":
         action = request.form.get("action", "create")
+
+        if action == "save_rulebook":
+            if not user_has_any_role(g.current_user, "admin"):
+                flash("Only Cafe Admin can publish attendance rule-book updates.", "error")
+                return _staff_redirect("rulebook")
+            title = request.form.get("rulebook_title", "Staff Attendance Rule Book").strip()
+            content_text = request.form.get("rulebook_content", "").strip()
+            uploaded = request.files.get("rulebook_file")
+            if not title:
+                title = "Staff Attendance Rule Book"
+            if not content_text and (not uploaded or not uploaded.filename):
+                flash("Add rule-book text or upload an updated rule-book file.", "error")
+                return _staff_redirect("rulebook")
+            file_path = None
+            file_name = None
+            if uploaded and uploaded.filename:
+                extension = os.path.splitext(secure_filename(uploaded.filename))[1].lower()
+                if extension not in {".pdf", ".txt", ".md", ".doc", ".docx"}:
+                    flash("Rule-book uploads must be PDF, TXT, MD, DOC, or DOCX files.", "error")
+                    return _staff_redirect("rulebook")
+                version = next_rulebook_version()
+                file_path = _save_uploaded_file(uploaded, "rulebooks", f"attendance-rules-v{version}")
+                file_name = secure_filename(uploaded.filename)
+            else:
+                version = next_rulebook_version()
+            AttendanceRuleBook.query.filter_by(active=True).update({"active": False})
+            db.session.add(
+                AttendanceRuleBook(
+                    version=version,
+                    title=title,
+                    content_text=content_text or None,
+                    file_path=file_path,
+                    file_name=file_name,
+                    active=True,
+                    published_by_user_id=g.current_user.id,
+                )
+            )
+            db.session.commit()
+            flash(f"Attendance rule book v{version} is now published.", "success")
+            return _staff_redirect("rulebook")
 
         if action == "create":
             email = request.form["email"].strip().lower()
@@ -6464,13 +6526,104 @@ def staff():
         if action == "leave_decision":
             leave = StaffLeaveRequest.query.get_or_404(int(request.form["leave_id"]))
             decision = request.form.get("decision", "pending")
-            if decision not in ["approved", "rejected", "pending"]:
+            if decision not in ["approved", "rejected", "pending", "requested_changes", "cancelled"]:
                 decision = "pending"
-            leave.status = decision
             leave.admin_remarks = request.form.get("admin_remarks", "").strip() or None
+            success, errors = apply_leave_decision(leave, decision, g.current_user)
+            if not success:
+                db.session.rollback()
+                flash(" ".join(errors), "error")
+                return _staff_redirect("leave_requests")
+            db.session.add(
+                StaffNotification(
+                    user_id=leave.user_id,
+                    category="leave",
+                    message=f"Leave request #{leave.id} is now {leave.status.replace('_', ' ').title()}.",
+                )
+            )
             db.session.commit()
-            flash("Leave request updated.", "success")
+            flash("Leave request updated and attendance/balance records synchronized.", "success")
             return _staff_redirect("leave_requests")
+
+        if action == "save_leave_settings":
+            if not user_has_any_role(g.current_user, "admin"):
+                flash("Only Cafe Admin can change leave policy settings.", "error")
+                return _staff_redirect("leave_settings")
+            policy = leave_policy()
+            try:
+                policy.monthly_earned_credit = max(0, float(request.form.get("monthly_earned_credit", 1)))
+                policy.month_end_earned_credit = max(0, float(request.form.get("month_end_earned_credit", 1)))
+                policy.max_continuous_days = max(1, int(request.form.get("max_continuous_days", 7)))
+                policy.max_company_leaves = max(1, int(request.form.get("max_company_leaves", 2)))
+                policy.urgent_leaves_per_year = max(0, float(request.form.get("urgent_leaves_per_year", 12)))
+                policy.max_monthly_urgent_leaves = max(0, float(request.form.get("max_monthly_urgent_leaves", 3)))
+                policy.role_cooldown_days = max(0, int(request.form.get("role_cooldown_days", 1)))
+            except (TypeError, ValueError):
+                db.session.rollback()
+                flash("Leave policy values must be valid numbers.", "error")
+                return _staff_redirect("leave_settings")
+            policy.urgent_requires_probation = bool(request.form.get("urgent_requires_probation"))
+            weekly = weekly_off_config()
+            weekly.enabled = bool(request.form.get("weekly_off_enabled"))
+            try:
+                weekly.weekday = min(6, max(0, int(request.form.get("weekly_off_weekday", 6))))
+            except (TypeError, ValueError):
+                weekly.weekday = 6
+            weekly.label = request.form.get("weekly_off_label", "Weekly Off").strip() or "Weekly Off"
+            db.session.commit()
+            flash("Leave policy and weekly-off settings saved.", "success")
+            return _staff_redirect("leave_settings")
+
+        if action == "add_holiday":
+            if not user_has_any_role(g.current_user, "admin"):
+                flash("Only Cafe Admin can manage company holidays.", "error")
+                return _staff_redirect("leave_settings")
+            try:
+                holiday_date = date.fromisoformat(request.form["holiday_date"])
+            except (KeyError, TypeError, ValueError):
+                flash("Please enter a valid holiday date.", "error")
+                return _staff_redirect("leave_settings")
+            if CompanyHoliday.query.filter_by(holiday_date=holiday_date).first():
+                flash("A company holiday already exists for that date.", "error")
+                return _staff_redirect("leave_settings")
+            db.session.add(CompanyHoliday(holiday_date=holiday_date, name=request.form.get("holiday_name", "").strip() or "Company Holiday", active=True))
+            db.session.commit()
+            flash("Company holiday added.", "success")
+            return _staff_redirect("leave_settings")
+
+        if action == "delete_holiday":
+            if not user_has_any_role(g.current_user, "admin"):
+                flash("Only Cafe Admin can manage company holidays.", "error")
+                return _staff_redirect("leave_settings")
+            holiday = CompanyHoliday.query.get_or_404(int(request.form["holiday_id"]))
+            db.session.delete(holiday)
+            db.session.commit()
+            flash("Company holiday removed.", "success")
+            return _staff_redirect("leave_settings")
+
+        if action == "update_role_leave_rule":
+            if not user_has_any_role(g.current_user, "admin"):
+                flash("Only Cafe Admin can manage role leave rules.", "error")
+                return _staff_redirect("leave_settings")
+            role_name = request.form.get("role_name", "").strip().lower()
+            if not role_name:
+                flash("Role name is required.", "error")
+                return _staff_redirect("leave_settings")
+            rule = RoleLeaveRule.query.filter_by(role_name=role_name).first()
+            if not rule:
+                rule = RoleLeaveRule(role_name=role_name)
+                db.session.add(rule)
+            rule.enabled = bool(request.form.get("enabled"))
+            try:
+                rule.max_concurrent_on_leave = max(1, int(request.form.get("max_concurrent_on_leave", 1)))
+                rule.cooldown_days = max(0, int(request.form.get("cooldown_days", 1)))
+            except (TypeError, ValueError):
+                db.session.rollback()
+                flash("Role rule values must be valid numbers.", "error")
+                return _staff_redirect("leave_settings")
+            db.session.commit()
+            flash("Role leave rule updated.", "success")
+            return _staff_redirect("leave_settings")
 
         if action == "attendance_for_user":
             target_user_id = int(request.form["target_user_id"])
@@ -6633,6 +6786,20 @@ def staff():
             StaffAttendance.attendance_date <= date(selected_year, selected_month, days_in_month),
         ).all()
         selected_attendance_map = {row.attendance_date.day: row.status for row in rows}
+        selected_start = date(selected_year, selected_month, 1)
+        selected_end = date(selected_year, selected_month, days_in_month)
+        for holiday in CompanyHoliday.query.filter(
+            CompanyHoliday.active.is_(True),
+            CompanyHoliday.holiday_date >= selected_start,
+            CompanyHoliday.holiday_date <= selected_end,
+        ).all():
+            selected_attendance_map.setdefault(holiday.holiday_date.day, "company_holiday")
+        weekly_config = weekly_off_config()
+        if weekly_config.enabled:
+            for day_number in range(1, days_in_month + 1):
+                day_value = date(selected_year, selected_month, day_number)
+                if day_value.weekday() == weekly_config.weekday:
+                    selected_attendance_map.setdefault(day_number, "weekly_off")
 
     payroll_month = request.args.get("payroll_month", type=int) or date.today().month
     payroll_year = request.args.get("payroll_year", type=int) or date.today().year
@@ -6657,6 +6824,16 @@ def staff():
         .order_by(StaffDocument.created_at.desc())
         .all()
     )
+    leave_policy_row = leave_policy()
+    weekly_off_row = weekly_off_config()
+    current_rulebook = ensure_rulebook_default()
+    rulebook_versions = AttendanceRuleBook.query.order_by(AttendanceRuleBook.version.desc()).limit(20).all()
+    company_holidays = CompanyHoliday.query.filter_by(active=True).order_by(CompanyHoliday.holiday_date.asc()).all()
+    role_leave_rules = RoleLeaveRule.query.order_by(RoleLeaveRule.role_name.asc()).all()
+    staff_leave_balances = {
+        row.user_id: row
+        for row in LeaveBalance.query.join(User).filter(User.active.is_(True)).all()
+    }
     for staff_user in staff_users:
         profile = staff_user.staff_profile
         month_rows = StaffAttendance.query.filter(
@@ -6664,8 +6841,8 @@ def staff():
             StaffAttendance.attendance_date >= payroll_start,
             StaffAttendance.attendance_date <= payroll_end,
         ).all()
-        present_days = sum(1 for row in month_rows if row.status in ["present_all_day", "late_entry", "early_exit", "weekly_off", "on_leave"])
-        half_days = sum(1 for row in month_rows if row.status in ["first_half", "second_half"])
+        present_days = sum(1 for row in month_rows if row.status in ["present_all_day", "late_entry", "early_exit", "weekly_off", "on_leave", "earned_leave", "company_holiday"])
+        half_days = sum(1 for row in month_rows if row.status in ["first_half", "second_half", "half_day_leave", "half_day_earned_leave", "half_day_urgent_leave"])
         sick_days = sum(1 for row in month_rows if row.status == "sick_leave")
         unpaid_days = sum(max(0.0, 1.0 - attendance_pay_fraction(row.status)) for row in month_rows)
         payable_days = sum(attendance_pay_fraction(row.status) for row in month_rows)
@@ -6713,6 +6890,13 @@ def staff():
         document_pending_count=doc_pending_count,
         pending_documents=pending_documents,
         pending_leave_count=pending_leave_count,
+        leave_policy=leave_policy_row,
+        weekly_off_config=weekly_off_row,
+        company_holidays=company_holidays,
+        role_leave_rules=role_leave_rules,
+        staff_leave_balances=staff_leave_balances,
+        current_rulebook=current_rulebook,
+        rulebook_versions=rulebook_versions,
     )
 
 
@@ -6878,6 +7062,7 @@ def download_staff_govt_id(user_id):
 @login_required
 def my_staff():
     user = g.current_user
+    run_leave_maintenance()
     if _is_staff_user(user):
         profile = _ensure_staff_profile(user)
         db.session.commit()
@@ -6911,17 +7096,29 @@ def my_staff():
             return redirect(url_for("cafe.my_staff"))
 
         if action == "leave":
-            start_date = date.fromisoformat(request.form["start_date"])
-            end_date = date.fromisoformat(request.form["end_date"])
-            if end_date < start_date:
-                flash("Leave end date cannot be before start date.", "error")
+            try:
+                start_date = date.fromisoformat(request.form["start_date"])
+                end_date = date.fromisoformat(request.form["end_date"])
+            except (KeyError, TypeError, ValueError):
+                flash("Please enter valid leave dates.", "error")
+                return redirect(url_for("cafe.my_staff"))
+            leave_type = request.form.get("leave_type", "earned").strip().lower()
+            from_shift = request.form.get("from_shift", "first_half").strip().lower()
+            to_shift = request.form.get("to_shift", "second_half").strip().lower()
+            errors, duration = validate_leave_request(user, leave_type, start_date, end_date, from_shift, to_shift)
+            if errors:
+                db.session.rollback()
+                flash(" ".join(errors), "error")
                 return redirect(url_for("cafe.my_staff"))
             db.session.add(
                 StaffLeaveRequest(
                     user_id=user.id,
-                    leave_type=request.form.get("leave_type", "casual").strip() or "casual",
+                    leave_type=leave_type,
                     start_date=start_date,
                     end_date=end_date,
+                    from_shift=from_shift,
+                    to_shift=to_shift,
+                    duration_days=duration,
                     reason=request.form.get("reason", "").strip() or None,
                     status="pending",
                 )
