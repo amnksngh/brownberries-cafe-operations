@@ -25,6 +25,7 @@ from .library import bp as library_bp
 from .leave_logic import ensure_leave_defaults, run_leave_maintenance
 from .main import bp as main_bp
 from .mobile_attendance import bp as mobile_attendance_bp
+from .mobile_staff import bp as mobile_staff_bp
 from .rulebook import ensure_rulebook_default
 from .models import (
     CafeFeedback,
@@ -519,6 +520,7 @@ def create_app():
     app.register_blueprint(cafe_bp)
     app.register_blueprint(library_bp)
     app.register_blueprint(mobile_attendance_bp)
+    app.register_blueprint(mobile_staff_bp)
 
     @app.cli.command("init-db")
     def init_db():

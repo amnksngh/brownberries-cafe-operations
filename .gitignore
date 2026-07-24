@@ -11,3 +11,10 @@ logs/
 brownberries-migration-bundle.zip
 migration_bundle/
 static/uploads/
+android/BrownberriesAttendance/.gradle/
+android/BrownberriesAttendance/.idea/
+android/BrownberriesAttendance/app/build/
+android/BrownberriesAttendance/build/
+android/BrownberriesAttendance/local.properties
+*.jks
+*.keystore

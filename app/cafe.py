@@ -2637,6 +2637,7 @@ def orders():
 def _render_orders_view(kiosk_mode: bool = False, access_key: str = ""):
     if kiosk_mode and not _has_valid_reception_kiosk_access(access_key):
         return Response("Invalid reception kiosk access key.", status=403)
+    mobile_app_mode = request.args.get("mobile_app") == "1"
     if request.method == "POST":
         selected_table_id = int(request.form["table_id"])
         cutoff_message = _order_cutoff_message("staff")
@@ -2644,7 +2645,7 @@ def _render_orders_view(kiosk_mode: bool = False, access_key: str = ""):
             flash(cutoff_message, "error")
             if kiosk_mode:
                 return redirect(url_for("cafe.reception_kiosk_orders", access_key=access_key, table_id=selected_table_id))
-            return redirect(url_for("cafe.orders", table_id=selected_table_id))
+            return redirect(url_for("cafe.orders", table_id=selected_table_id, mobile_app="1" if mobile_app_mode else None))
         order = _create_order(
             table_id=selected_table_id,
             ordered_by_user_id=g.current_user.id if getattr(g, "current_user", None) else _get_qr_guest_user_id(),
@@ -2656,11 +2657,11 @@ def _render_orders_view(kiosk_mode: bool = False, access_key: str = ""):
             flash("Please add at least one menu item in cart.", "error")
             if kiosk_mode:
                 return redirect(url_for("cafe.reception_kiosk_orders", access_key=access_key, table_id=selected_table_id))
-            return redirect(url_for("cafe.orders", table_id=selected_table_id))
+            return redirect(url_for("cafe.orders", table_id=selected_table_id, mobile_app="1" if mobile_app_mode else None))
         flash("Order created.", "success")
         if kiosk_mode:
             return redirect(url_for("cafe.reception_kiosk_orders", access_key=access_key, table_id=selected_table_id))
-        return redirect(url_for("cafe.orders", table_id=selected_table_id))
+        return redirect(url_for("cafe.orders", table_id=selected_table_id, mobile_app="1" if mobile_app_mode else None))
 
     table_id = request.args.get("table_id", type=int)
     category_id = request.args.get("category_id", type=int)
@@ -2745,7 +2746,7 @@ def _render_orders_view(kiosk_mode: bool = False, access_key: str = ""):
         .all()
         if table_id
         else [],
-        hide_staff_nav=kiosk_mode,
+        hide_staff_nav=(kiosk_mode or mobile_app_mode),
         topbar_home_url=(
             url_for("cafe.reception_kiosk", access_key=access_key)
             if kiosk_mode

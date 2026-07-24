@@ -3,10 +3,14 @@ package com.brownberries.attendance
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.MultipartBody
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.Response
+import okhttp3.RequestBody.Companion.asRequestBody
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONObject
+import java.io.File
 
 data class AttendanceSessionInfo(
     val attendanceId: Int,
@@ -105,6 +109,64 @@ class MobileAttendanceApi {
         )
     }
 
+    suspend fun workspace(baseUrl: String, token: String): JSONObject = get(
+        url = "${cleanBase(baseUrl)}/api/mobile/staff/workspace",
+        token = token,
+    )
+
+    suspend fun updateProfile(baseUrl: String, token: String, payload: JSONObject): JSONObject = post(
+        url = "${cleanBase(baseUrl)}/api/mobile/staff/profile",
+        token = token,
+        body = payload,
+    )
+
+    suspend fun createLeave(baseUrl: String, token: String, payload: JSONObject): JSONObject = post(
+        url = "${cleanBase(baseUrl)}/api/mobile/staff/leaves",
+        token = token,
+        body = payload,
+    )
+
+    suspend fun cancelLeave(baseUrl: String, token: String, leaveId: Int): JSONObject = post(
+        url = "${cleanBase(baseUrl)}/api/mobile/staff/leaves/$leaveId/cancel",
+        token = token,
+        body = JSONObject(),
+    )
+
+    suspend fun updateAvailability(baseUrl: String, token: String, itemId: Int, available: Boolean): JSONObject = post(
+        url = "${cleanBase(baseUrl)}/api/mobile/staff/items/$itemId/availability",
+        token = token,
+        body = JSONObject().put("available", available),
+    )
+
+    suspend fun createOrder(baseUrl: String, token: String, payload: JSONObject): JSONObject = post(
+        url = "${cleanBase(baseUrl)}/api/mobile/staff/orders",
+        token = token,
+        body = payload,
+    )
+
+    suspend fun uploadDocument(
+        baseUrl: String,
+        token: String,
+        file: File,
+        docType: String,
+        docNumber: String,
+    ): JSONObject = withContext(Dispatchers.IO) {
+        val body = MultipartBody.Builder()
+            .setType(MultipartBody.FORM)
+            .addFormDataPart("doc_type", docType)
+            .addFormDataPart("doc_number", docNumber)
+            .addFormDataPart("document", file.name, file.asRequestBody("application/octet-stream".toMediaType()))
+            .build()
+        val request = Request.Builder()
+            .url("${cleanBase(baseUrl)}/api/mobile/staff/documents")
+            .header("Authorization", "Bearer $token")
+            .post(body)
+            .build()
+        client.newCall(request).execute().use { response ->
+            parseResponse(response, "Document upload")
+        }
+    }
+
     private suspend fun get(url: String, token: String): JSONObject = withContext(Dispatchers.IO) {
         val request = Request.Builder()
             .url(url)
@@ -112,12 +174,7 @@ class MobileAttendanceApi {
             .get()
             .build()
         client.newCall(request).execute().use { response ->
-            val body = response.body?.string().orEmpty()
-            val json = JSONObject(body.ifBlank { "{}" })
-            if (!response.isSuccessful || !json.optBoolean("ok", false)) {
-                throw IllegalStateException(json.optString("message", "Request failed: ${response.code}"))
-            }
-            json
+            parseResponse(response, "Workspace request")
         }
     }
 
@@ -129,13 +186,28 @@ class MobileAttendanceApi {
             requestBuilder.header("Authorization", "Bearer $token")
         }
         client.newCall(requestBuilder.build()).execute().use { response ->
-            val bodyText = response.body?.string().orEmpty()
-            val json = JSONObject(bodyText.ifBlank { "{}" })
-            if (!response.isSuccessful || !json.optBoolean("ok", false)) {
-                throw IllegalStateException(json.optString("message", "Request failed: ${response.code}"))
-            }
-            json
+            parseResponse(response, "Server request")
         }
+    }
+
+    private fun parseResponse(response: Response, operation: String): JSONObject {
+        val body = response.body?.string().orEmpty()
+        val trimmed = body.trimStart()
+        if (!trimmed.startsWith("{")) {
+            val message = when (response.code) {
+                404 -> "The live server is missing the native staff workspace API. Pull the latest source on Windows and restart BrownberriesApp."
+                502, 503 -> "The live server is temporarily unavailable. Check BrownberriesApp and the Cloudflare tunnel."
+                else -> "$operation returned HTTP ${response.code}."
+            }
+            throw IllegalStateException(message)
+        }
+        val json = runCatching { JSONObject(body) }.getOrElse {
+            throw IllegalStateException("The server returned an invalid JSON response.")
+        }
+        if (!response.isSuccessful || !json.optBoolean("ok", false)) {
+            throw IllegalStateException(json.optString("message", "$operation failed: HTTP ${response.code}"))
+        }
+        return json
     }
 
     private fun parseBootstrap(json: JSONObject): BootstrapResponse {

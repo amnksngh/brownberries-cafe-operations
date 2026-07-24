@@ -7,12 +7,15 @@
     <img src="{{ url_for('static', filename='images/cafe-logo.png') }}" class="brand-logo" alt="Brownberries Cafe" />
     <form method="get" class="staff-table-select-form">
       <span class="staff-table-select-text">Table</span>
-      <select name="table_id" id="staff-table-select" class="staff-table-select-input" onchange="this.form.submit()">
+    <select name="table_id" id="staff-table-select" class="staff-table-select-input" onchange="this.form.submit()">
         <option value="">Select Table</option>
         {% for t in tables %}
         <option value="{{ t.id }}" {% if selected_table_id == t.id %}selected{% endif %}>{{ t.name }}</option>
         {% endfor %}
-      </select>
+    </select>
+      {% if request.args.get('mobile_app') == '1' %}
+      <input type="hidden" name="mobile_app" value="1" />
+      {% endif %}
       <span class="staff-table-current">Selected: {{ selected_table_name }}</span>
     </form>
   </div>
