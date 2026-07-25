@@ -145,9 +145,12 @@ def run_leave_maintenance(as_of: date | None = None) -> None:
         if not profile or profile.archived:
             continue
         balance = ensure_leave_balance(user)
-        joining_date = profile.joining_date or as_of
-        created_date = balance.created_at.date() if balance.created_at else as_of
-        credit_start = max(joining_date, created_date)
+        # A balance row may have been created during a later migration or
+        # first login.  It must not erase leave earned since the staff
+        # member's actual joining date.  Use the joining date when available;
+        # only accounts without one need the balance creation date fallback.
+        joining_date = profile.joining_date
+        credit_start = joining_date or (balance.created_at.date() if balance.created_at else as_of)
         for month in _month_dates(credit_start, as_of):
             month_end = date(month.year, month.month, calendar.monthrange(month.year, month.month)[1])
             if credit_start <= date(month.year, month.month, 15) <= as_of:

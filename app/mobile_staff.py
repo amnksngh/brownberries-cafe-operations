@@ -18,7 +18,13 @@ from werkzeug.utils import secure_filename
 from .auth_helpers import user_has_any_role, user_has_permission
 from .cafe import _current_ist_day_bounds, _recalculate_order_totals, create_cafe_order
 from .extensions import db
-from .leave_logic import calculate_leave_duration, leave_policy, validate_leave_request
+from .leave_logic import (
+    calculate_leave_duration,
+    ensure_leave_balance,
+    leave_policy,
+    run_leave_maintenance,
+    validate_leave_request,
+)
 from .mobile_attendance import mobile_token_required
 from .models import (
     AttendanceRuleBook,
@@ -26,7 +32,6 @@ from .models import (
     CafeOrderItem,
     CafeTable,
     CompanyHoliday,
-    LeaveBalance,
     MenuCategory,
     MenuItem,
     StaffAttendance,
@@ -172,7 +177,9 @@ def _size_options(item):
     ]
 
 
-def _menu_payload(item, include_protected=False):
+def _menu_payload(item, include_protected=False, available_only=False):
+    if available_only and not item.available:
+        return None
     category_names = _categories_for_item(item)
     protected = any(name.strip().lower() in PROTECTED_CATEGORY_NAMES for name in category_names)
     if protected and not include_protected:
@@ -240,6 +247,12 @@ def _table_payload(table):
 @mobile_token_required
 def workspace():
     user = g.mobile_user
+    # Keep mobile leave balances in lockstep with the web staff workspace.
+    # This is idempotent and also backfills credits for staff whose balance
+    # row was created after their joining date during migration.
+    run_leave_maintenance()
+    balance = ensure_leave_balance(user)
+    db.session.commit()
     today = datetime.now(IST).date()
     attendance = (
         StaffAttendance.query.filter_by(user_id=user.id)
@@ -247,13 +260,12 @@ def workspace():
         .limit(60)
         .all()
     )
-    balance = LeaveBalance.query.filter_by(user_id=user.id).first()
     leave_requests = StaffLeaveRequest.query.filter_by(user_id=user.id).order_by(StaffLeaveRequest.created_at.desc()).limit(40).all()
     documents = StaffDocument.query.filter_by(user_id=user.id).order_by(StaffDocument.created_at.desc()).all()
     rulebook = AttendanceRuleBook.query.filter_by(active=True).order_by(AttendanceRuleBook.version.desc()).first()
     tables = CafeTable.query.filter_by(active=True).order_by(CafeTable.name.asc()).all()
     menu_items = MenuItem.query.filter_by(is_deleted=False).order_by(MenuItem.name.asc()).all()
-    visible_menu = [payload for item in menu_items if (payload := _menu_payload(item))]
+    visible_menu = [payload for item in menu_items if (payload := _menu_payload(item, available_only=True))]
     all_menu = [payload for item in menu_items if (payload := _menu_payload(item, include_protected=True))]
     categories = MenuCategory.query.order_by(MenuCategory.name.asc()).all()
     workstations = Workstation.query.filter_by(active=True).order_by(Workstation.display_order.asc(), Workstation.name.asc()).all()
@@ -355,6 +367,9 @@ def update_profile():
 @bp.route("/leaves", methods=["POST"])
 @mobile_token_required
 def create_leave():
+    # Refresh credits before validating a request so a staff member never
+    # receives a stale zero balance after a monthly or migration catch-up.
+    run_leave_maintenance()
     payload = _payload()
     start_date = _date(payload.get("start_date"))
     end_date = _date(payload.get("end_date"))

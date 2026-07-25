@@ -263,10 +263,14 @@ class MainActivity : AppCompatActivity() {
             showLoading("Loading your workspace…")
             return
         }
-        when (activeTab) {
-            "table" -> renderTableOrdering(data)
-            "availability" -> renderAvailability(data)
-            else -> renderProfile(data)
+        runCatching {
+            when (activeTab) {
+                "table" -> renderTableOrdering(data)
+                "availability" -> renderAvailability(data)
+                else -> renderProfile(data)
+            }
+        }.onFailure { error ->
+            showError("Could not render this workspace: ${error.message ?: "invalid live data"}")
         }
     }
 
@@ -498,7 +502,14 @@ class MainActivity : AppCompatActivity() {
         renderLiveOrders()
         root.addView(liveOrdersCard)
 
-        val menu = data.optJSONArray("menu") ?: JSONArray()
+        // New servers expose the customer-facing menu.  The fallback keeps
+        // older Windows deployments usable while they are being upgraded.
+        val primaryMenu = data.optJSONArray("menu")
+        val menu = if (primaryMenu != null && primaryMenu.length() > 0) {
+            primaryMenu
+        } else {
+            data.optJSONArray("availability_menu") ?: JSONArray()
+        }
         val cart = mutableListOf<StaffCartLine>()
         val menuCard = section("Menu", "Search, filter, and add items with the same prices used by the cafe.")
         val search = input("Search food or drinks…")
@@ -509,8 +520,14 @@ class MainActivity : AppCompatActivity() {
         }
         val categories = linkedSetOf("All")
         for (i in 0 until menu.length()) {
-            val names = menu.optJSONObject(i)?.optJSONArray("category_names")
-            for (j in 0 until (names?.length() ?: 0)) names?.optString(j)?.takeIf { it.isNotBlank() }?.let(categories::add)
+            val item = menu.optJSONObject(i) ?: continue
+            if (!item.optBoolean("available", true)) continue
+            val names = item.optJSONArray("category_names")
+            for (j in 0 until (names?.length() ?: 0)) {
+                names?.optString(j)?.takeIf {
+                    it.isNotBlank() && !it.equals("Other", true) && !it.equals("Utility", true)
+                }?.let(categories::add)
+            }
         }
         val categoryRow = horizontalScroll(); menuCard.addView(categoryRow)
         val menuList = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
@@ -560,7 +577,9 @@ class MainActivity : AppCompatActivity() {
             var shown = 0
             for (i in 0 until menu.length()) {
                 val item = menu.optJSONObject(i) ?: continue
+                if (!item.optBoolean("available", true)) continue
                 val categoriesForItem = jsonArrayValues(item.optJSONArray("category_names"))
+                if (categoriesForItem.any { it.equals("Other", true) || it.equals("Utility", true) }) continue
                 val searchable = listOf(item.optString("name"), item.optString("short_description"), categoriesForItem.joinToString(" ")).joinToString(" ").lowercase()
                 if (activeCategory != "All" && categoriesForItem.none { it.equals(activeCategory, true) }) continue
                 if (query.isNotBlank() && fuzzyScore(searchable, query) < 0.45) continue
