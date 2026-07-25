@@ -16,6 +16,8 @@ import android.widget.ArrayAdapter
 import android.widget.Button
 import android.widget.CheckBox
 import android.widget.EditText
+import android.widget.FrameLayout
+import android.widget.GridLayout
 import android.widget.HorizontalScrollView
 import android.widget.ImageView
 import android.widget.LinearLayout
@@ -36,8 +38,11 @@ import org.json.JSONObject
 import java.io.File
 import java.net.URL
 import java.time.Duration
+import java.time.LocalDateTime
 import java.time.ZoneId
 import java.time.ZonedDateTime
+import java.time.format.DateTimeFormatter
+import java.util.Locale
 
 class MainActivity : AppCompatActivity() {
     private val cocoa = Color.rgb(111, 74, 53)
@@ -94,6 +99,9 @@ class MainActivity : AppCompatActivity() {
         binding.profileTabButton.setOnClickListener { showTab("profile") }
         binding.tableOrderingTabButton.setOnClickListener { showTab("table") }
         binding.availabilityTabButton.setOnClickListener { showTab("availability") }
+        binding.tableCartBar.setOnClickListener {
+            binding.workspaceScroll.post { binding.workspaceScroll.fullScroll(View.FOCUS_DOWN) }
+        }
 
         renderState()
         if (store.token.isNotBlank()) {
@@ -258,6 +266,7 @@ class MainActivity : AppCompatActivity() {
     private fun renderCurrentTab() {
         if (store.token.isBlank()) return
         binding.workspaceContent.removeAllViews()
+        binding.tableCartBar.visibility = View.GONE
         val data = workspaceJson
         if (data == null) {
             showLoading("Loading your workspace…")
@@ -277,9 +286,9 @@ class MainActivity : AppCompatActivity() {
     private fun renderProfile(data: JSONObject) {
         val profile = data.optJSONObject("profile") ?: JSONObject()
         val user = data.optJSONObject("user") ?: JSONObject()
-        val root = screen("Profile", "Your staff account, attendance, and cafe work in one place.")
+        val root = workspaceRoot()
         val roles = jsonArrayText(user.optJSONArray("roles"))
-        val identity = section("Welcome back", "Live account from Brownberries Cafe")
+        val identity = tileCard()
         identity.addView(text(user.optString("full_name"), 21, true))
         identity.addView(text(user.optString("email"), 14, false))
         identity.addView(badge("${roles.replace(", ", "  •  ")}"))
@@ -287,18 +296,10 @@ class MainActivity : AppCompatActivity() {
 
         val today = data.optJSONObject("attendance")?.optJSONObject("today")
         val attendance = section("Attendance", "Automatic geofence attendance runs in the background.")
-        if (store.checkedIn) {
-            attendance.addView(text("Checked in", 18, true))
-            attendance.addView(text("Since ${store.activeCheckInAt.ifBlank { "today" }}  •  ${store.activeStatusLabel.ifBlank { "Present" }}"))
-            attendance.addView(text("Current duration: ${durationSince(store.activeCheckInAt)}", 16, true))
-            attendance.addView(actionButton("Check-Out") { checkOut() })
-        } else {
-            attendance.addView(text(if (today == null) "Waiting for your automatic check-in." else prettyAttendance(today)))
-            attendance.addView(actionButton("Refresh Attendance") { refreshBootstrap() })
-        }
+        addAttendanceMetrics(attendance, today)
         root.addView(attendance)
 
-        val shortcuts = section("Your workspace", "Quick access to the things staff use most.")
+        val shortcuts = section("Staff Management", "Quick access to the things staff use most.")
         val shortcutRow = horizontalScroll()
         addScrollItem(shortcutRow, smallAction("Attendance") { showProfileSubsection(data, "attendance") })
         addScrollItem(shortcutRow, smallAction("Leave") { showProfileSubsection(data, "leave") })
@@ -344,6 +345,7 @@ class MainActivity : AppCompatActivity() {
             "documents" -> renderDocuments(data)
             "rulebook" -> {
                 val root = screen("Attendance Rule Book", "Read the latest workplace attendance policy.")
+                root.addView(backToProfileButton())
                 val rulebook = data.optJSONObject("rulebook")
                 root.addView(section(rulebook?.optString("title") ?: "Rules", "Version ${rulebook?.optInt("version", 1) ?: 1}").apply {
                     addView(text(rulebook?.optString("content") ?: "No rule book has been published."))
@@ -355,13 +357,10 @@ class MainActivity : AppCompatActivity() {
 
     private fun renderAttendance(data: JSONObject) {
         val root = screen("Attendance", "Your check-in is automatic when you are inside the cafe perimeter.")
-        val card = section(if (store.checkedIn) "Checked in now" else "No active check-in", "IST is used for all attendance records.")
-        card.addView(text(if (store.checkedIn) "Since ${store.activeCheckInAt.ifBlank { "today" }}  •  Current duration: ${durationSince(store.activeCheckInAt)}" else "The monitor will check again automatically."))
-        if (store.checkedIn) card.addView(actionButton("Check-Out") { checkOut() })
+        root.addView(backToProfileButton())
+        val card = section("Today", "IST is used for all attendance records.")
+        addAttendanceMetrics(card, data.optJSONObject("attendance")?.optJSONObject("today"))
         root.addView(card)
-        root.addView(section("Today", "Latest server record").apply {
-            addView(text(prettyAttendance(data.optJSONObject("attendance")?.optJSONObject("today"))))
-        })
         val history = data.optJSONObject("attendance")?.optJSONArray("history") ?: JSONArray()
         val historyCard = section("Recent attendance", "Your latest attendance history")
         if (history.length() == 0) historyCard.addView(text("No attendance history yet."))
@@ -372,6 +371,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun renderLeave(data: JSONObject) {
         val root = screen("Leave", "Submit and track leave requests without leaving the app.")
+        root.addView(backToProfileButton())
         val leave = data.optJSONObject("leave") ?: JSONObject()
         val balance = leave.optJSONObject("balance") ?: JSONObject()
         root.addView(section("Leave balance", "Current server balance").apply {
@@ -422,6 +422,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun renderDocuments(data: JSONObject) {
         val root = screen("Documents", "Upload IDs and proofs for management review.")
+        root.addView(backToProfileButton())
         val form = section("Upload a document", "Your document stays in the cafe records and can be released to you by management.")
         val type = input("Document type, e.g. Aadhaar or PAN")
         val number = input("Identification number")
@@ -449,7 +450,11 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun renderTableOrdering(data: JSONObject) {
-        val root = screen("Table Ordering", "A fast native ordering workspace backed by the live cafe menu.")
+        binding.tableCartBar.visibility = View.VISIBLE
+        val root = FrameLayout(this).apply {
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+        }
+        val body = workspaceRoot()
         val tables = data.optJSONArray("tables") ?: JSONArray()
         val tableIds = mutableListOf<Int>()
         val tableButtons = mutableMapOf<Int, Button>()
@@ -475,7 +480,7 @@ class MainActivity : AppCompatActivity() {
         selectedTableId = tableIds.firstOrNull()
         selectedTableId?.let { buttonBackground(tableButtons[it], true) }
         if (tableIds.isEmpty()) addScrollItem(tableRow, text("No active tables available."))
-        tableCard.addView(tableRow); root.addView(tableCard)
+        tableCard.addView(tableRow); body.addView(tableCard)
 
         val liveOrdersCard = section("Live orders", "Current-day orders already running at the selected table.")
         val liveOrdersBody = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
@@ -500,7 +505,7 @@ class MainActivity : AppCompatActivity() {
         }
         refreshLiveOrders = { renderLiveOrders() }
         renderLiveOrders()
-        root.addView(liveOrdersCard)
+        body.addView(liveOrdersCard)
 
         // New servers expose the customer-facing menu.  The fallback keeps
         // older Windows deployments usable while they are being upgraded.
@@ -530,17 +535,29 @@ class MainActivity : AppCompatActivity() {
             }
         }
         val categoryRow = horizontalScroll(); menuCard.addView(categoryRow)
-        val menuList = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        menuCard.addView(menuList); root.addView(menuCard)
+        val menuList = GridLayout(this).apply {
+            columnCount = 2
+            alignmentMode = GridLayout.ALIGN_BOUNDS
+            useDefaultMargins = false
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+        }
+        menuCard.addView(menuList); body.addView(menuCard)
 
         val cartCard = section("Current order", "Review quantities before sending this table order for approval.")
         val cartBody = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        cartCard.addView(cartBody); root.addView(cartCard)
+        cartCard.addView(cartBody); body.addView(cartCard)
         var activeCategory = "All"
         lateinit var renderCart: () -> Unit
 
         renderCart = {
             cartBody.removeAllViews()
+            val itemCount = cart.sumOf { it.quantity }
+            val cartTotal = cart.sumOf { it.unitPrice * it.quantity + if (it.parcel) 20.0 * it.quantity else 0.0 }
+            binding.tableCartBar.text = if (itemCount == 0) {
+                "Cart  •  Add items to place an order"
+            } else {
+                "Cart  •  $itemCount item${if (itemCount == 1) "" else "s"}  |  ₹${"%.2f".format(cartTotal)}  •  Review"
+            }
             if (cart.isEmpty()) {
                 cartBody.addView(text("Cart is empty. Add a menu item above."))
             } else {
@@ -585,6 +602,14 @@ class MainActivity : AppCompatActivity() {
                 if (query.isNotBlank() && fuzzyScore(searchable, query) < 0.45) continue
                 shown++
                 val tile = tileCard()
+                tile.layoutParams = GridLayout.LayoutParams(
+                    GridLayout.spec((shown - 1) / 2, 1),
+                    GridLayout.spec((shown - 1) % 2, 1, 1f),
+                ).apply {
+                    width = 0
+                    height = LinearLayout.LayoutParams.WRAP_CONTENT
+                    setMargins(dp(4), dp(4), dp(4), dp(4))
+                }
                 tile.addView(text(item.optString("name"), 18, true))
                 tile.addView(text(item.optString("short_description").ifBlank { categoriesForItem.joinToString("  •  ") }, 13, false))
                 addMenuImage(tile, item.optString("image_url"))
@@ -629,7 +654,18 @@ class MainActivity : AppCompatActivity() {
                 tile.addView(controls)
                 menuList.addView(tile)
             }
-            if (shown == 0) menuList.addView(text("No matching items found.", 15, true))
+            if (shown == 0) {
+                val empty = text("No matching items found.", 15, true)
+                empty.layoutParams = GridLayout.LayoutParams(
+                    GridLayout.spec(0, 1),
+                    GridLayout.spec(0, 2, 1f),
+                ).apply {
+                    width = 0
+                    height = LinearLayout.LayoutParams.WRAP_CONTENT
+                    setMargins(dp(4), dp(8), dp(4), dp(8))
+                }
+                menuList.addView(empty)
+            }
         }
         categories.forEach { category -> addScrollItem(categoryRow, smallAction(category) { activeCategory = category; buildMenu() }) }
         search.addTextChangedListener(object : TextWatcher {
@@ -639,11 +675,28 @@ class MainActivity : AppCompatActivity() {
         })
         buildMenu()
         renderCart()
+        root.addView(body)
+        val jumpControls = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            alpha = 0.68f
+            background = rounded(Color.argb(80, 79, 48, 34), 18)
+            setPadding(dp(2), dp(2), dp(2), dp(2))
+        }
+        jumpControls.addView(jumpButton("↑", "Scroll to top") {
+            binding.workspaceScroll.post { binding.workspaceScroll.fullScroll(View.FOCUS_UP) }
+        })
+        jumpControls.addView(jumpButton("↓", "Scroll to bottom") {
+            binding.workspaceScroll.post { binding.workspaceScroll.fullScroll(View.FOCUS_DOWN) }
+        })
+        root.addView(jumpControls, FrameLayout.LayoutParams(dp(42), LinearLayout.LayoutParams.WRAP_CONTENT).apply {
+            gravity = Gravity.END or Gravity.CENTER_VERTICAL
+            rightMargin = dp(4)
+        })
         binding.workspaceContent.addView(root)
     }
 
     private fun renderAvailability(data: JSONObject) {
-        val root = screen("Items Availability", "Make live menu items available or unavailable for guests and staff.")
+        val root = workspaceRoot()
         val search = input("Search menu items…")
         root.addView(search)
         val status = text("Changes save automatically.", 13, false)
@@ -816,6 +869,7 @@ class MainActivity : AppCompatActivity() {
         binding.rootScroll.visibility = if (loggedIn) View.GONE else View.VISIBLE
         binding.workspaceNav.visibility = if (loggedIn) View.VISIBLE else View.GONE
         binding.workspaceScroll.visibility = if (loggedIn) View.VISIBLE else View.GONE
+        binding.tableCartBar.visibility = if (loggedIn && activeTab == "table") View.VISIBLE else View.GONE
         if (loggedIn) updateNavSelection(activeTab) else binding.workspaceContent.removeAllViews()
     }
 
@@ -831,16 +885,77 @@ class MainActivity : AppCompatActivity() {
         })
     }
 
+    private fun workspaceRoot(): LinearLayout = LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL
+        setPadding(dp(2), dp(10), dp(2), dp(28))
+    }
+
+    private fun backToProfileButton(): Button = smallAction("← Back to Profile") { showTab("profile") }.apply {
+        layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
+            bottomMargin = dp(4)
+        }
+    }
+
+    private fun addAttendanceMetrics(card: LinearLayout, today: JSONObject?) {
+        val worked = if (store.checkedIn) {
+            durationSince(store.activeCheckInAt)
+        } else {
+            today?.optString("worked_duration").orEmpty().ifBlank { "00h 00m" }
+        }
+        val status = if (store.checkedIn) {
+            "Checked-in"
+        } else {
+            prettyStatus(today?.optString("status").orEmpty())
+        }
+        val checkIn = if (store.checkedIn) store.activeCheckInAt else today?.optString("check_in_at").orEmpty()
+        val checkOut = today?.optString("check_out_at").orEmpty()
+        card.addView(text("Total Hours Worked: $worked", 16, true))
+        card.addView(text("Current Status: $status", 15, false))
+        card.addView(text("Last Check-in: ${formatAttendanceTime(checkIn)}\nLast Check-out: ${formatAttendanceTime(checkOut)}", 14, false))
+        if (store.checkedIn) {
+            card.addView(actionButton("Check-Out") { checkOut() })
+        } else {
+            card.addView(actionButton("Refresh Attendance") { refreshBootstrap() })
+        }
+    }
+
+    private fun jumpButton(label: String, description: String, action: () -> Unit): Button = Button(this).apply {
+        text = label
+        textSize = 18f
+        isAllCaps = false
+        alpha = 0.9f
+        contentDescription = description
+        setTextColor(Color.WHITE)
+        background = rounded(Color.argb(140, 79, 48, 34), 16)
+        minHeight = dp(36)
+        setPadding(0, 0, 0, 0)
+        setOnClickListener { action() }
+    }
+
     private fun rounded(fill: Int, radius: Int): GradientDrawable = GradientDrawable().apply { setColor(fill); cornerRadius = dp(radius).toFloat() }
     private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
     private fun simpleAdapter(values: List<String>): ArrayAdapter<String> = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, values)
     private fun jsonArrayValues(array: JSONArray?): List<String> = if (array == null) emptyList() else (0 until array.length()).map { array.optString(it) }.filter { it.isNotBlank() }
     private fun jsonArrayText(array: JSONArray?): String = jsonArrayValues(array).ifEmpty { listOf("Staff") }.joinToString(", ")
-    private fun prettyAttendance(row: JSONObject?): String = if (row == null) "No attendance recorded today." else "${row.optString("date")}  •  ${row.optString("status")}\nIn  ${row.optString("check_in_at", "—")}\nOut  ${row.optString("check_out_at", "—")}\nWorked  ${row.optString("worked_duration", "00h 00m")}"
+    private fun prettyAttendance(row: JSONObject?): String = if (row == null) "No attendance recorded today." else "${row.optString("date")}  •  ${prettyStatus(row.optString("status"))}\nIn  ${formatAttendanceTime(row.optString("check_in_at"))}\nOut  ${formatAttendanceTime(row.optString("check_out_at"))}\nWorked  ${row.optString("worked_duration", "00h 00m")}"
+
+    private fun prettyStatus(raw: String): String = raw.replace('_', ' ').trim().ifBlank { "Not checked-in" }.replaceFirstChar { it.uppercase() }
+
+    private fun attendanceInstant(raw: String): java.time.Instant? {
+        if (raw.isBlank()) return null
+        return runCatching { ZonedDateTime.parse(raw).toInstant() }.getOrNull()
+            ?: runCatching { LocalDateTime.parse(raw).atZone(ZoneId.of("Asia/Kolkata")).toInstant() }.getOrNull()
+    }
+
+    private fun formatAttendanceTime(raw: String): String {
+        val instant = attendanceInstant(raw) ?: return "—"
+        return ZonedDateTime.ofInstant(instant, ZoneId.of("Asia/Kolkata"))
+            .format(DateTimeFormatter.ofPattern("dd MMM, hh:mm a", Locale.ENGLISH))
+    }
 
     private fun durationSince(raw: String): String {
         if (raw.isBlank()) return "00h 00m"
-        val start = runCatching { ZonedDateTime.parse(raw).toInstant() }.getOrNull() ?: return "00h 00m"
+        val start = attendanceInstant(raw) ?: return "00h 00m"
         val minutes = Duration.between(start, ZonedDateTime.now().toInstant()).toMinutes().coerceAtLeast(0)
         return "${minutes / 60}h ${minutes % 60}m"
     }

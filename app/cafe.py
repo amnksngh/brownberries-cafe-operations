@@ -330,7 +330,13 @@ def _rounded_service_charge_amount(amount: float) -> float:
     return float(math.floor((value + 1e-9) / 5.0) * 5.0)
 
 
-def _order_tax_breakdown(order: CafeOrder, *, base_amount: float | None = None, flags: dict | None = None):
+def _order_tax_breakdown(
+    order: CafeOrder,
+    *,
+    base_amount: float | None = None,
+    flags: dict | None = None,
+    service_charge_amount: float | None = None,
+):
     settings = _tax_settings()
     chosen = {
         "apply_service_charge": True,
@@ -338,9 +344,14 @@ def _order_tax_breakdown(order: CafeOrder, *, base_amount: float | None = None, 
     if flags:
         chosen.update({key: bool(value) for key, value in flags.items()})
     taxable_base = round(float(order.total_amount if base_amount is None else base_amount) or 0, 2)
-    service_tax_amount = _rounded_service_charge_amount(
-        taxable_base * settings["service_charge_rate"] / 100.0 if chosen["apply_service_charge"] else 0.0
-    )
+    if service_charge_amount is None:
+        service_tax_amount = _rounded_service_charge_amount(
+            taxable_base * settings["service_charge_rate"] / 100.0
+            if chosen["apply_service_charge"]
+            else 0.0
+        )
+    else:
+        service_tax_amount = round(max(0.0, float(service_charge_amount or 0.0)), 2)
     gst_amount = 0.0
     cst_amount = 0.0
     return {
@@ -362,6 +373,51 @@ def _apply_order_tax_breakdown(order: CafeOrder, flags: dict | None = None):
     order.cst_amount = breakdown["cst_amount"]
     order.total_amount = breakdown["grand_total"]
     return breakdown
+
+
+def _settlement_tax_breakdowns(orders: list[CafeOrder], flags: dict | None = None):
+    """Calculate one service charge for the whole table settlement.
+
+    Service charge is a table-level voluntary charge. Rounding each order
+    independently creates a mismatch between the cashier payment total and
+    the final stored order totals when a table has multiple orders.
+    """
+    if not orders:
+        return []
+
+    settings = _tax_settings()
+    chosen = {"apply_service_charge": True}
+    if flags:
+        chosen.update({key: bool(value) for key, value in flags.items()})
+
+    bases = [round(max(0.0, float(order.total_amount or 0.0)), 2) for order in orders]
+    base_total = round(sum(bases), 2)
+    service_total = _rounded_service_charge_amount(
+        base_total * settings["service_charge_rate"] / 100.0
+        if chosen["apply_service_charge"]
+        else 0.0
+    )
+
+    allocations: list[float] = []
+    allocated = 0.0
+    for index, base in enumerate(bases):
+        if index == len(bases) - 1:
+            allocation = round(service_total - allocated, 2)
+        elif base_total > 0:
+            allocation = round(service_total * base / base_total, 2)
+        else:
+            allocation = 0.0
+        allocations.append(max(0.0, allocation))
+        allocated = round(allocated + allocation, 2)
+
+    return [
+        _order_tax_breakdown(
+            order,
+            flags=flags,
+            service_charge_amount=allocation,
+        )
+        for order, allocation in zip(orders, allocations)
+    ]
 
 
 def _receipt_location_text():
@@ -2900,11 +2956,8 @@ def _clear_table_orders_impl(table_id: int, next_url: str = ""):
         flash("Select at least one approved order to settle.", "error")
         return redirect(next_url or url_for("cafe.cashier", table_id=table.id, tab="running"))
     tax_flags = _selected_tax_flags()
-    selected_total = 0.0
-    for order in payable_orders:
-        breakdown = _order_tax_breakdown(order, flags=tax_flags)
-        selected_total += breakdown["grand_total"]
-    selected_total = round(selected_total, 2)
+    settlement_breakdowns = _settlement_tax_breakdowns(payable_orders, flags=tax_flags)
+    selected_total = round(sum(item["grand_total"] for item in settlement_breakdowns), 2)
     split_total = round(sum(float(row["amount"]) for row in split_rows), 2)
     if abs(split_total - selected_total) > 0.01:
         flash(f"Payment split total ₹{split_total:.2f} must match selected orders total ₹{selected_total:.2f}.", "error")
@@ -2916,8 +2969,11 @@ def _clear_table_orders_impl(table_id: int, next_url: str = ""):
         [f'{row["method"]}: ₹{row["amount"]:.2f}' + (f' ({row["reference"]})' if row["reference"] else "") for row in split_rows]
     )[:120] or None
     payment_breakdown_json = json.dumps(split_rows)
-    for order in payable_orders:
-        _apply_order_tax_breakdown(order, flags=tax_flags)
+    for order, breakdown in zip(payable_orders, settlement_breakdowns):
+        order.service_tax_amount = breakdown["service_tax_amount"]
+        order.gst_amount = breakdown["gst_amount"]
+        order.cst_amount = breakdown["cst_amount"]
+        order.total_amount = breakdown["grand_total"]
         order.status = "paid"
         order.paid_at = paid_now
         order.payment_type = summary_label
