@@ -639,6 +639,7 @@ class MainActivity : AppCompatActivity() {
         })
         buildMenu()
         renderCart()
+        binding.workspaceContent.addView(root)
     }
 
     private fun renderAvailability(data: JSONObject) {
