@@ -488,6 +488,10 @@ class MainActivity : AppCompatActivity() {
         val menuCard = section("Menu", "Search, filter, and add items with the same prices used by the cafe.")
         val search = input("Search food or drinks…")
         menuCard.addView(search)
+        if (menu.length() == 0) {
+            menuCard.addView(text("The live menu is empty or has not synced yet.", 15, true))
+            menuCard.addView(actionButton("Refresh Live Menu") { refreshWorkspace() })
+        }
         val categories = linkedSetOf("All")
         for (i in 0 until menu.length()) {
             val names = menu.optJSONObject(i)?.optJSONArray("category_names")
@@ -612,29 +616,63 @@ class MainActivity : AppCompatActivity() {
         val list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         root.addView(list)
         val availability = data.optJSONArray("availability_menu") ?: JSONArray()
+        val workstationNames = linkedMapOf<String, String>()
+        val workstations = data.optJSONArray("workstations")
+        for (i in 0 until (workstations?.length() ?: 0)) {
+            val station = workstations?.optJSONObject(i) ?: continue
+            val slug = station.optString("slug").trim()
+            if (slug.isBlank()) continue
+            workstationNames[slug] = station.optString("name").trim().ifBlank { slug }
+        }
+        val expanded = mutableSetOf<String>()
+
+        fun stationKey(item: JSONObject): String = item.optString("prep_station").trim().ifBlank { "__unassigned__" }
+        fun stationLabel(key: String): String = if (key == "__unassigned__") "No workstation" else workstationNames[key] ?: key.replace('_', ' ').replaceFirstChar { it.uppercase() }
+
         fun buildList() {
             list.removeAllViews()
             val query = search.value()
-            var shown = 0
+            val grouped = linkedMapOf<String, MutableList<JSONObject>>()
             for (i in 0 until availability.length()) {
                 val item = availability.optJSONObject(i) ?: continue
                 if (query.isNotBlank() && !item.optString("name").contains(query, true)) continue
-                shown++
-                val card = tileCard()
-                val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
-                row.addView(text(item.optString("name"), 16, true, 1f), LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
-                val check = CheckBox(this).apply { isChecked = item.optBoolean("available", true); contentDescription = "Availability for ${item.optString("name")}" }
-                check.setOnCheckedChangeListener { _, checked ->
-                    status.text = "Saving ${item.optString("name")}…"
-                    lifecycleScope.launch {
-                        runCatching { api.updateAvailability(store.baseUrl, store.token, item.optInt("id"), checked) }
-                            .onSuccess { status.text = "Saved — live for guests and staff." }
-                            .onFailure { status.text = it.message ?: "Availability update failed"; check.setOnCheckedChangeListener(null); check.isChecked = !checked }
-                    }
-                }
-                row.addView(check); card.addView(row); list.addView(card)
+                grouped.getOrPut(stationKey(item)) { mutableListOf() }.add(item)
             }
-            if (shown == 0) list.addView(text("No menu items match this search."))
+            if (grouped.isEmpty()) {
+                list.addView(text("No menu items match this search."))
+                return
+            }
+            grouped.forEach { (key, items) ->
+                val header = actionButton("${if (expanded.contains(key) || query.isNotBlank()) "▾" else "▸"}  ${stationLabel(key)}  ·  ${items.size} items") {
+                    if (expanded.contains(key)) expanded.remove(key) else expanded.add(key)
+                    buildList()
+                }.apply {
+                    layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(10) }
+                    gravity = Gravity.START or Gravity.CENTER_VERTICAL
+                    textSize = 16f
+                    background = rounded(Color.rgb(246, 236, 226), 12)
+                    setTextColor(ink)
+                }
+                list.addView(header)
+                if (!expanded.contains(key) && query.isBlank()) return@forEach
+                val itemList = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+                items.forEach { item ->
+                    val card = tileCard().apply { setPadding(dp(12), dp(10), dp(12), dp(10)) }
+                    val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+                    row.addView(text(item.optString("name"), 16, true, 1f), LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+                    val check = CheckBox(this).apply { isChecked = item.optBoolean("available", true); contentDescription = "Availability for ${item.optString("name")}" }
+                    check.setOnCheckedChangeListener { _, checked ->
+                        status.text = "Saving ${item.optString("name")}…"
+                        lifecycleScope.launch {
+                            runCatching { api.updateAvailability(store.baseUrl, store.token, item.optInt("id"), checked) }
+                                .onSuccess { status.text = "Saved — live for guests and staff." }
+                                .onFailure { status.text = it.message ?: "Availability update failed"; check.setOnCheckedChangeListener(null); check.isChecked = !checked }
+                        }
+                    }
+                    row.addView(check); card.addView(row); itemList.addView(card)
+                }
+                list.addView(itemList)
+            }
         }
         search.addTextChangedListener(object : TextWatcher {
             override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit

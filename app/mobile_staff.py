@@ -251,6 +251,7 @@ def workspace():
     visible_menu = [payload for item in menu_items if (payload := _menu_payload(item))]
     all_menu = [payload for item in menu_items if (payload := _menu_payload(item, include_protected=True))]
     categories = MenuCategory.query.order_by(MenuCategory.name.asc()).all()
+    workstations = Workstation.query.filter_by(active=True).order_by(Workstation.display_order.asc(), Workstation.name.asc()).all()
     return jsonify({
         "ok": True,
         "server_time_ist": datetime.now(IST).isoformat(),
@@ -266,6 +267,7 @@ def workspace():
         "rulebook": {"version": rulebook.version, "title": rulebook.title, "content": rulebook.content_text or "", "file_name": rulebook.file_name or ""} if rulebook else None,
         "tables": [_table_payload(table) for table in tables],
         "categories": [{"id": category.id, "name": category.name} for category in categories if category.name.strip().lower() not in PROTECTED_CATEGORY_NAMES],
+        "workstations": [{"slug": station.slug, "name": station.name} for station in workstations],
         "menu": visible_menu,
         "availability_menu": all_menu,
         "capabilities": {"can_manage_orders": True, "can_manage_availability": True},

@@ -941,7 +941,7 @@
     if (!settlementBaseAmount || !settlementServiceAmount || !settlementFinalAmount) return;
     const base = activeLiveOrderBaseTotal();
     const applyService = !!serviceChargeToggle?.checked;
-    const serviceAmount = applyService ? ((base * serviceChargeRate) / 100) : 0;
+    const serviceAmount = applyService ? (Math.floor((((base * serviceChargeRate) / 100) + 1e-9) / 5) * 5) : 0;
     const finalAmount = base + serviceAmount;
     settlementBaseAmount.textContent = `₹${base.toFixed(2)}`;
     settlementServiceAmount.textContent = `₹${serviceAmount.toFixed(2)}`;

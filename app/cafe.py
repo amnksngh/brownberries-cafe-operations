@@ -324,6 +324,12 @@ def _selected_tax_flags():
     }
 
 
+def _rounded_service_charge_amount(amount: float) -> float:
+    """Return the cash-friendly lower multiple of five for service charge."""
+    value = max(0.0, float(amount or 0.0))
+    return float(math.floor((value + 1e-9) / 5.0) * 5.0)
+
+
 def _order_tax_breakdown(order: CafeOrder, *, base_amount: float | None = None, flags: dict | None = None):
     settings = _tax_settings()
     chosen = {
@@ -332,9 +338,8 @@ def _order_tax_breakdown(order: CafeOrder, *, base_amount: float | None = None, 
     if flags:
         chosen.update({key: bool(value) for key, value in flags.items()})
     taxable_base = round(float(order.total_amount if base_amount is None else base_amount) or 0, 2)
-    service_tax_amount = round(
-        taxable_base * settings["service_charge_rate"] / 100.0 if chosen["apply_service_charge"] else 0.0,
-        2,
+    service_tax_amount = _rounded_service_charge_amount(
+        taxable_base * settings["service_charge_rate"] / 100.0 if chosen["apply_service_charge"] else 0.0
     )
     gst_amount = 0.0
     cst_amount = 0.0

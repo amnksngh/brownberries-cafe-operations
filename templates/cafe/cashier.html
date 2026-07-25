@@ -546,7 +546,7 @@
     }
     const base = settlementBaseTotal();
     const serviceRate = Number(form.dataset.serviceChargeRate || 0);
-    const serviceTax = document.getElementById("apply-service-charge")?.checked ? (base * serviceRate / 100) : 0;
+    const serviceTax = document.getElementById("apply-service-charge")?.checked ? (Math.floor(((base * serviceRate / 100) + 1e-9) / 5) * 5) : 0;
     const gst = 0;
     const cst = 0;
     const grand = base + serviceTax;
