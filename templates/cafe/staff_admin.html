@@ -64,46 +64,50 @@
     {% if active_staff_section == "active_staff" %}
     <section class="panel">
       <h3>Active Staff</h3>
-      <div style="overflow:auto">
-        <table>
-          <thead>
-            <tr>
-              <th>Profile</th><th>Attendance</th><th>Leaves</th><th>Edit</th><th>Actions</th>
-            </tr>
-          </thead>
-          <tbody>
-            {% for s in active_profiles %}
-            {% set is_cafe_admin = (s.user.email == "admin@brownberries.local") or (user_has_any_role(s.user, "admin") and s.user.full_name|lower == "cafe admin") %}
-            <tr>
-              <td>
-                <strong>{{ s.user.full_name }}</strong><br />
-                {{ s.user.email }}<br />
-                {{ user_display_roles(s.user) }}<br />
-                Joined: {{ s.joining_date or "-" }}<br />
-                Shift: {{ s.shift_start_time.strftime("%H:%M") if s.shift_start_time else "09:00" }} - {{ s.shift_end_time.strftime("%H:%M") if s.shift_end_time else "18:00" }}<br />
-                DOB: {{ s.dob or "-" }}<br />
-                {{ s.gender or "-" }}, {{ s.marital_status or "-" }}<br />
-                Govt ID: {{ s.govt_id_type or "-" }} / {{ s.govt_id_number or "-" }}<br />
-                Emergency: {{ s.emergency_contact or "-" }}<br />
-                Salary: {{ (s.salary_type or "monthly")|title }}{% if s.salary_amount %} - ₹{{ "%.2f"|format(s.salary_amount) }}{% endif %}
-              </td>
-              <td>
-                {% set mark = attendance_today.get(s.user_id) %}
-                Today: {{ mark.status.replace("_"," ").title() if mark else "Not logged" }}<br />
-                {% set last_mark = attendance_latest.get(s.user_id) %}
-                Last: {{ last_mark.status.replace("_"," ").title() if last_mark else "-" }}{% if last_mark %} ({{ last_mark.attendance_date }}){% endif %}
-              </td>
-              <td>
-                {% set leaves = leave_summary.get(s.user_id, {"pending": 0, "approved": 0}) %}
-                Pending: {{ leaves.pending }}<br />Approved: {{ leaves.approved }}<br />
-                {% set balance = staff_leave_balances.get(s.user_id) %}
-                Earned: {{ "%.1f"|format(balance.earned_balance if balance else 0) }}<br />Urgent: {{ "%.1f"|format(balance.urgent_balance if balance else 0) }}
-              </td>
-              <td>
+      <p class="muted staff-accordion-hint">Select a staff member’s name to view their details and edit their record.</p>
+      <div class="staff-accordion-list">
+        {% for s in active_profiles %}
+        {% set is_cafe_admin = (s.user.email == "admin@brownberries.local") or (user_has_any_role(s.user, "admin") and s.user.full_name|lower == "cafe admin") %}
+        {% set mark = attendance_today.get(s.user_id) %}
+        {% set last_mark = attendance_latest.get(s.user_id) %}
+        {% set leaves = leave_summary.get(s.user_id, {"pending": 0, "approved": 0}) %}
+        {% set balance = staff_leave_balances.get(s.user_id) %}
+        {% set current_roles = s.user.assigned_roles() %}
+        <details class="staff-accordion">
+          <summary>
+            <span class="staff-accordion-name">
+              <strong>{{ s.user.full_name }}</strong>
+              <small>{{ s.user.email }}</small>
+            </span>
+            <span class="staff-accordion-meta">
+              <span class="staff-role-pill">{{ user_display_roles(s.user) }}</span>
+              <span>{{ mark.status.replace("_", " ").title() if mark else "Not logged" }}</span>
+              <span class="staff-accordion-chevron" aria-hidden="true">⌄</span>
+            </span>
+          </summary>
+          <div class="staff-accordion-body">
+            <div class="staff-detail-strip">
+              <div><span>Joined</span><strong>{{ s.joining_date or "-" }}</strong></div>
+              <div><span>Shift</span><strong>{{ s.shift_start_time.strftime("%H:%M") if s.shift_start_time else "09:00" }} - {{ s.shift_end_time.strftime("%H:%M") if s.shift_end_time else "18:00" }}</strong></div>
+              <div><span>Today</span><strong>{{ mark.status.replace("_", " ").title() if mark else "Not logged" }}</strong></div>
+              <div><span>Leave Balance</span><strong>{{ "%.1f"|format(balance.earned_balance if balance else 0) }} earned · {{ "%.1f"|format(balance.urgent_balance if balance else 0) }} urgent</strong></div>
+            </div>
+            <div class="staff-accordion-columns">
+              <div class="staff-profile-summary">
+                <h4>Staff Details</h4>
+                <p><strong>Last attendance:</strong> {{ last_mark.status.replace("_", " ").title() if last_mark else "-" }}{% if last_mark %} ({{ last_mark.attendance_date }}){% endif %}</p>
+                <p><strong>Leave requests:</strong> {{ leaves.pending }} pending · {{ leaves.approved }} approved</p>
+                <p><strong>DOB:</strong> {{ s.dob or "-" }} · <strong>Gender:</strong> {{ s.gender or "-" }}</p>
+                <p><strong>Marital status:</strong> {{ s.marital_status or "-" }}</p>
+                <p><strong>Govt ID:</strong> {{ s.govt_id_type or "-" }} / {{ s.govt_id_number or "-" }}</p>
+                <p><strong>Emergency:</strong> {{ s.emergency_contact or "-" }}</p>
+                <p><strong>Salary:</strong> {{ (s.salary_type or "monthly")|title }}{% if s.salary_amount %} · ₹{{ "%.2f"|format(s.salary_amount) }}{% endif %}</p>
+              </div>
+              <div class="staff-edit-pane">
+                <h4>Edit Staff Record</h4>
                 <form method="post" enctype="multipart/form-data" class="grid">
                   <input type="hidden" name="action" value="update" />
                   <input type="hidden" name="user_id" value="{{ s.user_id }}" />
-                  {% set current_roles = s.user.assigned_roles() %}
                   <label>Name<input name="full_name" value="{{ s.user.full_name }}" required /></label>
                   <label>Email<input type="email" name="email" value="{{ s.user.email }}" required /></label>
                   <div class="full">
@@ -147,35 +151,35 @@
                   <label>Bank<input name="bank_name" value="{{ s.bank_name or '' }}" /></label>
                   <label>Reset Password<input type="password" name="password" /></label>
                   <label><input type="checkbox" name="active" {% if s.user.active %}checked{% endif %} /> Active</label>
-                  <button type="submit">Save</button>
+                  <button type="submit">Save Staff Changes</button>
                 </form>
-              </td>
-              <td>
-                <p><a class="button-link" href="{{ url_for('cafe.download_staff_id_card', user_id=s.user_id) }}">Download Staff ID</a></p>
-                {% if s.govt_id_file_path %}
-                <p><a class="button-link" href="{{ url_for('cafe.download_staff_govt_id', user_id=s.user_id) }}">Download Govt ID</a></p>
-                {% endif %}
-                <form method="post" class="inline">
-                  <input type="hidden" name="action" value="archive" />
-                  <input type="hidden" name="user_id" value="{{ s.user_id }}" />
-                  <button type="submit">Archive</button>
-                </form>
-                {% if is_cafe_admin %}
-                <button type="button" disabled>Admin Protected</button>
-                {% else %}
-                <form method="post" class="inline">
-                  <input type="hidden" name="action" value="delete" />
-                  <input type="hidden" name="user_id" value="{{ s.user_id }}" />
-                  <button type="submit">Delete</button>
-                </form>
-                {% endif %}
-              </td>
-            </tr>
-            {% else %}
-            <tr><td colspan="5">No staff found.</td></tr>
-            {% endfor %}
-          </tbody>
-        </table>
+              </div>
+            </div>
+            <div class="staff-accordion-actions">
+              <a class="button-link" href="{{ url_for('cafe.download_staff_id_card', user_id=s.user_id) }}">Download Staff ID</a>
+              {% if s.govt_id_file_path %}
+              <a class="button-link" href="{{ url_for('cafe.download_staff_govt_id', user_id=s.user_id) }}">Download Govt ID</a>
+              {% endif %}
+              <form method="post" class="inline" onsubmit="return confirm('Archive this staff member?');">
+                <input type="hidden" name="action" value="archive" />
+                <input type="hidden" name="user_id" value="{{ s.user_id }}" />
+                <button type="submit">Archive</button>
+              </form>
+              {% if is_cafe_admin %}
+              <button type="button" disabled>Admin Protected</button>
+              {% else %}
+              <form method="post" class="inline" onsubmit="return confirm('Delete this staff account? This cannot be undone from the active list.');">
+                <input type="hidden" name="action" value="delete" />
+                <input type="hidden" name="user_id" value="{{ s.user_id }}" />
+                <button type="submit">Delete</button>
+              </form>
+              {% endif %}
+            </div>
+          </div>
+        </details>
+        {% else %}
+        <p class="muted">No active staff found.</p>
+        {% endfor %}
       </div>
     </section>
     {% endif %}
