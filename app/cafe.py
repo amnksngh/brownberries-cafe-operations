@@ -6633,14 +6633,18 @@ def staff():
 
         if action == "attendance_for_user":
             target_user_id = int(request.form["target_user_id"])
-            attendance_date = date.fromisoformat(request.form["attendance_date"])
+            try:
+                attendance_date = date.fromisoformat(request.form["attendance_date"])
+                check_in_time = attendance_datetime_for(attendance_date, request.form.get("check_in_time"))
+                check_out_time = attendance_datetime_for(attendance_date, request.form.get("check_out_time"))
+            except (KeyError, TypeError, ValueError):
+                flash("Enter a valid attendance date and time values.", "error")
+                return _staff_redirect("attendance_entry", attendance_user_id=target_user_id)
             status = (request.form.get("status") or "").strip()
             valid_statuses = {value for value, _ in ATTENDANCE_STATUS_OPTIONS if value}
             if status and status not in valid_statuses:
                 status = ""
             notes = request.form.get("notes", "").strip() or None
-            check_in_time = attendance_datetime_for(attendance_date, request.form.get("check_in_time"))
-            check_out_time = attendance_datetime_for(attendance_date, request.form.get("check_out_time"))
             if check_in_time and check_out_time and check_out_time < check_in_time:
                 flash("Check-out time cannot be before check-in time.", "error")
                 return _staff_redirect("attendance_entry", attendance_user_id=target_user_id)
@@ -6675,10 +6679,15 @@ def staff():
             if not existing.check_in_at or existing.check_out_at:
                 flash("This session is already closed.", "error")
                 return _staff_redirect("attendance_entry", attendance_user_id=existing.user_id)
-            checkout_time = attendance_datetime_for(
-                existing.attendance_date,
-                request.form.get("check_out_time"),
-            ) or datetime.now()
+            try:
+                checkout_time = attendance_datetime_for(
+                    existing.attendance_date,
+                    request.form.get("check_out_time"),
+                )
+            except (TypeError, ValueError):
+                flash("Enter a valid check-out time.", "error")
+                return _staff_redirect("attendance_entry", attendance_user_id=existing.user_id)
+            checkout_time = checkout_time or datetime.now(IST_TZ).replace(tzinfo=None)
             if checkout_time < existing.check_in_at:
                 checkout_time = existing.check_in_at
             existing.check_out_at = checkout_time
@@ -6705,9 +6714,12 @@ def staff():
                 return _staff_redirect("attendance_entry")
             raw_time = request.form.get("bulk_check_out_time")
             for existing in rows:
-                checkout_time = attendance_datetime_for(existing.attendance_date, raw_time)
+                try:
+                    checkout_time = attendance_datetime_for(existing.attendance_date, raw_time)
+                except (TypeError, ValueError):
+                    checkout_time = None
                 if not checkout_time:
-                    checkout_time = datetime.now() if existing.attendance_date == date.today() else datetime.combine(existing.attendance_date, time(18, 0))
+                    checkout_time = datetime.now(IST_TZ).replace(tzinfo=None) if existing.attendance_date == datetime.now(IST_TZ).date() else datetime.combine(existing.attendance_date, time(18, 0))
                 if checkout_time < existing.check_in_at:
                     checkout_time = existing.check_in_at
                 existing.check_out_at = checkout_time
@@ -6736,9 +6748,10 @@ def staff():
     staff_profiles = [u.staff_profile for u in staff_users if u.staff_profile]
     active_profiles = [s for s in staff_profiles if not s.archived]
     archived_profiles = [s for s in staff_profiles if s.archived]
+    today_ist = datetime.now(IST_TZ).date()
     attendance_today = {
         row.user_id: row
-        for row in StaffAttendance.query.filter_by(attendance_date=date.today()).all()
+        for row in StaffAttendance.query.filter_by(attendance_date=today_ist).all()
     }
     attendance_latest = {}
     latest_rows = (
@@ -6773,27 +6786,27 @@ def staff():
     )
 
     selected_user_id = request.args.get("attendance_user_id", type=int)
-    selected_month = request.args.get("attendance_month", type=int) or date.today().month
-    selected_year = request.args.get("attendance_year", type=int) or date.today().year
+    selected_month = request.args.get("attendance_month", type=int) or today_ist.month
+    selected_year = request.args.get("attendance_year", type=int) or today_ist.year
     if selected_month < 1 or selected_month > 12:
-        selected_month = date.today().month
+        selected_month = today_ist.month
     if selected_year < 2000 or selected_year > 2100:
-        selected_year = date.today().year
+        selected_year = today_ist.year
     if not selected_user_id and active_profiles:
         selected_user_id = active_profiles[0].user_id
 
     days_in_month = calendar.monthrange(selected_year, selected_month)[1]
-    month_rows = calendar.Calendar(firstweekday=0).monthdayscalendar(selected_year, selected_month)
+    calendar_month_rows = calendar.Calendar(firstweekday=0).monthdayscalendar(selected_year, selected_month)
+    selected_start = date(selected_year, selected_month, 1)
+    selected_end = date(selected_year, selected_month, days_in_month)
     selected_attendance_map = {}
     if selected_user_id:
         rows = StaffAttendance.query.filter(
             StaffAttendance.user_id == selected_user_id,
-            StaffAttendance.attendance_date >= date(selected_year, selected_month, 1),
-            StaffAttendance.attendance_date <= date(selected_year, selected_month, days_in_month),
+            StaffAttendance.attendance_date >= selected_start,
+            StaffAttendance.attendance_date <= selected_end,
         ).all()
         selected_attendance_map = {row.attendance_date.day: row.status for row in rows}
-        selected_start = date(selected_year, selected_month, 1)
-        selected_end = date(selected_year, selected_month, days_in_month)
         for holiday in CompanyHoliday.query.filter(
             CompanyHoliday.active.is_(True),
             CompanyHoliday.holiday_date >= selected_start,
@@ -6807,18 +6820,118 @@ def staff():
                 if day_value.weekday() == weekly_config.weekday:
                     selected_attendance_map.setdefault(day_number, "weekly_off")
 
-    payroll_month = request.args.get("payroll_month", type=int) or date.today().month
-    payroll_year = request.args.get("payroll_year", type=int) or date.today().year
+    timeline_date_raw = (request.args.get("timeline_date") or "").strip()
+    try:
+        timeline_date = date.fromisoformat(timeline_date_raw) if timeline_date_raw else today_ist
+    except ValueError:
+        timeline_date = today_ist
+
+    def _clock_minutes(value):
+        return (value.hour * 60) + value.minute if value else 0
+
+    def _timeline_percent(minutes):
+        return round(max(0.0, min(100.0, minutes / 1440 * 100)), 3)
+
+    def _timeline_duration_text(row):
+        if not row or not row.check_in_at:
+            return "00h 00m"
+        end_time = row.check_out_at or now_ist_naive
+        minutes = max(0, int((end_time - row.check_in_at).total_seconds() // 60))
+        return f"{minutes // 60:02d}h {minutes % 60:02d}m"
+
+    timeline_attendance = {
+        row.user_id: row
+        for row in StaffAttendance.query.filter_by(attendance_date=timeline_date).all()
+    }
+    approved_timeline_leave = {
+        leave.user_id: leave
+        for leave in StaffLeaveRequest.query.filter(
+            StaffLeaveRequest.status == "approved",
+            StaffLeaveRequest.start_date <= timeline_date,
+            StaffLeaveRequest.end_date >= timeline_date,
+        ).all()
+    }
+    now_ist_naive = datetime.now(IST_TZ).replace(tzinfo=None)
+    team_timeline = []
+    for profile in active_profiles:
+        row = timeline_attendance.get(profile.user_id)
+        leave = approved_timeline_leave.get(profile.user_id)
+        shift_start = profile.shift_start_time or time(9, 0)
+        shift_end = profile.shift_end_time or time(18, 0)
+        shift_start_min = _clock_minutes(shift_start)
+        shift_end_min = max(shift_start_min + 30, _clock_minutes(shift_end))
+        if row and row.check_in_at:
+            bar_start_min = _clock_minutes(row.check_in_at.time())
+            bar_end_dt = row.check_out_at or (now_ist_naive if timeline_date == today_ist else row.check_in_at)
+            bar_end_min = max(bar_start_min + 1, _clock_minutes(bar_end_dt.time()))
+            if row.status in {"first_half", "second_half", "short_attendance"}:
+                bar_color = "#f4c95d"
+            elif row.status in {"absent", "urgent_leave"}:
+                bar_color = "#e98b8b"
+            else:
+                bar_color = "#62b879"
+            display_status = attendance_status_label(row.status)
+        elif leave:
+            bar_start_min, bar_end_min, bar_color = 0, 1440, "#8bb7e8"
+            display_status = f"On Leave · {leave.leave_type.title()}"
+        elif timeline_date < today_ist:
+            bar_start_min, bar_end_min, bar_color = 0, 1440, "#e98b8b"
+            display_status = "Absent"
+        else:
+            bar_start_min, bar_end_min, bar_color = 0, 1440, "#c9c2bb"
+            display_status = "Unknown"
+        team_timeline.append({
+            "name": profile.user.full_name,
+            "status": display_status,
+            "worked_duration": _timeline_duration_text(row),
+            "shift_start": shift_start.strftime("%I:%M %p"),
+            "shift_end": shift_end.strftime("%I:%M %p"),
+            "shift_left": _timeline_percent(shift_start_min),
+            "shift_width": _timeline_percent(shift_end_min) - _timeline_percent(shift_start_min),
+            "bar_left": _timeline_percent(bar_start_min),
+            "bar_width": max(0.5, _timeline_percent(bar_end_min) - _timeline_percent(bar_start_min)),
+            "bar_color": bar_color,
+        })
+
+    shared_leave_map = {}
+    approved_month_leaves = StaffLeaveRequest.query.filter(
+        StaffLeaveRequest.status == "approved",
+        StaffLeaveRequest.start_date <= selected_end,
+        StaffLeaveRequest.end_date >= selected_start,
+    ).options(joinedload(StaffLeaveRequest.user)).all()
+    for leave in approved_month_leaves:
+        cursor = max(leave.start_date, selected_start)
+        finish = min(leave.end_date, selected_end)
+        while cursor <= finish:
+            shared_leave_map.setdefault(cursor.isoformat(), []).append(
+                f"{leave.user.full_name} · {leave.leave_type.title()}"
+            )
+            cursor += timedelta(days=1)
+    for holiday in CompanyHoliday.query.filter(
+        CompanyHoliday.active.is_(True),
+        CompanyHoliday.holiday_date >= selected_start,
+        CompanyHoliday.holiday_date <= selected_end,
+    ).all():
+        shared_leave_map.setdefault(holiday.holiday_date.isoformat(), []).append(f"Everyone · {holiday.name}")
+    weekly_config = weekly_off_config()
+    if weekly_config.enabled:
+        for day_number in range(1, days_in_month + 1):
+            day_value = date(selected_year, selected_month, day_number)
+            if day_value.weekday() == weekly_config.weekday:
+                shared_leave_map.setdefault(day_value.isoformat(), []).append(f"Everyone · {weekly_config.label}")
+
+    payroll_month = request.args.get("payroll_month", type=int) or today_ist.month
+    payroll_year = request.args.get("payroll_year", type=int) or today_ist.year
     if payroll_month < 1 or payroll_month > 12:
-        payroll_month = date.today().month
+        payroll_month = today_ist.month
     if payroll_year < 2000 or payroll_year > 2100:
-        payroll_year = date.today().year
+        payroll_year = today_ist.year
     payroll_days = calendar.monthrange(payroll_year, payroll_month)[1]
     payroll_start = date(payroll_year, payroll_month, 1)
     payroll_end = date(payroll_year, payroll_month, payroll_days)
     payroll_rows = []
     total_payroll_estimate = 0.0
-    today_attendance_rows = StaffAttendance.query.filter_by(attendance_date=date.today()).all()
+    today_attendance_rows = StaffAttendance.query.filter_by(attendance_date=today_ist).all()
     doc_pending_count = StaffDocument.query.filter(
         StaffDocument.verification_status.in_(["pending", "rejected"])
     ).count()
@@ -6842,16 +6955,16 @@ def staff():
     }
     for staff_user in staff_users:
         profile = staff_user.staff_profile
-        month_rows = StaffAttendance.query.filter(
+        payroll_attendance_rows = StaffAttendance.query.filter(
             StaffAttendance.user_id == staff_user.id,
             StaffAttendance.attendance_date >= payroll_start,
             StaffAttendance.attendance_date <= payroll_end,
         ).all()
-        present_days = sum(1 for row in month_rows if row.status in ["present_all_day", "late_entry", "early_exit", "weekly_off", "on_leave", "earned_leave", "company_holiday"])
-        half_days = sum(1 for row in month_rows if row.status in ["first_half", "second_half", "half_day_leave", "half_day_earned_leave", "half_day_urgent_leave"])
-        sick_days = sum(1 for row in month_rows if row.status == "sick_leave")
-        unpaid_days = sum(max(0.0, 1.0 - attendance_pay_fraction(row.status)) for row in month_rows)
-        payable_days = sum(attendance_pay_fraction(row.status) for row in month_rows)
+        present_days = sum(1 for row in payroll_attendance_rows if row.status in ["present_all_day", "late_entry", "early_exit", "weekly_off", "on_leave", "earned_leave", "company_holiday"])
+        half_days = sum(1 for row in payroll_attendance_rows if row.status in ["first_half", "second_half", "half_day_leave", "half_day_earned_leave", "half_day_urgent_leave"])
+        sick_days = sum(1 for row in payroll_attendance_rows if row.status == "sick_leave")
+        unpaid_days = sum(max(0.0, 1.0 - attendance_pay_fraction(row.status)) for row in payroll_attendance_rows)
+        payable_days = sum(attendance_pay_fraction(row.status) for row in payroll_attendance_rows)
         salary_amount = float(profile.salary_amount or 0)
         per_day_salary = round((salary_amount / payroll_days), 2) if salary_amount else 0.0
         estimated_pay = round(payable_days * per_day_salary, 2)
@@ -6881,8 +6994,12 @@ def staff():
         attendance_user_id=selected_user_id,
         attendance_month=selected_month,
         attendance_year=selected_year,
-        attendance_month_rows=month_rows,
+        attendance_month_rows=calendar_month_rows,
+        today_date=today_ist.isoformat(),
         selected_attendance_map=selected_attendance_map,
+        timeline_date=timeline_date,
+        team_timeline=team_timeline,
+        shared_leave_map=shared_leave_map,
         staff_role_options=_get_role_options(),
         user_types=UserType.query.order_by(UserType.name.asc()).all(),
         active_staff_section=active_staff_section,
@@ -6977,10 +7094,11 @@ def export_staff_attendance():
     month = request.args.get("month", type=int)
     year = request.args.get("year", type=int)
     user = User.query.get_or_404(user_id)
+    today_ist = datetime.now(IST_TZ).date()
     if month is None or month < 1 or month > 12:
-        month = date.today().month
+        month = today_ist.month
     if year is None or year < 2000 or year > 2100:
-        year = date.today().year
+        year = today_ist.year
     days_in_month = calendar.monthrange(year, month)[1]
     from_dt = date(year, month, 1)
     to_dt = date(year, month, days_in_month)
@@ -7093,7 +7211,7 @@ def my_staff():
             if not existing or not existing.check_in_at:
                 flash("No active check-in session found.", "error")
                 return redirect(url_for("cafe.my_staff"))
-            existing.check_out_at = datetime.now()
+            existing.check_out_at = datetime.now(IST_TZ).replace(tzinfo=None)
             existing.check_out_method = "profile"
             existing.manager_override = False
             refresh_attendance_row(existing)
@@ -7171,10 +7289,11 @@ def my_staff():
         .limit(40)
         .all()
     )
-    month_start = date.today().replace(day=1)
+    today_ist = datetime.now(IST_TZ).date()
+    month_start = today_ist.replace(day=1)
     month_logs = [row for row in attendance_logs if row.attendance_date >= month_start]
     attendance_summary = build_attendance_summary(month_logs)
-    today_attendance = next((row for row in attendance_logs if row.attendance_date == date.today()), None)
+    today_attendance = next((row for row in attendance_logs if row.attendance_date == today_ist), None)
     active_attendance_session = next((row for row in attendance_logs if row.check_in_at and not row.check_out_at), None)
     next_attendance_action = "completed"
     if active_attendance_session:

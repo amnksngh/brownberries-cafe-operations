@@ -8,7 +8,7 @@ web workspace.
 
 import json
 import os
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
@@ -25,6 +25,7 @@ from .models import (
     CafeOrder,
     CafeOrderItem,
     CafeTable,
+    CompanyHoliday,
     LeaveBalance,
     MenuCategory,
     MenuItem,
@@ -33,6 +34,7 @@ from .models import (
     StaffLeaveRequest,
     User,
     Workstation,
+    WeeklyOffConfig,
 )
 
 bp = Blueprint("mobile_staff", __name__, url_prefix="/api/mobile/staff")
@@ -92,6 +94,7 @@ def _profile_payload(user):
 def _attendance_payload(row):
     if not row:
         return None
+    worked_minutes = max(0, int((row.check_out_at - row.check_in_at).total_seconds() // 60)) if row.check_in_at and row.check_out_at else 0
     return {
         "id": row.id,
         "date": row.attendance_date.isoformat() if row.attendance_date else "",
@@ -104,6 +107,8 @@ def _attendance_payload(row):
         "worked_hours": round(max(0.0, (row.check_out_at - row.check_in_at).total_seconds() / 3600), 2)
         if row.check_in_at and row.check_out_at
         else None,
+        "worked_minutes": worked_minutes,
+        "worked_duration": f"{worked_minutes // 60:02d}h {worked_minutes % 60:02d}m" if row.check_in_at else "00h 00m",
     }
 
 
@@ -252,6 +257,38 @@ def workspace():
     all_menu = [payload for item in menu_items if (payload := _menu_payload(item, include_protected=True))]
     categories = MenuCategory.query.order_by(MenuCategory.name.asc()).all()
     workstations = Workstation.query.filter_by(active=True).order_by(Workstation.display_order.asc(), Workstation.name.asc()).all()
+    month_start = date(today.year, today.month, 1)
+    next_month = date(today.year + (1 if today.month == 12 else 0), 1 if today.month == 12 else today.month + 1, 1)
+    month_end = next_month - timedelta(days=1)
+    shared_calendar = []
+    shared_leaves = StaffLeaveRequest.query.filter(
+        StaffLeaveRequest.status == "approved",
+        StaffLeaveRequest.start_date <= month_end,
+        StaffLeaveRequest.end_date >= month_start,
+    ).all()
+    for leave in shared_leaves:
+        cursor = max(leave.start_date, month_start)
+        finish = min(leave.end_date, month_end)
+        while cursor <= finish:
+            shared_calendar.append({
+                "date": cursor.isoformat(),
+                "label": f"{leave.user.full_name if leave.user else 'Staff'} · {leave.leave_type.title()}",
+                "kind": "leave",
+            })
+            cursor += timedelta(days=1)
+    for holiday in CompanyHoliday.query.filter(
+        CompanyHoliday.active.is_(True),
+        CompanyHoliday.holiday_date >= month_start,
+        CompanyHoliday.holiday_date <= month_end,
+    ).all():
+        shared_calendar.append({"date": holiday.holiday_date.isoformat(), "label": f"Everyone · {holiday.name}", "kind": "holiday"})
+    weekly = WeeklyOffConfig.query.get(1)
+    if weekly and weekly.enabled:
+        cursor = month_start
+        while cursor <= month_end:
+            if cursor.weekday() == weekly.weekday:
+                shared_calendar.append({"date": cursor.isoformat(), "label": f"Everyone · {weekly.label}", "kind": "weekly_off"})
+            cursor += timedelta(days=1)
     return jsonify({
         "ok": True,
         "server_time_ist": datetime.now(IST).isoformat(),
@@ -262,6 +299,8 @@ def workspace():
             "balance": {"earned": float(balance.earned_balance if balance else 0), "urgent": float(balance.urgent_balance if balance else 0)},
             "requests": [_leave_payload(row) for row in leave_requests],
             "policy": {"max_continuous_days": leave_policy().max_continuous_days, "max_monthly_urgent_leaves": float(leave_policy().max_monthly_urgent_leaves or 0)},
+            "shared_calendar_month": month_start.strftime("%B %Y"),
+            "shared_calendar": shared_calendar,
         },
         "documents": [_document_payload(doc) for doc in documents],
         "rulebook": {"version": rulebook.version, "title": rulebook.title, "content": rulebook.content_text or "", "file_name": rulebook.file_name or ""} if rulebook else None,

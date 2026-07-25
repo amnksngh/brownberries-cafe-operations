@@ -275,6 +275,66 @@
       <p><a class="button-link" href="{{ url_for('cafe.export_staff_attendance', user_id=attendance_user_id, month=attendance_month, year=attendance_year) }}">Download Attendance (Month/Year)</a></p>
       {% endif %}
     </section>
+
+    <section class="panel staff-team-timeline-panel">
+      <div class="section-heading-row">
+        <div>
+          <h3>Team Day Timeline</h3>
+          <p class="muted">Shared IST view: green = present, yellow = partial, red = absent, blue = approved leave, gray = unknown. The outlined strip shows the assigned shift.</p>
+        </div>
+        <form method="get" class="inline-form timeline-date-form">
+          <input type="hidden" name="section" value="attendance_calendar" />
+          <input type="hidden" name="attendance_user_id" value="{{ attendance_user_id or '' }}" />
+          <input type="hidden" name="attendance_month" value="{{ attendance_month }}" />
+          <input type="hidden" name="attendance_year" value="{{ attendance_year }}" />
+          <label>Timeline date<input type="date" name="timeline_date" value="{{ timeline_date.isoformat() }}" /></label>
+          <button type="submit">View Day</button>
+        </form>
+      </div>
+      <div class="staff-timeline-scroll">
+        <div class="timeline-hours">
+          {% for hour in range(0, 25, 2) %}<span style="left: {{ (hour / 24 * 100)|round(3) }}%;">{{ "%02d:00"|format(hour) }}</span>{% endfor %}
+        </div>
+        {% for staff in team_timeline %}
+        <div class="staff-timeline-row">
+          <div class="staff-timeline-label"><strong>{{ staff.name }}</strong><span>{{ staff.status }}</span><small>Worked {{ staff.worked_duration }} · Shift {{ staff.shift_start }}–{{ staff.shift_end }}</small></div>
+          <div class="staff-timeline-track" aria-label="{{ staff.name }}: {{ staff.status }}">
+            <span class="timeline-shift" style="left: {{ staff.shift_left }}%; width: {{ staff.shift_width }}%;"></span>
+            <span class="timeline-marker" style="left: {{ staff.shift_left }}%;"></span>
+            <span class="timeline-marker" style="left: {{ staff.shift_left + staff.shift_width }}%;"></span>
+            <span class="timeline-bar" style="left: {{ staff.bar_left }}%; width: {{ staff.bar_width }}%; background: {{ staff.bar_color }};"></span>
+          </div>
+        </div>
+        {% else %}<p class="muted">No active staff members found.</p>{% endfor %}
+      </div>
+    </section>
+
+    <section class="panel staff-shared-calendar-panel">
+      <h3>Shared Staff Time-Off Calendar</h3>
+      <p class="muted">Approved leave, company holidays, and configured weekly offs for {{ attendance_month }}/{{ attendance_year }}. This is visible to management for planning coverage.</p>
+      <div class="attendance-calendar shared-attendance-calendar">
+        <div class="cal-head">Mon</div><div class="cal-head">Tue</div><div class="cal-head">Wed</div><div class="cal-head">Thu</div><div class="cal-head">Fri</div><div class="cal-head">Sat</div><div class="cal-head">Sun</div>
+        {% for week in attendance_month_rows %}
+          {% for day in week %}
+            {% if day == 0 %}
+            <div class="cal-cell empty"></div>
+            {% else %}
+            {% set day_key = "%04d-%02d-%02d"|format(attendance_year, attendance_month, day) %}
+            {% set entries = shared_leave_map.get(day_key, []) %}
+            <div class="cal-cell shared-cal-cell {% if entries %}has-time-off{% endif %}" title="{{ entries|join('; ') if entries else 'No approved time off' }}">
+              <span class="day-dot {% if entries %}st-leave{% endif %}">{{ day }}</span>
+              {% if entries %}<small>{{ entries|length }} off</small>{% endif %}
+            </div>
+            {% endif %}
+          {% endfor %}
+        {% endfor %}
+      </div>
+      {% if shared_leave_map %}
+      <div class="shared-calendar-list">
+        {% for day_key, entries in shared_leave_map|dictsort %}<div><strong>{{ day_key }}</strong> · {{ entries|join('; ') }}</div>{% endfor %}
+      </div>
+      {% else %}<p class="muted">No approved time-off or common days off are recorded for this month.</p>{% endif %}
+    </section>
     {% endif %}
 
     {% if active_staff_section == "attendance_entry" %}
@@ -326,7 +386,7 @@
             {% endfor %}
           </select>
         </label>
-        <label>Date<input type="date" name="attendance_date" required /></label>
+        <label>Date<input type="date" name="attendance_date" value="{{ today_date }}" required /></label>
         <label>Status
           <select name="status">
             {% for value, label in attendance_status_options %}

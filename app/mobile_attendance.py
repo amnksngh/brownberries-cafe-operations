@@ -1,6 +1,6 @@
 import hashlib
 import secrets
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from functools import wraps
 from zoneinfo import ZoneInfo
 
@@ -143,6 +143,9 @@ def _user_shift_payload(user: User | None) -> dict:
 def _attendance_row_payload(row: StaffAttendance | None) -> dict | None:
     if not row:
         return None
+    duration_end = row.check_out_at or datetime.now(IST_TZ).replace(tzinfo=None)
+    worked_minutes = max(0, int((duration_end - row.check_in_at).total_seconds() // 60)) if row.check_in_at else 0
+    duration_hours, duration_remainder = divmod(worked_minutes, 60)
     return {
         "attendance_id": row.id,
         "attendance_date": row.attendance_date.isoformat() if row.attendance_date else "",
@@ -157,6 +160,8 @@ def _attendance_row_payload(row: StaffAttendance | None) -> dict | None:
         "last_heartbeat_distance_m": float(row.last_heartbeat_distance_m or 0) if row.last_heartbeat_distance_m is not None else None,
         "mobile_device_id": row.mobile_device_id or "",
         "auto_checkout_reason": row.auto_checkout_reason or "",
+        "worked_minutes": worked_minutes,
+        "worked_duration": f"{duration_hours:02d}h {duration_remainder:02d}m",
     }
 
 
@@ -225,6 +230,38 @@ def _update_mobile_session_status(
     session_row.last_sync_message = (message or "").strip()[:255] or None
 
 
+def _close_mobile_attendance_row(row: StaffAttendance, checkout_time: datetime, reason: str):
+    if not row.check_in_at or row.check_out_at:
+        return
+    if checkout_time < row.check_in_at:
+        checkout_time = row.check_in_at
+    row.check_out_at = checkout_time
+    row.check_out_method = "android_auto_app"
+    row.auto_checkout_reason = reason
+    row.last_heartbeat_at = checkout_time
+    refresh_attendance_row(row)
+
+
+def _reconcile_stale_mobile_session(row: StaffAttendance | None) -> bool:
+    """Close a session left open after the app or network stopped reporting.
+
+    A recent outside-geofence heartbeat uses the short location grace period;
+    otherwise an inside heartbeat uses the one-hour offline grace period.
+    """
+    if not row or not row.check_in_at or row.check_out_at:
+        return False
+    last_seen = row.last_heartbeat_at or row.check_in_at
+    now = datetime.now(IST_TZ).replace(tzinfo=None)
+    settings = _attendance_settings()
+    outside = row.last_heartbeat_distance_m is not None and row.last_heartbeat_distance_m > settings["radius_m"]
+    grace = timedelta(minutes=LOCATION_FAILURE_GRACE_MINUTES if outside else OFFLINE_GRACE_MINUTES)
+    if now - last_seen < grace:
+        return False
+    reason = "outside_geofence_timeout" if outside else "offline_timeout"
+    _close_mobile_attendance_row(row, last_seen + grace, reason)
+    return True
+
+
 @bp.route("/login", methods=["POST"])
 def mobile_login():
     payload = _json_payload()
@@ -276,7 +313,12 @@ def mobile_logout():
 @bp.route("/bootstrap", methods=["GET"])
 @mobile_token_required
 def mobile_bootstrap():
+    active_row = _active_attendance_session_for_user(g.mobile_user.id)
+    changed = _reconcile_stale_mobile_session(active_row)
     _update_mobile_session_status(g.mobile_session, status="bootstrap", message="Bootstrap refreshed")
+    if changed:
+        g.mobile_session.last_sync_status = "auto_checked_out"
+        g.mobile_session.last_sync_message = "Stale attendance session closed by server policy"
     db.session.commit()
     return jsonify({"ok": True, **_bootstrap_payload(g.mobile_user, g.mobile_session)})
 
@@ -311,7 +353,7 @@ def mobile_check_in():
             f"Outside cafe geofence. Current distance: {distance_m:.0f} m." if distance_m is not None else "Outside cafe geofence.",
             403,
         )
-    today = date.today()
+    today = datetime.now(IST_TZ).date()
     completed_today = StaffAttendance.query.filter_by(user_id=g.mobile_user.id, attendance_date=today).first()
     if completed_today and completed_today.check_in_at and completed_today.check_out_at:
         return _api_error("Today's attendance is already completed. Ask admin if a correction is needed.", 409)
@@ -358,6 +400,14 @@ def mobile_heartbeat():
         _update_mobile_session_status(g.mobile_session, status="idle", message="No active attendance session")
         db.session.commit()
         return jsonify({"ok": True, "message": "No active session.", "active_session": None})
+    if _reconcile_stale_mobile_session(active_row):
+        _update_mobile_session_status(
+            g.mobile_session,
+            status="auto_checked_out",
+            message="Stale attendance session closed by server policy",
+        )
+        db.session.commit()
+        return jsonify({"ok": True, "message": "Auto check-out recorded after a stale sync.", "active_session": None})
     try:
         lat = float(payload.get("lat"))
         lng = float(payload.get("lng"))
@@ -365,6 +415,31 @@ def mobile_heartbeat():
         return _api_error("Valid latitude and longitude are required.")
     distance_m = _attendance_distance_from_cafe(lat, lng)
     event_time = _parse_client_datetime(payload.get("captured_at"))
+    previous_heartbeat_at = active_row.last_heartbeat_at or active_row.check_in_at
+    previous_distance_m = active_row.last_heartbeat_distance_m
+    settings = _attendance_settings()
+    outside = distance_m is not None and distance_m > settings["radius_m"]
+    if outside and previous_distance_m is not None and previous_distance_m > settings["radius_m"] and previous_heartbeat_at:
+        outside_grace = timedelta(minutes=LOCATION_FAILURE_GRACE_MINUTES)
+        if event_time - previous_heartbeat_at >= outside_grace:
+            _close_mobile_attendance_row(active_row, previous_heartbeat_at + outside_grace, "outside_geofence_timeout")
+            _update_mobile_session_status(
+                g.mobile_session,
+                lat=lat,
+                lng=lng,
+                distance_m=distance_m,
+                status="auto_checked_out",
+                message="Auto check-out after leaving cafe perimeter",
+            )
+            db.session.commit()
+            return jsonify({
+                "ok": True,
+                "message": "Auto check-out recorded after leaving cafe perimeter.",
+                "inside_geofence": False,
+                "distance_m": round(distance_m, 2),
+                "active_session": None,
+                "policy": _mobile_policy_payload(),
+            })
     active_row.last_heartbeat_at = event_time
     active_row.last_heartbeat_lat = lat
     active_row.last_heartbeat_lng = lng
@@ -379,7 +454,6 @@ def mobile_heartbeat():
         message="Heartbeat synced",
     )
     db.session.commit()
-    settings = _attendance_settings()
     return jsonify(
         {
             "ok": True,

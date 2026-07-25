@@ -156,5 +156,12 @@ class SessionStore(context: Context) {
         activeAttendanceDate = session?.attendanceDate ?: ""
         activeStatusLabel = session?.statusLabel ?: ""
         activeCheckInAt = session?.checkInAt ?: ""
+        if (!checkedIn) clearTransientAttendanceTimers()
+    }
+
+    fun clearTransientAttendanceTimers() {
+        outsideSinceMs = 0L
+        offlineSinceMs = 0L
+        locationFailureSinceMs = 0L
     }
 }

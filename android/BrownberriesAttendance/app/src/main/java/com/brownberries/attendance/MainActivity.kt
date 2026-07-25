@@ -35,6 +35,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 import java.net.URL
+import java.time.Duration
 import java.time.ZoneId
 import java.time.ZonedDateTime
 
@@ -285,6 +286,7 @@ class MainActivity : AppCompatActivity() {
         if (store.checkedIn) {
             attendance.addView(text("Checked in", 18, true))
             attendance.addView(text("Since ${store.activeCheckInAt.ifBlank { "today" }}  •  ${store.activeStatusLabel.ifBlank { "Present" }}"))
+            attendance.addView(text("Current duration: ${durationSince(store.activeCheckInAt)}", 16, true))
             attendance.addView(actionButton("Check-Out") { checkOut() })
         } else {
             attendance.addView(text(if (today == null) "Waiting for your automatic check-in." else prettyAttendance(today)))
@@ -350,7 +352,7 @@ class MainActivity : AppCompatActivity() {
     private fun renderAttendance(data: JSONObject) {
         val root = screen("Attendance", "Your check-in is automatic when you are inside the cafe perimeter.")
         val card = section(if (store.checkedIn) "Checked in now" else "No active check-in", "IST is used for all attendance records.")
-        card.addView(text(if (store.checkedIn) "Since ${store.activeCheckInAt.ifBlank { "today" }}" else "The monitor will check again automatically."))
+        card.addView(text(if (store.checkedIn) "Since ${store.activeCheckInAt.ifBlank { "today" }}  •  Current duration: ${durationSince(store.activeCheckInAt)}" else "The monitor will check again automatically."))
         if (store.checkedIn) card.addView(actionButton("Check-Out") { checkOut() })
         root.addView(card)
         root.addView(section("Today", "Latest server record").apply {
@@ -396,6 +398,19 @@ class MainActivity : AppCompatActivity() {
                     lifecycleScope.launch { runCatching { api.cancelLeave(store.baseUrl, store.token, row.optInt("id")) }.onSuccess { refreshWorkspace(silent = true) }.onFailure { toast(it.message ?: "Cancel failed") } }
                 })
                 addView(line)
+            }
+        })
+        val shared = leave.optJSONArray("shared_calendar") ?: JSONArray()
+        root.addView(section("Shared staff calendar", leave.optString("shared_calendar_month", "Current month")).apply {
+            if (shared.length() == 0) {
+                addView(text("No approved leave, holiday, or weekly-off entries are recorded for this month."))
+            } else {
+                val grouped = linkedMapOf<String, MutableList<String>>()
+                for (i in 0 until shared.length()) {
+                    val event = shared.optJSONObject(i) ?: continue
+                    grouped.getOrPut(event.optString("date")) { mutableListOf() }.add(event.optString("label"))
+                }
+                grouped.forEach { (day, labels) -> addView(text("$day\n${labels.joinToString("  •  ")}", 14, false)) }
             }
         })
         binding.workspaceContent.addView(root)
@@ -801,7 +816,14 @@ class MainActivity : AppCompatActivity() {
     private fun simpleAdapter(values: List<String>): ArrayAdapter<String> = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, values)
     private fun jsonArrayValues(array: JSONArray?): List<String> = if (array == null) emptyList() else (0 until array.length()).map { array.optString(it) }.filter { it.isNotBlank() }
     private fun jsonArrayText(array: JSONArray?): String = jsonArrayValues(array).ifEmpty { listOf("Staff") }.joinToString(", ")
-    private fun prettyAttendance(row: JSONObject?): String = if (row == null) "No attendance recorded today." else "${row.optString("date")}  •  ${row.optString("status")}\nIn  ${row.optString("check_in_at", "—")}\nOut  ${row.optString("check_out_at", "—")}"
+    private fun prettyAttendance(row: JSONObject?): String = if (row == null) "No attendance recorded today." else "${row.optString("date")}  •  ${row.optString("status")}\nIn  ${row.optString("check_in_at", "—")}\nOut  ${row.optString("check_out_at", "—")}\nWorked  ${row.optString("worked_duration", "00h 00m")}"
+
+    private fun durationSince(raw: String): String {
+        if (raw.isBlank()) return "00h 00m"
+        val start = runCatching { ZonedDateTime.parse(raw).toInstant() }.getOrNull() ?: return "00h 00m"
+        val minutes = Duration.between(start, ZonedDateTime.now().toInstant()).toMinutes().coerceAtLeast(0)
+        return "${minutes / 60}h ${minutes % 60}m"
+    }
     private fun fuzzyScore(haystack: String, needle: String): Double {
         if (haystack.contains(needle, true)) return 1.0
         val words = needle.split(" ").filter { it.isNotBlank() }

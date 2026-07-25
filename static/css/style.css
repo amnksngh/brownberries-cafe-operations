@@ -2890,6 +2890,141 @@ th {
   border-color: #6d97d6;
 }
 
+.staff-team-timeline-panel,
+.staff-shared-calendar-panel {
+  margin-top: 0.9rem;
+}
+
+.section-heading-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.timeline-date-form {
+  flex: 0 0 auto;
+  align-items: end;
+}
+
+.staff-timeline-scroll {
+  overflow-x: auto;
+  padding: 0.55rem 0.2rem 0.2rem;
+}
+
+.timeline-hours {
+  position: relative;
+  min-width: 760px;
+  height: 1.45rem;
+  margin-left: 210px;
+  color: var(--muted);
+  font-size: 0.72rem;
+}
+
+.timeline-hours span {
+  position: absolute;
+  transform: translateX(-50%);
+  white-space: nowrap;
+}
+
+.staff-timeline-row {
+  display: grid;
+  grid-template-columns: minmax(190px, 210px) minmax(760px, 1fr);
+  align-items: center;
+  gap: 0.75rem;
+  min-height: 3.35rem;
+  border-top: 1px solid var(--line);
+}
+
+.staff-timeline-label {
+  display: grid;
+  gap: 0.1rem;
+  line-height: 1.2;
+}
+
+.staff-timeline-label span,
+.staff-timeline-label small {
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.staff-timeline-track {
+  position: relative;
+  height: 2rem;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  overflow: hidden;
+  background: repeating-linear-gradient(
+    to right,
+    #fbf7f2 0,
+    #fbf7f2 calc(8.333% - 1px),
+    #e8ded4 calc(8.333% - 1px),
+    #e8ded4 8.333%
+  );
+}
+
+.timeline-shift {
+  position: absolute;
+  inset-block: 0.25rem;
+  border: 2px dashed #8d6b56;
+  border-radius: 999px;
+  opacity: 0.62;
+}
+
+.timeline-bar {
+  position: absolute;
+  top: 0.48rem;
+  height: 0.95rem;
+  min-width: 0.35rem;
+  border-radius: 999px;
+  box-shadow: 0 1px 3px rgb(61 39 27 / 18%);
+}
+
+.timeline-marker {
+  position: absolute;
+  inset-block: 0;
+  width: 2px;
+  background: #513522;
+  opacity: 0.72;
+  z-index: 2;
+}
+
+.shared-attendance-calendar {
+  max-width: 760px;
+}
+
+.shared-cal-cell {
+  position: relative;
+  flex-direction: column;
+  gap: 0.12rem;
+}
+
+.shared-cal-cell small {
+  color: var(--muted);
+  font-size: 0.66rem;
+}
+
+.shared-cal-cell.has-time-off {
+  background: #f3f8ff;
+}
+
+.shared-calendar-list {
+  display: grid;
+  gap: 0.28rem;
+  margin-top: 0.8rem;
+  color: var(--muted);
+  font-size: 0.84rem;
+}
+
+@media (max-width: 700px) {
+  .section-heading-row {
+    display: grid;
+  }
+  .timeline-date-form {
+    width: 100%;
+  }
+}
+
 .cashier-table-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));

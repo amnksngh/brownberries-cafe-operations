@@ -574,7 +574,7 @@ def _active_attendance_session_for_user(user_id: int):
 def _attendance_elapsed_text(row) -> str:
     if not row or not row.check_in_at:
         return "-"
-    end_time = row.check_out_at or datetime.now()
+    end_time = row.check_out_at or datetime.now(IST_TZ).replace(tzinfo=None)
     seconds = max(0, int((end_time - row.check_in_at).total_seconds()))
     hours = seconds // 3600
     minutes = (seconds % 3600) // 60
@@ -1515,14 +1515,18 @@ def profile():
         if action == "attendance_status":
             if not can_admin_view:
                 return redirect(url_for("main.profile"))
-            selected_date = date.fromisoformat(request.form["attendance_date"]) if request.form.get("attendance_date") else date.today()
+            try:
+                selected_date = date.fromisoformat(request.form["attendance_date"]) if request.form.get("attendance_date") else datetime.now(IST_TZ).date()
+                check_in_time = attendance_datetime_for(selected_date, request.form.get("check_in_time"))
+                check_out_time = attendance_datetime_for(selected_date, request.form.get("check_out_time"))
+            except (KeyError, TypeError, ValueError):
+                flash("Enter a valid attendance date and time values.", "error")
+                return redirect(url_for("main.profile", section="attendance", user_id=user.id if can_admin_view else None))
             status = (request.form.get("status") or "").strip()
             valid_statuses = {value for value, _ in ATTENDANCE_STATUS_OPTIONS if value}
             if status and status not in valid_statuses:
                 status = ""
             notes = request.form.get("notes", "").strip() or None
-            check_in_time = attendance_datetime_for(selected_date, request.form.get("check_in_time"))
-            check_out_time = attendance_datetime_for(selected_date, request.form.get("check_out_time"))
             if check_in_time and check_out_time and check_out_time < check_in_time:
                 flash("Check-out time cannot be before check-in time.", "error")
                 return redirect(url_for("main.profile", section="attendance", user_id=user.id if can_admin_view else None))
@@ -1552,7 +1556,7 @@ def profile():
             if not row or not row.check_in_at:
                 flash("No active check-in session found.", "error")
                 return redirect(url_for("main.profile", section="attendance"))
-            row.check_out_at = datetime.now()
+            row.check_out_at = datetime.now(IST_TZ).replace(tzinfo=None)
             row.check_out_method = "profile"
             refresh_attendance_row(row)
             db.session.commit()
@@ -1686,12 +1690,13 @@ def profile():
             flash("Salary receipt uploaded.", "success")
             return redirect(url_for("main.profile", section="salary", user_id=target_user.id))
 
-    summary_month = request.args.get("month", type=int) or date.today().month
-    summary_year = request.args.get("year", type=int) or date.today().year
+    today_ist = datetime.now(IST_TZ).date()
+    summary_month = request.args.get("month", type=int) or today_ist.month
+    summary_year = request.args.get("year", type=int) or today_ist.year
     if summary_month < 1 or summary_month > 12:
-        summary_month = date.today().month
+        summary_month = today_ist.month
     if summary_year < 2000 or summary_year > 2100:
-        summary_year = date.today().year
+        summary_year = today_ist.year
     month_end_day = calendar.monthrange(summary_year, summary_month)[1]
     month_start = date(summary_year, summary_month, 1)
     month_end = date(summary_year, summary_month, month_end_day)
@@ -1771,7 +1776,7 @@ def profile():
         .limit(20)
         .all()
     )
-    today_attendance = next((row for row in attendance_logs if row.attendance_date == date.today()), None)
+    today_attendance = next((row for row in attendance_logs if row.attendance_date == today_ist), None)
     active_attendance_session = _active_attendance_session_for_user(user.id)
     next_attendance_action = "completed"
     if active_attendance_session and active_attendance_session.check_in_at and not active_attendance_session.check_out_at:
@@ -1819,6 +1824,7 @@ def profile():
         leave_month_rows=leave_context["leave_month_rows"],
         staff_notifications=staff_notifications,
         current_rulebook=current_rulebook,
+        today_date=today_ist.isoformat(),
     )
 
 
@@ -1832,7 +1838,7 @@ def staff_attendance_check_in():
         if existing_active and existing_active.check_in_at and not existing_active.check_out_at:
             flash("You already have an active check-in session. Please check out from your profile.", "error")
             return redirect(url_for("main.profile", section="attendance"))
-        today = date.today()
+        today = datetime.now(IST_TZ).date()
         completed_today = StaffAttendance.query.filter_by(user_id=user.id, attendance_date=today).first()
         if completed_today and completed_today.check_in_at and completed_today.check_out_at:
             flash("Today's attendance is already completed. Ask admin if a correction is needed.", "error")
@@ -1856,7 +1862,7 @@ def staff_attendance_check_in():
         if not row:
             row = StaffAttendance(user_id=user.id, attendance_date=today)
             db.session.add(row)
-        row.check_in_at = datetime.now()
+        row.check_in_at = datetime.now(IST_TZ).replace(tzinfo=None)
         row.check_out_at = None
         row.manager_override = False
         row.check_in_lat = check_in_lat
