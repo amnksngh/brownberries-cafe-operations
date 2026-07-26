@@ -25,9 +25,7 @@
       <div id="notif-list" class="grid"></div>
     </div>
   </div>
-  {% if not kiosk_mode %}
-  <a class="cashier-cash-counter-link" href="{{ url_for('cafe.cash_counter') }}">Cash Counter</a>
-  {% endif %}
+  <a class="cashier-cash-counter-link" href="{% if kiosk_mode %}{{ url_for('cafe.reception_kiosk_cash_counter', access_key=kiosk_access_key) }}{% else %}{{ url_for('cafe.cash_counter') }}{% endif %}">Cash Counter</a>
 </div>
 {% endblock %}
 {% block content %}

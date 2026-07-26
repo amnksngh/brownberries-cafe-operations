@@ -3288,6 +3288,10 @@ def cashier():
 @bp.route("/cash-counter", methods=["GET", "POST"])
 @roles_required("admin", "manager", "cashier")
 def cash_counter():
+    return _render_cash_counter_page()
+
+
+def _render_cash_counter_page(kiosk_mode: bool = False, access_key: str = ""):
     if request.method == "POST":
         entry_type = (request.form.get("entry_type") or "withdrawal").strip().lower()
         if entry_type not in {"deposit", "withdrawal"}:
@@ -3296,13 +3300,21 @@ def cash_counter():
         note = (request.form.get("note") or "").strip() or None
         if not reason:
             flash("Add a reason for this cash movement.", "error")
-            return redirect(url_for("cafe.cash_counter"))
+            return redirect(
+                url_for("cafe.reception_kiosk_cash_counter", access_key=access_key)
+                if kiosk_mode
+                else url_for("cafe.cash_counter")
+            )
         counts = {}
         for key in CASH_DENOMINATION_KEYS:
             count = _safe_int(request.form.get(key), 0)
             if count < 0:
                 flash("Denomination counts cannot be negative.", "error")
-                return redirect(url_for("cafe.cash_counter"))
+                return redirect(
+                    url_for("cafe.reception_kiosk_cash_counter", access_key=access_key)
+                    if kiosk_mode
+                    else url_for("cafe.cash_counter")
+                )
             if count:
                 counts[key] = count
         amount = round(_safe_float(request.form.get("amount"), 0), 2)
@@ -3312,17 +3324,33 @@ def cash_counter():
                 amount = denomination_total
             elif abs(amount - denomination_total) > 0.01:
                 flash(f"Denominations total ₹{denomination_total:.2f}, but amount is ₹{amount:.2f}.", "error")
-                return redirect(url_for("cafe.cash_counter"))
+                return redirect(
+                    url_for("cafe.reception_kiosk_cash_counter", access_key=access_key)
+                    if kiosk_mode
+                    else url_for("cafe.cash_counter")
+                )
         if amount <= 0:
             flash("Enter an amount or at least one denomination.", "error")
-            return redirect(url_for("cafe.cash_counter"))
+            return redirect(
+                url_for("cafe.reception_kiosk_cash_counter", access_key=access_key)
+                if kiosk_mode
+                else url_for("cafe.cash_counter")
+            )
         snapshot = _cash_counter_snapshot()
         if entry_type == "withdrawal" and amount > snapshot["total"] + 0.01:
             flash(f"Cash withdrawal cannot exceed the current cash balance of ₹{snapshot['total']:.2f}.", "error")
-            return redirect(url_for("cafe.cash_counter"))
+            return redirect(
+                url_for("cafe.reception_kiosk_cash_counter", access_key=access_key)
+                if kiosk_mode
+                else url_for("cafe.cash_counter")
+            )
         if entry_type == "withdrawal" and any(counts.get(key, 0) > snapshot["counts"].get(key, 0) for key in counts):
             flash("The selected notes or coins exceed the tracked cash counter balance.", "error")
-            return redirect(url_for("cafe.cash_counter"))
+            return redirect(
+                url_for("cafe.reception_kiosk_cash_counter", access_key=access_key)
+                if kiosk_mode
+                else url_for("cafe.cash_counter")
+            )
         occurred_at_raw = (request.form.get("occurred_at") or "").strip()
         occurred_at = datetime.utcnow()
         if occurred_at_raw:
@@ -3330,7 +3358,11 @@ def cash_counter():
                 occurred_at = _utc_naive_from_ist(datetime.fromisoformat(occurred_at_raw))
             except ValueError:
                 flash("Use a valid local IST date and time.", "error")
-                return redirect(url_for("cafe.cash_counter"))
+                return redirect(
+                    url_for("cafe.reception_kiosk_cash_counter", access_key=access_key)
+                    if kiosk_mode
+                    else url_for("cafe.cash_counter")
+                )
         db.session.add(
             CashCounterEntry(
                 entry_type=entry_type,
@@ -3344,7 +3376,11 @@ def cash_counter():
         )
         db.session.commit()
         flash(f"Cash {'deposited' if entry_type == 'deposit' else 'withdrawn'}: ₹{amount:.2f}.", "success")
-        return redirect(url_for("cafe.cash_counter"))
+        return redirect(
+            url_for("cafe.reception_kiosk_cash_counter", access_key=access_key)
+            if kiosk_mode
+            else url_for("cafe.cash_counter")
+        )
 
     period = request.args.get("period", "today")
     start, end = _cash_counter_period(
@@ -3381,10 +3417,33 @@ def cash_counter():
         ] + [
             ("coin", value, f"Coin ₹{value}") for value in CASH_COIN_DENOMINATIONS
         ],
-        topbar_home_url=url_for("main.dashboard"),
-        manifest_url=url_for("static", filename="manifest.webmanifest"),
-        web_app_title="Brownberries Cash Counter",
+        cash_counter_back_url=(
+            url_for("cafe.reception_kiosk", access_key=access_key)
+            if kiosk_mode
+            else url_for("cafe.cashier")
+        ),
+        cash_counter_kiosk_mode=kiosk_mode,
+        cash_counter_access_key=access_key,
+        hide_staff_nav=kiosk_mode,
+        topbar_home_url=(
+            url_for("cafe.reception_kiosk", access_key=access_key)
+            if kiosk_mode
+            else url_for("main.dashboard")
+        ),
+        manifest_url=(
+            url_for("cafe.reception_kiosk_manifest", access_key=access_key)
+            if kiosk_mode
+            else url_for("static", filename="manifest.webmanifest")
+        ),
+        web_app_title="Brownberries Reception Cash Counter" if kiosk_mode else "Brownberries Cash Counter",
     )
+
+
+@bp.route("/reception/<string:access_key>/cash-counter", methods=["GET", "POST"])
+def reception_kiosk_cash_counter(access_key):
+    if not _has_valid_reception_kiosk_access(access_key):
+        return Response("Invalid reception kiosk access key.", status=403)
+    return _render_cash_counter_page(kiosk_mode=True, access_key=access_key)
 
 
 def _render_cashier_view(kiosk_mode: bool = False, access_key: str = ""):
