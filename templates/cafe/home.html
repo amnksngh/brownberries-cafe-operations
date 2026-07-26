@@ -20,6 +20,7 @@
     <a href="{{ url_for('cafe.orders') }}">Table Ordering</a>
     {% if user_has_any_role(g.current_user, "admin", "manager", "cashier") or user_has_permission(g.current_user, "can_manage_cashier") %}
     <a href="{{ url_for('cafe.cashier') }}">Cashier Desk</a>
+    <a href="{{ url_for('cafe.cash_counter') }}">Cash Counter</a>
     <a href="{{ url_for('cafe.bookings') }}">Table Bookings</a>
     {% endif %}
     {% if user_has_any_role(g.current_user, "admin", "manager", "delivery_partner") or user_has_permission(g.current_user, "can_view_delivery_locations") %}

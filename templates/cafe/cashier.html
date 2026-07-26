@@ -25,6 +25,9 @@
       <div id="notif-list" class="grid"></div>
     </div>
   </div>
+  {% if not kiosk_mode %}
+  <a class="cashier-cash-counter-link" href="{{ url_for('cafe.cash_counter') }}">Cash Counter</a>
+  {% endif %}
 </div>
 {% endblock %}
 {% block content %}
@@ -255,6 +258,12 @@
           <div class="cashier-payment-row-actions">
             <button type="button" class="button-link payment-remove-btn hidden">Remove</button>
           </div>
+          <div class="cash-payment-details hidden">
+            <label>Cash received <input name="cash_tendered_1" type="number" min="0" step="0.01" class="cash-tendered-input" /></label>
+            <label>Received notes/coins <input name="cash_received_denominations_1" class="cash-received-denominations-input" placeholder="200, 200, 20, 10" /></label>
+            <label>Returned change <input name="cash_return_denominations_1" class="cash-return-denominations-input" placeholder="Auto suggestion" /></label>
+            <span class="cash-change-hint muted"></span>
+          </div>
         </div>
       </div>
       <div class="cashier-payment-builder-actions">
@@ -276,6 +285,12 @@
           <label>Reference <input name="payment_reference___INDEX__" placeholder="Txn / note" /></label>
           <div class="cashier-payment-row-actions">
             <button type="button" class="button-link payment-remove-btn">Remove</button>
+          </div>
+          <div class="cash-payment-details hidden">
+            <label>Cash received <input name="cash_tendered___INDEX__" type="number" min="0" step="0.01" class="cash-tendered-input" /></label>
+            <label>Received notes/coins <input name="cash_received_denominations___INDEX__" class="cash-received-denominations-input" placeholder="200, 200, 20, 10" /></label>
+            <label>Returned change <input name="cash_return_denominations___INDEX__" class="cash-return-denominations-input" placeholder="Auto suggestion" /></label>
+            <span class="cash-change-hint muted"></span>
           </div>
         </div>
       </template>
@@ -385,6 +400,7 @@
   });
   const selectedTableId = {{ selected_table.id if selected_table else 0 }};
   const activeTab = "{{ tab }}";
+  const cashCounterSnapshot = {{ cash_counter_snapshot|tojson }};
   let allOrdersPayload = [];
   const sendReceiptSmsUrlTemplate = "{% if kiosk_mode %}{{ url_for('cafe.reception_kiosk_send_order_receipt_sms', access_key=kiosk_access_key, order_id=0) }}{% else %}{{ url_for('cafe.send_order_receipt_sms', order_id=0) }}{% endif %}";
   const cashierTabSelect = document.getElementById("cashier-tab-select");
@@ -559,6 +575,71 @@
     };
   }
 
+  const cashDenominations = [
+    ["note_500", 500], ["note_200", 200], ["note_100", 100], ["note_50", 50],
+    ["note_20", 20], ["note_10", 10], ["note_5", 5], ["coin_20", 20],
+    ["coin_10", 10], ["coin_5", 5], ["coin_2", 2], ["coin_1", 1],
+  ];
+
+  function suggestCashDenominations(amount, useTrackedBalance = false) {
+    let remaining = Math.max(0, Math.round(Number(amount || 0)));
+    const counts = cashCounterSnapshot?.counts || {};
+    const parts = [];
+    for (const [key, value] of cashDenominations) {
+      let take = Math.floor(remaining / value);
+      if (useTrackedBalance) take = Math.min(take, Math.max(0, Number(counts[key] || 0)));
+      for (let index = 0; index < take; index += 1) {
+        parts.push(`${key.startsWith("coin_") ? "coin" : "note"}:${value}`);
+      }
+      remaining -= take * value;
+    }
+    return { text: parts.join(", "), remaining };
+  }
+
+  function syncCashPaymentRow(row, resetAuto = false) {
+    const type = row.querySelector(".payment-type-input")?.value || "";
+    const cashBox = row.querySelector(".cash-payment-details");
+    if (!cashBox) return;
+    const isCash = type.toLowerCase() === "cash";
+    cashBox.classList.toggle("hidden", !isCash);
+    if (!isCash) return;
+
+    const amountInput = row.querySelector(".payment-amount-input");
+    const tendered = row.querySelector(".cash-tendered-input");
+    const received = row.querySelector(".cash-received-denominations-input");
+    const returned = row.querySelector(".cash-return-denominations-input");
+    if (!tendered || !received || !returned) return;
+    const amount = Number(amountInput?.value || 0);
+    if (resetAuto) {
+      tendered.dataset.auto = "1";
+      received.dataset.auto = "1";
+      returned.dataset.auto = "1";
+    }
+    if (!tendered.value || tendered.dataset.auto === "1") {
+      tendered.value = amount.toFixed(2);
+      tendered.dataset.auto = "1";
+    }
+    const tenderedAmount = Number(tendered.value || 0);
+    if (!received.value || received.dataset.auto === "1") {
+      const suggestion = suggestCashDenominations(tenderedAmount);
+      received.value = suggestion.remaining ? "" : suggestion.text;
+      received.dataset.auto = "1";
+    }
+    const change = Math.max(0, tenderedAmount - amount);
+    if (!returned.value || returned.dataset.auto === "1") {
+      const suggestion = suggestCashDenominations(change, true);
+      returned.value = suggestion.remaining ? "" : suggestion.text;
+      returned.dataset.auto = "1";
+    }
+    const changeSuggestion = suggestCashDenominations(change, true);
+    const hint = row.querySelector(".cash-change-hint");
+    if (hint) {
+      hint.textContent = change > 0
+        ? `Change: ₹${change.toFixed(2)}${changeSuggestion.remaining ? " • Add/record suitable change denominations" : ` • Return ${changeSuggestion.text}`}`
+        : "Exact cash amount";
+    }
+  }
+
   function updateSettlementUi(syncPrimaryPayment = true) {
     const paymentRowsEl = document.getElementById("payment-rows");
     const paymentTotalHint = document.getElementById("payment-total-hint");
@@ -581,9 +662,14 @@
       }
     }
     if (!paymentRowsEl || !paymentTotalHint) return;
+    paymentRowsEl.querySelectorAll(".cashier-payment-row").forEach((row) => syncCashPaymentRow(row));
     const total = [...paymentRowsEl.querySelectorAll(".payment-amount-input")]
       .reduce((sum, input) => sum + Number(input.value || 0), 0);
     paymentTotalHint.textContent = `Payment total: ₹${total.toFixed(2)}`;
+  }
+
+  function updatePaymentTotalHint() {
+    updateSettlementUi(false);
   }
 
   function bindPaymentRow(row) {
@@ -593,7 +679,22 @@
       renumberPaymentRows();
       updatePaymentTotalHint();
     });
-    row.querySelector(".payment-amount-input")?.addEventListener("input", () => updateSettlementUi(false));
+    row.querySelector(".payment-type-input")?.addEventListener("change", () => syncCashPaymentRow(row, true));
+    row.querySelector(".payment-amount-input")?.addEventListener("input", () => {
+      updateSettlementUi(false);
+      syncCashPaymentRow(row);
+    });
+    row.querySelector(".cash-tendered-input")?.addEventListener("input", (event) => {
+      event.currentTarget.dataset.auto = "0";
+      syncCashPaymentRow(row);
+    });
+    row.querySelector(".cash-received-denominations-input")?.addEventListener("input", (event) => {
+      event.currentTarget.dataset.auto = "0";
+    });
+    row.querySelector(".cash-return-denominations-input")?.addEventListener("input", (event) => {
+      event.currentTarget.dataset.auto = "0";
+    });
+    syncCashPaymentRow(row, true);
   }
 
   function addPaymentRow() {

@@ -173,6 +173,22 @@ class CafeOrder(TimestampMixin, db.Model):
     ordered_by = db.relationship("User", backref="orders")
 
 
+class CashCounterEntry(TimestampMixin, db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    entry_type = db.Column(db.String(30), nullable=False, default="deposit")
+    amount = db.Column(db.Float, nullable=False, default=0)
+    reason = db.Column(db.String(255), nullable=False)
+    denominations_json = db.Column(db.Text, nullable=True)
+    source_order_id = db.Column(db.Integer, db.ForeignKey("cafe_order.id"), nullable=True)
+    table_id = db.Column(db.Integer, db.ForeignKey("cafe_table.id"), nullable=True)
+    created_by_user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=True)
+    occurred_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+    note = db.Column(db.String(500), nullable=True)
+    source_order = db.relationship("CafeOrder", backref="cash_counter_entries")
+    table = db.relationship("CafeTable", backref="cash_counter_entries")
+    created_by = db.relationship("User", foreign_keys=[created_by_user_id], backref="cash_counter_entries")
+
+
 class CafeOrderItem(TimestampMixin, db.Model):
     id = db.Column(db.Integer, primary_key=True)
     order_id = db.Column(db.Integer, db.ForeignKey("cafe_order.id"), nullable=False)

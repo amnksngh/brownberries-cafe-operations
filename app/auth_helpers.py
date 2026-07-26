@@ -24,6 +24,7 @@ ENDPOINT_PERMISSIONS = {
     "cafe.barista_display": "can_manage_kitchen",
     "cafe.inventory": "can_manage_inventory",
     "cafe.cashier": "can_manage_cashier",
+    "cafe.cash_counter": "can_manage_cashier",
     "cafe.mark_order_paid": "can_manage_cashier",
     "cafe.clear_table_orders": "can_manage_cashier",
     "cafe.approve_order": "can_manage_orders",

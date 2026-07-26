@@ -42,7 +42,7 @@
       {% block topbar_extra %}{% endblock %}
       {% if g.current_user and not hide_staff_nav|default(false) and not app_shell %}
       <nav>
-        {% if user_has_any_role(g.current_user, "staff") and not user_has_any_role(g.current_user, "admin", "manager", "cashier", "inventory_manager", "accountant", "owner", "barista", "chef", "librarian", "server", "delivery_partner") %}
+        {% if user_has_any_role(g.current_user, "staff") and not user_has_any_role(g.current_user, "admin", "manager", "cashier", "inventory_manager", "accountant", "owner", "barista", "chef", "librarian", "server", "delivery_partner") and not user_has_permission(g.current_user, "can_manage_cashier") %}
         <a href="{{ url_for('main.profile') }}">Profile</a>
         <a href="{{ url_for('cafe.orders') }}">Table Ordering</a>
         <a href="{{ url_for('cafe.to_purchase') }}">To Purchase</a>
@@ -60,6 +60,7 @@
         {% endif %}
         {% if user_has_any_role(g.current_user, "cashier") or user_has_permission(g.current_user, "can_manage_cashier") %}
         <a href="{{ url_for('cafe.cashier') }}">Cashier</a>
+        <a href="{{ url_for('cafe.cash_counter') }}">Cash Counter</a>
         {% endif %}
         <a href="{{ url_for('cafe.kitchen_display') }}">Kitchen Display</a>
         {% if user_has_any_role(g.current_user, "admin") %}

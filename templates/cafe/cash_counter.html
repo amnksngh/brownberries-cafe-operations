@@ -1,0 +1,169 @@
+{% extends "base.html" %}
+{% block body_class %}cash-counter-page{% endblock %}
+{% block main_class %}container-wide{% endblock %}
+{% block content %}
+<section class="page-heading cash-counter-heading">
+  <div>
+    <p class="eyebrow">Cashier Operations</p>
+    <h2>Cash Counter</h2>
+    <p class="muted">Track notes, coins, cash sales, change, expenses, and owner handovers in one auditable ledger.</p>
+  </div>
+  <a class="button-link" href="{{ url_for('cafe.cashier') }}">Back to Cashier</a>
+</section>
+
+<section class="cash-counter-summary-grid">
+  <article class="panel cash-counter-total-card">
+    <p class="eyebrow">Current cash</p>
+    <strong>₹{{ "%.2f"|format(cash_snapshot.total) }}</strong>
+    <span class="muted">All recorded deposits less withdrawals</span>
+  </article>
+  <article class="panel">
+    <p class="eyebrow">{{ cash_period_start.strftime('%d %b %Y') }} to {{ cash_period_end.strftime('%d %b %Y') }}</p>
+    <strong>Deposited ₹{{ "%.2f"|format(cash_period_deposited) }}</strong>
+    <span class="muted">Cash received during selected period</span>
+  </article>
+  <article class="panel">
+    <p class="eyebrow">Selected period</p>
+    <strong>Withdrawn ₹{{ "%.2f"|format(cash_period_withdrawn) }}</strong>
+    <span class="muted">Expenses, change, and handovers</span>
+  </article>
+</section>
+
+<section class="panel cash-counter-denomination-panel">
+  <div class="section-heading">
+    <div>
+      <p class="eyebrow">Live denomination balance</p>
+      <h3>Notes and coins in the counter</h3>
+    </div>
+    <span class="cash-counter-unallocated">Unallocated: ₹{{ "%.2f"|format(cash_snapshot.unallocated) }}</span>
+  </div>
+  <div class="cash-denomination-grid">
+    <div>
+      <h4>Notes</h4>
+      <div class="cash-denomination-list">
+        {% for key in ["note_500", "note_200", "note_100", "note_50", "note_20", "note_10", "note_5"] %}
+        <div class="cash-denomination-card">
+          <strong>₹{{ key.split('_')[1] }}</strong>
+          <span>{{ cash_snapshot.counts.get(key, 0) }} notes</span>
+          <b>₹{{ "%.2f"|format((cash_snapshot.counts.get(key, 0) or 0) * (key.split('_')[1]|int)) }}</b>
+        </div>
+        {% endfor %}
+      </div>
+    </div>
+    <div>
+      <h4>Coins</h4>
+      <div class="cash-denomination-list">
+        {% for key in ["coin_20", "coin_10", "coin_5", "coin_2", "coin_1"] %}
+        <div class="cash-denomination-card">
+          <strong>₹{{ key.split('_')[1] }}</strong>
+          <span>{{ cash_snapshot.counts.get(key, 0) }} coins</span>
+          <b>₹{{ "%.2f"|format((cash_snapshot.counts.get(key, 0) or 0) * (key.split('_')[1]|int)) }}</b>
+        </div>
+        {% endfor %}
+      </div>
+    </div>
+  </div>
+</section>
+
+<div class="cash-counter-layout">
+  <section class="panel">
+    <div class="section-heading">
+      <div>
+        <p class="eyebrow">Record movement</p>
+        <h3>Add cash deposit or withdrawal</h3>
+      </div>
+      <span class="muted">Enter denominations when you want the note/coin counts updated.</span>
+    </div>
+    <form method="post" class="grid cash-counter-form" id="cash-counter-form">
+      <div class="grid grid-2">
+        <label>Movement
+          <select name="entry_type" id="cash-entry-type">
+            <option value="withdrawal">Withdrawal / Handover / Expense</option>
+            <option value="deposit">Deposit / Opening Cash</option>
+          </select>
+        </label>
+        <label>Amount <input name="amount" id="cash-entry-amount" type="number" min="0" step="0.01" placeholder="Auto from denominations" /></label>
+      </div>
+      <label>Reason
+        <input name="reason" required placeholder="Owner handover, milk purchase, opening cash..." />
+      </label>
+      <label>Note
+        <input name="note" placeholder="Optional reference or explanation" />
+      </label>
+      <label>Date and time (IST)
+        <input name="occurred_at" type="datetime-local" />
+      </label>
+      <div>
+        <h4>Denominations moved</h4>
+        <p class="muted">Use the quantity boxes. The amount is calculated automatically.</p>
+        <div class="cash-entry-denomination-grid">
+          {% for kind, value, label in cash_denominations %}
+          <label>{{ label }}
+            <input class="cash-denomination-input" data-value="{{ value }}" name="{{ kind }}_{{ value }}" type="number" min="0" step="1" value="0" />
+          </label>
+          {% endfor %}
+        </div>
+      </div>
+      <button type="submit">Save Cash Movement</button>
+    </form>
+  </section>
+
+  <section class="panel">
+    <div class="section-heading">
+      <div>
+        <p class="eyebrow">History</p>
+        <h3>Cash movements</h3>
+      </div>
+      <form method="get" class="cash-counter-period-form">
+        <select name="period" id="cash-period-select">
+          {% for value, label in [("today", "Today"), ("yesterday", "Yesterday"), ("this_week", "This week"), ("last_week", "Last week"), ("this_month", "This month"), ("last_month", "Last month"), ("this_year", "This year"), ("last_year", "Last year"), ("custom", "Custom") ] %}
+          <option value="{{ value }}" {% if cash_period == value %}selected{% endif %}>{{ label }}</option>
+          {% endfor %}
+        </select>
+        <input type="date" name="start" value="{{ cash_period_start.isoformat() }}" aria-label="Start date" />
+        <input type="date" name="end" value="{{ cash_period_end.isoformat() }}" aria-label="End date" />
+        <button type="submit">Apply</button>
+      </form>
+    </div>
+    <div class="cash-counter-history-wrap">
+      <table class="cash-counter-history">
+        <thead><tr><th>Time</th><th>Movement</th><th>Amount</th><th>Reason</th><th>Denominations</th><th>Logged by</th></tr></thead>
+        <tbody>
+          {% for row in cash_entry_rows %}
+          {% set entry = row.entry %}
+          <tr>
+            <td>{{ row.occurred_label }}</td>
+            <td><span class="cash-movement-chip {{ entry.entry_type }}">{{ "Deposited" if entry.entry_type == "deposit" else "Withdrawn" }}</span></td>
+            <td><strong>₹{{ "%.2f"|format(entry.amount) }}</strong></td>
+            <td>{{ entry.reason }}{% if entry.note %}<br><small>{{ entry.note }}</small>{% endif %}</td>
+            <td>{{ row.denominations or "Amount only" }}</td>
+            <td>{{ entry.created_by.full_name if entry.created_by else "System" }}</td>
+          </tr>
+          {% else %}
+          <tr><td colspan="6" class="muted">No cash movements in this period.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+</div>
+
+<script>
+  (() => {
+    const form = document.getElementById("cash-counter-form");
+    const amount = document.getElementById("cash-entry-amount");
+    const inputs = [...document.querySelectorAll(".cash-denomination-input")];
+    const syncAmount = () => {
+      const total = inputs.reduce((sum, input) => sum + Number(input.value || 0) * Number(input.dataset.value || 0), 0);
+      if (total > 0 || !amount.value) amount.value = total.toFixed(2);
+    };
+    inputs.forEach((input) => input.addEventListener("input", syncAmount));
+    form?.addEventListener("submit", syncAmount);
+    const period = document.getElementById("cash-period-select");
+    const dates = [...document.querySelectorAll(".cash-counter-period-form input[type=date]")];
+    const syncDates = () => dates.forEach((input) => input.toggleAttribute("required", period?.value === "custom"));
+    period?.addEventListener("change", syncDates);
+    syncDates();
+  })();
+</script>
+{% endblock %}

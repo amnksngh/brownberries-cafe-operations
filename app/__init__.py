@@ -28,6 +28,7 @@ from .mobile_attendance import bp as mobile_attendance_bp
 from .mobile_staff import bp as mobile_staff_bp
 from .rulebook import ensure_rulebook_default
 from .models import (
+    CashCounterEntry,
     CafeFeedback,
     CafeFeedbackItem,
     InventoryCategory,
@@ -314,6 +315,12 @@ def _ensure_sqlite_schema_columns():
     )
     db.session.execute(
         text("CREATE INDEX IF NOT EXISTS idx_cafe_order_item_prep_status ON cafe_order_item (prep_status)")
+    )
+    db.session.execute(
+        text("CREATE INDEX IF NOT EXISTS idx_cash_counter_entry_occurred ON cash_counter_entry (occurred_at)")
+    )
+    db.session.execute(
+        text("CREATE INDEX IF NOT EXISTS idx_cash_counter_entry_type_occurred ON cash_counter_entry (entry_type, occurred_at)")
     )
     db.session.execute(
         text("CREATE INDEX IF NOT EXISTS idx_cafe_feedback_primary_order ON cafe_feedback (primary_order_id)")

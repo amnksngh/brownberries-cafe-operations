@@ -47,6 +47,7 @@ from .models import (
     CafeOrder,
     CafeOrderItem,
     CafeTable,
+    CashCounterEntry,
     InventoryCategory,
     InventoryExpenseLog,
     InventoryItem,
@@ -121,6 +122,16 @@ DEFAULT_ATTENDANCE_CAFE_LNG = 80.87374457551877
 DEFAULT_ATTENDANCE_RADIUS_METERS = 120.0
 DEFAULT_RECEIPT_LOCATION = "Chitrakoot, Uttar Pradesh"
 STAFF_CALL_COOLDOWN_SECONDS = 5 * 60
+CASH_NOTE_DENOMINATIONS = (500, 200, 100, 50, 20, 10, 5)
+CASH_COIN_DENOMINATIONS = (20, 10, 5, 2, 1)
+CASH_DENOMINATION_KEYS = tuple(
+    [f"note_{value}" for value in CASH_NOTE_DENOMINATIONS]
+    + [f"coin_{value}" for value in CASH_COIN_DENOMINATIONS]
+)
+CASH_DENOMINATION_VALUES = {
+    **{f"note_{value}": value for value in CASH_NOTE_DENOMINATIONS},
+    **{f"coin_{value}": value for value in CASH_COIN_DENOMINATIONS},
+}
 
 
 def _slugify_workstation(value: str) -> str:
@@ -457,6 +468,10 @@ def _payment_breakdown_rows(order: CafeOrder) -> list[dict]:
                         "method": str(row.get("method") or "").strip(),
                         "amount": round(float(row.get("amount") or 0), 2),
                         "reference": str(row.get("reference") or "").strip(),
+                        "cash_tendered": round(float(row.get("cash_tendered") or 0), 2) if str(row.get("method") or "").strip().lower() == "cash" else None,
+                        "cash_received_denominations": row.get("cash_received_denominations") or {},
+                        "cash_return_denominations": row.get("cash_return_denominations") or {},
+                        "change_amount": round(float(row.get("change_amount") or 0), 2) if str(row.get("method") or "").strip().lower() == "cash" else 0,
                     }
                 )
             if cleaned:
@@ -1733,6 +1748,131 @@ def _receipt_link_for_order(order: CafeOrder) -> str:
     return f"{base}/cafe/receipt/{order.id}"
 
 
+def _parse_cash_denominations(raw: str | None) -> dict[str, int]:
+    """Parse comma-separated cash values such as ``500, note:200, coin:20``."""
+    counts = {key: 0 for key in CASH_DENOMINATION_KEYS}
+    for token in str(raw or "").replace("₹", "").split(","):
+        token = token.strip().lower()
+        if not token:
+            continue
+        kind = "note"
+        if ":" in token:
+            prefix, token = (part.strip() for part in token.split(":", 1))
+            if prefix in {"coin", "coins"}:
+                kind = "coin"
+            elif prefix in {"note", "notes"}:
+                kind = "note"
+        token = token.replace("rs", "").replace(".", "").strip()
+        try:
+            value = int(token)
+        except (TypeError, ValueError):
+            continue
+        key = f"{kind}_{value}"
+        if key not in counts:
+            # Plain 20/10/5 entries are treated as notes first because that is
+            # the least surprising interpretation for cash received.
+            alternate = f"coin_{value}"
+            if kind == "note" and alternate in counts and value not in CASH_NOTE_DENOMINATIONS:
+                key = alternate
+            else:
+                continue
+        counts[key] += 1
+    return {key: value for key, value in counts.items() if value > 0}
+
+
+def _cash_denominations_amount(counts: dict[str, int] | None) -> float:
+    return round(
+        sum(CASH_DENOMINATION_VALUES.get(key, 0) * max(0, int(value or 0)) for key, value in (counts or {}).items()),
+        2,
+    )
+
+
+def _cash_denominations_label(counts: dict[str, int] | None) -> str:
+    labels = []
+    for key in CASH_DENOMINATION_KEYS:
+        count = int((counts or {}).get(key, 0) or 0)
+        if count:
+            kind, value = key.split("_", 1)
+            labels.append(f"{kind} ₹{value} x {count}")
+    return ", ".join(labels)
+
+
+def _greedy_cash_denominations(amount: float, available: dict[str, int] | None = None) -> dict[str, int]:
+    """Return a practical note/coin combination for a whole-rupee amount."""
+    remaining = max(0, int(round(float(amount or 0))))
+    result: dict[str, int] = {}
+    for key in CASH_DENOMINATION_KEYS:
+        value = CASH_DENOMINATION_VALUES[key]
+        limit = remaining // value
+        if available is not None:
+            limit = min(limit, max(0, int(available.get(key, 0) or 0)))
+        if limit:
+            result[key] = limit
+            remaining -= value * limit
+    return result
+
+
+def _cash_counter_snapshot() -> dict:
+    counts = {key: 0 for key in CASH_DENOMINATION_KEYS}
+    total = 0.0
+    for entry in CashCounterEntry.query.order_by(CashCounterEntry.occurred_at.asc(), CashCounterEntry.id.asc()).all():
+        sign = 1 if entry.entry_type == "deposit" else -1
+        total += sign * float(entry.amount or 0)
+        try:
+            raw_counts = json.loads(entry.denominations_json or "{}")
+        except (TypeError, ValueError, json.JSONDecodeError):
+            raw_counts = {}
+        for key, value in raw_counts.items():
+            if key in counts:
+                counts[key] += sign * int(value or 0)
+    return {
+        "total": round(total, 2),
+        "counts": counts,
+        "unallocated": round(total - _cash_denominations_amount(counts), 2),
+    }
+
+
+def _cash_counter_period(period: str, start_raw: str = "", end_raw: str = "") -> tuple[date, date]:
+    today = datetime.now(IST_TZ).date()
+    period = (period or "today").strip().lower()
+    if period == "custom":
+        try:
+            start = date.fromisoformat(start_raw)
+            end = date.fromisoformat(end_raw or start_raw)
+            return min(start, end), max(start, end)
+        except ValueError:
+            return today, today
+    if period == "yesterday":
+        return today - timedelta(days=1), today - timedelta(days=1)
+    if period in {"this_week", "last_week"}:
+        monday = today - timedelta(days=today.weekday())
+        start = monday if period == "this_week" else monday - timedelta(days=7)
+        return start, start + timedelta(days=6)
+    if period in {"this_month", "last_month"}:
+        first = today.replace(day=1)
+        if period == "last_month":
+            last_month_end = first - timedelta(days=1)
+            first = last_month_end.replace(day=1)
+        return first, first.replace(day=calendar.monthrange(first.year, first.month)[1])
+    if period in {"this_year", "last_year"}:
+        year = today.year if period == "this_year" else today.year - 1
+        return date(year, 1, 1), date(year, 12, 31)
+    return today, today
+
+
+def _cash_counter_entries_between(start: date, end: date) -> list[CashCounterEntry]:
+    start_utc = _utc_naive_from_ist(datetime.combine(start, time.min))
+    end_utc = _utc_naive_from_ist(datetime.combine(end + timedelta(days=1), time.min))
+    return CashCounterEntry.query.options(
+        joinedload(CashCounterEntry.created_by),
+        joinedload(CashCounterEntry.source_order),
+        joinedload(CashCounterEntry.table),
+    ).filter(
+        CashCounterEntry.occurred_at >= start_utc,
+        CashCounterEntry.occurred_at < end_utc,
+    ).order_by(CashCounterEntry.occurred_at.desc(), CashCounterEntry.id.desc()).all()
+
+
 def _parse_split_payment_rows():
     rows = []
     row_count = int(request.form.get("payment_row_count") or 1)
@@ -1741,17 +1881,33 @@ def _parse_split_payment_rows():
         payment_type = (request.form.get(f"payment_type_{idx}") or "").strip()
         amount = _safe_float(request.form.get(f"payment_amount_{idx}"), 0)
         reference = (request.form.get(f"payment_reference_{idx}") or "").strip()
+        cash_tendered = _safe_float(request.form.get(f"cash_tendered_{idx}"), amount)
+        cash_received_raw = (request.form.get(f"cash_received_denominations_{idx}") or "").strip()
+        cash_return_raw = (request.form.get(f"cash_return_denominations_{idx}") or "").strip()
         if not payment_type and amount <= 0 and not reference:
             continue
         if not payment_type or amount <= 0:
             return None, "Each payment row must have a method and an amount."
-        rows.append(
-            {
-                "method": payment_type,
-                "amount": round(float(amount), 2),
-                "reference": reference,
-            }
-        )
+        row = {"method": payment_type, "amount": round(float(amount), 2), "reference": reference}
+        if payment_type.lower() == "cash":
+            if cash_tendered + 0.001 < amount:
+                return None, "Cash received cannot be lower than the amount being settled."
+            received_counts = _parse_cash_denominations(cash_received_raw)
+            return_counts = _parse_cash_denominations(cash_return_raw)
+            change_amount = round(max(0.0, cash_tendered - amount), 2)
+            if received_counts and abs(_cash_denominations_amount(received_counts) - cash_tendered) > 0.01:
+                return None, f"Cash received denominations must total ₹{cash_tendered:.2f}."
+            if return_counts and abs(_cash_denominations_amount(return_counts) - change_amount) > 0.01:
+                return None, f"Cash return denominations must total ₹{change_amount:.2f}."
+            row.update(
+                {
+                    "cash_tendered": round(cash_tendered, 2),
+                    "cash_received_denominations": received_counts,
+                    "cash_return_denominations": return_counts,
+                    "change_amount": change_amount,
+                }
+            )
+        rows.append(row)
     if not rows:
         return None, "Add at least one payment entry."
     return rows, ""
@@ -2836,6 +2992,7 @@ def mark_order_paid(order_id):
     if not order:
         flash("Order not found. It may have already been updated on another screen.", "error")
         return redirect(request.form.get("next") or url_for("cafe.cashier"))
+    was_already_paid = order.status == "paid"
     payment_type = request.form.get("payment_type", "").strip() or order.payment_type or "Cash"
     payment_reference = request.form.get("payment_reference", "").strip() or order.payment_reference
     _apply_order_tax_breakdown(order, flags=_selected_tax_flags())
@@ -2843,6 +3000,18 @@ def mark_order_paid(order_id):
     order.paid_at = datetime.utcnow()
     order.payment_type = payment_type
     order.payment_reference = payment_reference
+    if payment_type.lower() == "cash" and not was_already_paid:
+        db.session.add(
+            CashCounterEntry(
+                entry_type="deposit",
+                amount=round(float(order.total_amount or 0), 2),
+                reason=f"Cash received for order #{_format_pickup_number(order)}",
+                source_order_id=order.id,
+                table_id=order.table_id,
+                created_by_user_id=g.current_user.id if g.current_user else None,
+                note=payment_reference or None,
+            )
+        )
     sms_message = ""
     if request.form.get("send_receipt_sms"):
         cc = (request.form.get("country_code") or "+91").strip()
@@ -2983,6 +3152,39 @@ def _clear_table_orders_impl(table_id: int, next_url: str = ""):
         socketio.emit("order_updated", payload, namespace="/kitchen")
         socketio.emit("order_updated", payload, namespace="/table")
         count += 1
+    settlement_label = ", ".join(f"#{_format_pickup_number(order)}" for order in payable_orders)
+    for row in split_rows:
+        if row["method"].lower() != "cash":
+            continue
+        tendered = round(float(row.get("cash_tendered") or row["amount"]), 2)
+        received_counts = row.get("cash_received_denominations") or {}
+        return_counts = row.get("cash_return_denominations") or {}
+        db.session.add(
+            CashCounterEntry(
+                entry_type="deposit",
+                amount=tendered,
+                reason=f"Cash received for table settlement {settlement_label}",
+                denominations_json=json.dumps(received_counts),
+                source_order_id=payable_orders[0].id,
+                table_id=table.id,
+                created_by_user_id=g.current_user.id if g.current_user else None,
+                note=row.get("reference") or None,
+            )
+        )
+        change_amount = round(float(row.get("change_amount") or 0), 2)
+        if change_amount > 0:
+            db.session.add(
+                CashCounterEntry(
+                    entry_type="withdrawal",
+                    amount=change_amount,
+                    reason=f"Change returned for table settlement {settlement_label}",
+                    denominations_json=json.dumps(return_counts),
+                    source_order_id=payable_orders[0].id,
+                    table_id=table.id,
+                    created_by_user_id=g.current_user.id if g.current_user else None,
+                    note=row.get("reference") or None,
+                )
+            )
     table.service_charge_opt_out_requested = False
     db.session.commit()
     sms_message = ""
@@ -3081,6 +3283,108 @@ def _move_table_orders_impl(table_id: int, next_url: str = ""):
 @roles_required("admin", "manager", "cashier")
 def cashier():
     return _render_cashier_view(kiosk_mode=False)
+
+
+@bp.route("/cash-counter", methods=["GET", "POST"])
+@roles_required("admin", "manager", "cashier")
+def cash_counter():
+    if request.method == "POST":
+        entry_type = (request.form.get("entry_type") or "withdrawal").strip().lower()
+        if entry_type not in {"deposit", "withdrawal"}:
+            entry_type = "withdrawal"
+        reason = (request.form.get("reason") or "").strip()
+        note = (request.form.get("note") or "").strip() or None
+        if not reason:
+            flash("Add a reason for this cash movement.", "error")
+            return redirect(url_for("cafe.cash_counter"))
+        counts = {}
+        for key in CASH_DENOMINATION_KEYS:
+            count = _safe_int(request.form.get(key), 0)
+            if count < 0:
+                flash("Denomination counts cannot be negative.", "error")
+                return redirect(url_for("cafe.cash_counter"))
+            if count:
+                counts[key] = count
+        amount = round(_safe_float(request.form.get("amount"), 0), 2)
+        denomination_total = _cash_denominations_amount(counts)
+        if counts:
+            if amount <= 0:
+                amount = denomination_total
+            elif abs(amount - denomination_total) > 0.01:
+                flash(f"Denominations total ₹{denomination_total:.2f}, but amount is ₹{amount:.2f}.", "error")
+                return redirect(url_for("cafe.cash_counter"))
+        if amount <= 0:
+            flash("Enter an amount or at least one denomination.", "error")
+            return redirect(url_for("cafe.cash_counter"))
+        snapshot = _cash_counter_snapshot()
+        if entry_type == "withdrawal" and amount > snapshot["total"] + 0.01:
+            flash(f"Cash withdrawal cannot exceed the current cash balance of ₹{snapshot['total']:.2f}.", "error")
+            return redirect(url_for("cafe.cash_counter"))
+        if entry_type == "withdrawal" and any(counts.get(key, 0) > snapshot["counts"].get(key, 0) for key in counts):
+            flash("The selected notes or coins exceed the tracked cash counter balance.", "error")
+            return redirect(url_for("cafe.cash_counter"))
+        occurred_at_raw = (request.form.get("occurred_at") or "").strip()
+        occurred_at = datetime.utcnow()
+        if occurred_at_raw:
+            try:
+                occurred_at = _utc_naive_from_ist(datetime.fromisoformat(occurred_at_raw))
+            except ValueError:
+                flash("Use a valid local IST date and time.", "error")
+                return redirect(url_for("cafe.cash_counter"))
+        db.session.add(
+            CashCounterEntry(
+                entry_type=entry_type,
+                amount=amount,
+                reason=reason,
+                denominations_json=json.dumps(counts),
+                created_by_user_id=g.current_user.id if g.current_user else None,
+                occurred_at=occurred_at,
+                note=note,
+            )
+        )
+        db.session.commit()
+        flash(f"Cash {'deposited' if entry_type == 'deposit' else 'withdrawn'}: ₹{amount:.2f}.", "success")
+        return redirect(url_for("cafe.cash_counter"))
+
+    period = request.args.get("period", "today")
+    start, end = _cash_counter_period(
+        period,
+        request.args.get("start", ""),
+        request.args.get("end", ""),
+    )
+    entries = _cash_counter_entries_between(start, end)
+    deposited = round(sum(float(entry.amount or 0) for entry in entries if entry.entry_type == "deposit"), 2)
+    withdrawn = round(sum(float(entry.amount or 0) for entry in entries if entry.entry_type == "withdrawal"), 2)
+    entry_rows = []
+    for entry in entries:
+        try:
+            entry_counts = json.loads(entry.denominations_json or "{}")
+        except (TypeError, ValueError, json.JSONDecodeError):
+            entry_counts = {}
+        entry_rows.append({
+            "entry": entry,
+            "denominations": _cash_denominations_label(entry_counts),
+            "occurred_label": _format_ist(entry.occurred_at, "%d %b, %I:%M %p"),
+        })
+    return render_template(
+        "cafe/cash_counter.html",
+        cash_snapshot=_cash_counter_snapshot(),
+        cash_entries=entries,
+        cash_entry_rows=entry_rows,
+        cash_period=period,
+        cash_period_start=start,
+        cash_period_end=end,
+        cash_period_deposited=deposited,
+        cash_period_withdrawn=withdrawn,
+        cash_denominations=[
+            ("note", value, f"Note ₹{value}") for value in CASH_NOTE_DENOMINATIONS
+        ] + [
+            ("coin", value, f"Coin ₹{value}") for value in CASH_COIN_DENOMINATIONS
+        ],
+        topbar_home_url=url_for("main.dashboard"),
+        manifest_url=url_for("static", filename="manifest.webmanifest"),
+        web_app_title="Brownberries Cash Counter",
+    )
 
 
 def _render_cashier_view(kiosk_mode: bool = False, access_key: str = ""):
@@ -3280,6 +3584,7 @@ def _render_cashier_view(kiosk_mode: bool = False, access_key: str = ""):
         latest_settled_order=latest_settled_order,
         latest_settled_feedback=latest_settled_feedback,
         service_charge_rate=tax_settings["service_charge_rate"],
+        cash_counter_snapshot=_cash_counter_snapshot(),
         total_sale_today=round(float(total_sale_today), 2),
         all_orders=all_orders,
         all_orders_payload=all_orders_payload,

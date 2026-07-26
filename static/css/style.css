@@ -1521,7 +1521,7 @@ body.cashier-shell.cashier-tablet-landscape .topbar p {
 
 .cashier-topbar-tools {
   display: grid;
-  grid-template-columns: auto minmax(220px, 300px) auto;
+  grid-template-columns: auto minmax(220px, 300px) auto auto;
   align-items: center;
   justify-content: end;
   gap: 0.7rem;
@@ -1555,6 +1555,25 @@ body.cashier-shell.cashier-tablet-landscape .topbar p {
 
 .cashier-topbar-notif {
   justify-self: end;
+}
+
+.cashier-cash-counter-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 2.2rem;
+  padding: 0.35rem 0.7rem;
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  border-radius: 8px;
+  color: #fffaf4;
+  font-size: 0.86rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.cashier-cash-counter-link:hover {
+  background: rgba(255, 255, 255, 0.14);
+  color: #fffaf4;
 }
 
 body.cashier-shell.cashier-tablet-landscape .cashier-topbar-tools {
@@ -3259,7 +3278,7 @@ body.cashier-shell.cashier-tablet-portrait .brand-wrap > div {
 
 body.cashier-shell.cashier-tablet-portrait .cashier-topbar-tools {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 120px auto;
+  grid-template-columns: minmax(0, 1fr) 105px auto auto;
   align-items: center;
   gap: 0.45rem;
 }
@@ -3641,7 +3660,7 @@ body.cashier-shell.cashier-tablet-portrait .cashier-selected-sections {
 
 @media (max-width: 1450px) {
   .cashier-topbar-tools {
-    grid-template-columns: auto minmax(180px, 240px) auto;
+    grid-template-columns: auto minmax(180px, 240px) auto auto;
     gap: 0.55rem;
   }
 }
@@ -3653,7 +3672,7 @@ body.cashier-shell.cashier-tablet-portrait .cashier-selected-sections {
   }
 
   .cashier-topbar-tools {
-    grid-template-columns: minmax(160px, 1fr) minmax(150px, 220px) auto;
+    grid-template-columns: minmax(140px, 1fr) minmax(120px, 180px) auto auto;
     justify-content: stretch;
   }
 
@@ -3689,7 +3708,7 @@ body.cashier-shell.cashier-tablet-portrait .cashier-selected-sections {
   }
 
   .cashier-topbar-tools {
-    grid-template-columns: minmax(148px, 190px) minmax(150px, 200px) auto;
+    grid-template-columns: minmax(148px, 190px) minmax(130px, 180px) auto auto;
     gap: 0.45rem;
   }
 
@@ -4443,4 +4462,182 @@ body.cashier-shell.cashier-tablet-portrait .cashier-selected-sections {
 @keyframes ticker-move {
   0% { transform: translateX(0); }
   100% { transform: translateX(-100%); }
+}
+
+/* Cash Counter: compact enough for a cashier tablet, readable on a phone. */
+.cash-counter-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 1rem;
+  margin-bottom: 1rem;
+}
+
+.cash-counter-summary-grid strong {
+  display: block;
+  margin: 0.15rem 0 0.35rem;
+  font-size: 1.45rem;
+}
+
+.cash-counter-total-card {
+  background: linear-gradient(135deg, #3b2115, #6b3f28);
+  color: #fffaf4;
+}
+
+.cash-counter-total-card .muted,
+.cash-counter-total-card .eyebrow {
+  color: rgba(255, 250, 244, 0.82);
+}
+
+.cash-counter-denomination-panel {
+  margin-bottom: 1rem;
+}
+
+.cash-counter-unallocated {
+  color: #8a5a23;
+  font-weight: 700;
+}
+
+.cash-denomination-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1.1rem;
+}
+
+.cash-denomination-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.55rem;
+}
+
+.cash-denomination-card {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 0.1rem 0.55rem;
+  align-items: center;
+  padding: 0.65rem 0.75rem;
+  border: 1px solid #eadbc9;
+  border-radius: 10px;
+  background: #fffdfa;
+}
+
+.cash-denomination-card b {
+  grid-column: 1 / -1;
+  color: #6b3f28;
+  font-size: 0.88rem;
+}
+
+.cash-denomination-card span {
+  color: #74675d;
+  font-size: 0.84rem;
+}
+
+.cash-counter-layout {
+  display: grid;
+  grid-template-columns: minmax(320px, 0.85fr) minmax(0, 1.5fr);
+  gap: 1rem;
+  align-items: start;
+}
+
+.cash-counter-form {
+  gap: 0.85rem;
+}
+
+.cash-entry-denomination-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.6rem;
+}
+
+.cash-entry-denomination-grid label {
+  font-size: 0.82rem;
+}
+
+.cash-entry-denomination-grid input {
+  width: 100%;
+  margin-top: 0.2rem;
+}
+
+.cash-counter-period-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  align-items: end;
+}
+
+.cash-counter-period-form input,
+.cash-counter-period-form select,
+.cash-counter-period-form button {
+  min-height: 2.35rem;
+}
+
+.cash-counter-history-wrap {
+  overflow-x: auto;
+}
+
+.cash-counter-history {
+  min-width: 720px;
+}
+
+.cash-movement-chip {
+  display: inline-flex;
+  padding: 0.22rem 0.5rem;
+  border-radius: 999px;
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+.cash-movement-chip.deposit {
+  background: #e6f5eb;
+  color: #236b3b;
+}
+
+.cash-movement-chip.withdrawal {
+  background: #fff0e8;
+  color: #9a422b;
+}
+
+.cash-payment-details {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.6rem;
+  padding: 0.7rem;
+  border-radius: 10px;
+  background: #fbf6ef;
+  border: 1px solid #eadbc9;
+}
+
+.cash-payment-details.hidden {
+  display: none;
+}
+
+.cash-change-hint {
+  align-self: end;
+  padding-bottom: 0.65rem;
+  font-size: 0.84rem;
+}
+
+@media (max-width: 900px) {
+  .cash-counter-summary-grid,
+  .cash-counter-layout,
+  .cash-denomination-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .cash-entry-denomination-grid,
+  .cash-payment-details {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 560px) {
+  .cash-counter-summary-grid,
+  .cash-entry-denomination-grid,
+  .cash-payment-details {
+    grid-template-columns: 1fr;
+  }
+
+  .cash-denomination-list {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
