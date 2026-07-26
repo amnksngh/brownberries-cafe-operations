@@ -72,36 +72,46 @@
         <p class="eyebrow">Record movement</p>
         <h3>Add cash deposit or withdrawal</h3>
       </div>
-      <span class="muted">Enter denominations when you want the note/coin counts updated.</span>
+      <span class="muted">Tap denominations to record every note and coin moved.</span>
     </div>
     <form method="post" class="grid cash-counter-form" id="cash-counter-form">
-      <div class="grid grid-2">
-        <label>Movement
-          <select name="entry_type" id="cash-entry-type">
-            <option value="withdrawal">Withdrawal / Handover / Expense</option>
-            <option value="deposit">Deposit / Opening Cash</option>
-          </select>
-        </label>
-        <label>Amount <input name="amount" id="cash-entry-amount" type="number" min="0" step="0.01" placeholder="Auto from denominations" /></label>
+      <div class="cash-movement-toggle" role="group" aria-label="Movement type">
+        <button type="button" class="cash-movement-choice" data-entry-type="withdrawal">Withdrawal</button>
+        <button type="button" class="cash-movement-choice is-active" data-entry-type="deposit">Deposit</button>
       </div>
+      <input type="hidden" name="entry_type" id="cash-entry-type" value="deposit" />
       <label>Reason
-        <input name="reason" required placeholder="Owner handover, milk purchase, opening cash..." />
+        <select name="reason" required>
+          <option value="Customer Payment" selected>Customer Payment</option>
+          {% for reason in cash_reason_options %}
+          <option value="{{ reason }}">{{ reason }}</option>
+          {% endfor %}
+        </select>
       </label>
       <label>Note
         <input name="note" placeholder="Optional reference or explanation" />
       </label>
       <label>Date and time (IST)
-        <input name="occurred_at" type="datetime-local" />
+        <input name="occurred_at" type="datetime-local" value="{{ cash_now_local }}" required />
       </label>
       <div>
         <h4>Denominations moved</h4>
-        <p class="muted">Use the quantity boxes. The amount is calculated automatically.</p>
+        <p class="muted">Tap a denomination to add one. Select a tile and use Clear to reset it.</p>
         <div class="cash-entry-denomination-grid">
           {% for kind, value, label in cash_denominations %}
-          <label>{{ label }}
-            <input class="cash-denomination-input" data-value="{{ value }}" name="{{ kind }}_{{ value }}" type="number" min="0" step="1" value="0" />
-          </label>
+          <div class="cash-denomination-choice">
+            <button type="button" class="cash-denomination-tile" data-denomination-key="{{ kind }}_{{ value }}" data-value="{{ value }}">
+              <span>{{ "Note" if kind == "note" else "Coin" }}</span>
+              <strong>₹{{ value }}</strong>
+              <b class="cash-denomination-count">0</b>
+            </button>
+            <input class="cash-denomination-input" data-value="{{ value }}" name="{{ kind }}_{{ value }}" type="hidden" value="0" />
+          </div>
           {% endfor %}
+        </div>
+        <div class="cash-denomination-actions">
+          <button type="button" id="clear-denomination" class="button-link">Clear</button>
+          <span id="cash-denomination-total" class="muted">Selected total: ₹0.00</span>
         </div>
       </div>
       <button type="submit">Save Cash Movement</button>
@@ -151,14 +161,48 @@
 <script>
   (() => {
     const form = document.getElementById("cash-counter-form");
-    const amount = document.getElementById("cash-entry-amount");
+    const movementInput = document.getElementById("cash-entry-type");
+    const movementButtons = [...document.querySelectorAll(".cash-movement-choice")];
+    const tiles = [...document.querySelectorAll(".cash-denomination-tile")];
     const inputs = [...document.querySelectorAll(".cash-denomination-input")];
-    const syncAmount = () => {
-      const total = inputs.reduce((sum, input) => sum + Number(input.value || 0) * Number(input.dataset.value || 0), 0);
-      if (total > 0 || !amount.value) amount.value = total.toFixed(2);
+    const clearButton = document.getElementById("clear-denomination");
+    const totalLabel = document.getElementById("cash-denomination-total");
+    let selectedKey = "";
+    const inputByKey = new Map(inputs.map((input) => [input.name, input]));
+    const tileByKey = new Map(tiles.map((tile) => [tile.dataset.denominationKey, tile]));
+    const syncDenominations = () => {
+      let total = 0;
+      inputs.forEach((input) => {
+        const value = Math.max(0, Math.floor(Number(input.value || 0)));
+        input.value = String(value);
+        total += value * Number(input.dataset.value || 0);
+        const tile = tileByKey.get(input.name);
+        if (tile) {
+          const count = tile.querySelector(".cash-denomination-count");
+          if (count) count.textContent = String(value);
+          tile.classList.toggle("is-selected", selectedKey === input.name);
+        }
+      });
+      if (totalLabel) totalLabel.textContent = `Selected total: ₹${total.toFixed(2)}`;
     };
-    inputs.forEach((input) => input.addEventListener("input", syncAmount));
-    form?.addEventListener("submit", syncAmount);
+    movementButtons.forEach((button) => button.addEventListener("click", () => {
+      movementInput.value = button.dataset.entryType;
+      movementButtons.forEach((item) => item.classList.toggle("is-active", item === button));
+    }));
+    tiles.forEach((tile) => tile.addEventListener("click", () => {
+      selectedKey = tile.dataset.denominationKey;
+      const input = inputByKey.get(selectedKey);
+      if (input) input.value = String(Number(input.value || 0) + 1);
+      syncDenominations();
+    }));
+    clearButton?.addEventListener("click", () => {
+      if (!selectedKey) return;
+      const input = inputByKey.get(selectedKey);
+      if (input) input.value = "0";
+      syncDenominations();
+    });
+    form?.addEventListener("submit", syncDenominations);
+    syncDenominations();
     const period = document.getElementById("cash-period-select");
     const dates = [...document.querySelectorAll(".cash-counter-period-form input[type=date]")];
     const syncDates = () => dates.forEach((input) => input.toggleAttribute("required", period?.value === "custom"));

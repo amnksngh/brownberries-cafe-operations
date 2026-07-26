@@ -132,6 +132,13 @@ CASH_DENOMINATION_VALUES = {
     **{f"note_{value}": value for value in CASH_NOTE_DENOMINATIONS},
     **{f"coin_{value}": value for value in CASH_COIN_DENOMINATIONS},
 }
+CASH_COUNTER_REASON_OPTIONS = (
+    "Customer Payment",
+    "Return to Customer",
+    "Cafe Expenses",
+    "Return from Expenses",
+    "Handover to Owner",
+)
 
 
 def _slugify_workstation(value: str) -> str:
@@ -3293,13 +3300,13 @@ def cash_counter():
 
 def _render_cash_counter_page(kiosk_mode: bool = False, access_key: str = ""):
     if request.method == "POST":
-        entry_type = (request.form.get("entry_type") or "withdrawal").strip().lower()
+        entry_type = (request.form.get("entry_type") or "deposit").strip().lower()
         if entry_type not in {"deposit", "withdrawal"}:
             entry_type = "withdrawal"
-        reason = (request.form.get("reason") or "").strip()
+        reason = (request.form.get("reason") or "Customer Payment").strip()
         note = (request.form.get("note") or "").strip() or None
-        if not reason:
-            flash("Add a reason for this cash movement.", "error")
+        if reason not in CASH_COUNTER_REASON_OPTIONS:
+            flash("Select a valid reason for this cash movement.", "error")
             return redirect(
                 url_for("cafe.reception_kiosk_cash_counter", access_key=access_key)
                 if kiosk_mode
@@ -3317,20 +3324,9 @@ def _render_cash_counter_page(kiosk_mode: bool = False, access_key: str = ""):
                 )
             if count:
                 counts[key] = count
-        amount = round(_safe_float(request.form.get("amount"), 0), 2)
-        denomination_total = _cash_denominations_amount(counts)
-        if counts:
-            if amount <= 0:
-                amount = denomination_total
-            elif abs(amount - denomination_total) > 0.01:
-                flash(f"Denominations total ₹{denomination_total:.2f}, but amount is ₹{amount:.2f}.", "error")
-                return redirect(
-                    url_for("cafe.reception_kiosk_cash_counter", access_key=access_key)
-                    if kiosk_mode
-                    else url_for("cafe.cash_counter")
-                )
+        amount = _cash_denominations_amount(counts)
         if amount <= 0:
-            flash("Enter an amount or at least one denomination.", "error")
+            flash("Select at least one denomination.", "error")
             return redirect(
                 url_for("cafe.reception_kiosk_cash_counter", access_key=access_key)
                 if kiosk_mode
@@ -3417,6 +3413,8 @@ def _render_cash_counter_page(kiosk_mode: bool = False, access_key: str = ""):
         ] + [
             ("coin", value, f"Coin ₹{value}") for value in CASH_COIN_DENOMINATIONS
         ],
+        cash_reason_options=CASH_COUNTER_REASON_OPTIONS,
+        cash_now_local=datetime.now(IST_TZ).strftime("%Y-%m-%dT%H:%M"),
         cash_counter_back_url=(
             url_for("cafe.reception_kiosk", access_key=access_key)
             if kiosk_mode
