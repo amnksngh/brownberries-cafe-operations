@@ -1882,13 +1882,17 @@ def _cash_counter_entries_between(start: date, end: date) -> list[CashCounterEnt
 
 def _parse_split_payment_rows():
     rows = []
+    drawer_counts = _cash_counter_snapshot().get("counts", {})
+    available_counts = {
+        key: max(0, int(drawer_counts.get(key, 0) or 0))
+        for key in CASH_DENOMINATION_KEYS
+    }
     row_count = int(request.form.get("payment_row_count") or 1)
     row_count = max(1, min(row_count, 12))
     for idx in range(1, row_count + 1):
         payment_type = (request.form.get(f"payment_type_{idx}") or "").strip()
         amount = _safe_float(request.form.get(f"payment_amount_{idx}"), 0)
         reference = (request.form.get(f"payment_reference_{idx}") or "").strip()
-        cash_tendered = _safe_float(request.form.get(f"cash_tendered_{idx}"), amount)
         cash_received_raw = (request.form.get(f"cash_received_denominations_{idx}") or "").strip()
         cash_return_raw = (request.form.get(f"cash_return_denominations_{idx}") or "").strip()
         if not payment_type and amount <= 0 and not reference:
@@ -1897,15 +1901,30 @@ def _parse_split_payment_rows():
             return None, "Each payment row must have a method and an amount."
         row = {"method": payment_type, "amount": round(float(amount), 2), "reference": reference}
         if payment_type.lower() == "cash":
-            if cash_tendered + 0.001 < amount:
-                return None, "Cash received cannot be lower than the amount being settled."
             received_counts = _parse_cash_denominations(cash_received_raw)
             return_counts = _parse_cash_denominations(cash_return_raw)
-            change_amount = round(max(0.0, cash_tendered - amount), 2)
-            if received_counts and abs(_cash_denominations_amount(received_counts) - cash_tendered) > 0.01:
-                return None, f"Cash received denominations must total ₹{cash_tendered:.2f}."
-            if return_counts and abs(_cash_denominations_amount(return_counts) - change_amount) > 0.01:
-                return None, f"Cash return denominations must total ₹{change_amount:.2f}."
+            if not received_counts:
+                return None, "Select the cash denominations received from the customer."
+            cash_tendered = _cash_denominations_amount(received_counts)
+            change_amount = _cash_denominations_amount(return_counts)
+            if cash_tendered + 0.001 < amount:
+                return None, "Cash received cannot be lower than the amount being settled."
+            expected_change = round(cash_tendered - amount, 2)
+            if abs(change_amount - expected_change) > 0.01:
+                return None, f"Cash returned must total ₹{expected_change:.2f}."
+            unavailable = [
+                key for key, count in return_counts.items()
+                if int(count or 0) > available_counts.get(key, 0) + received_counts.get(key, 0)
+            ]
+            if unavailable:
+                unavailable_label = _cash_denominations_label({key: return_counts[key] for key in unavailable})
+                return None, f"Cash Counter does not have enough of the selected returned denominations: {unavailable_label}."
+            for key in CASH_DENOMINATION_KEYS:
+                available_counts[key] = (
+                    available_counts.get(key, 0)
+                    + received_counts.get(key, 0)
+                    - return_counts.get(key, 0)
+                )
             row.update(
                 {
                     "cash_tendered": round(cash_tendered, 2),
@@ -3166,16 +3185,19 @@ def _clear_table_orders_impl(table_id: int, next_url: str = ""):
         tendered = round(float(row.get("cash_tendered") or row["amount"]), 2)
         received_counts = row.get("cash_received_denominations") or {}
         return_counts = row.get("cash_return_denominations") or {}
+        settlement_note = f"Settlement {settlement_label}"
+        if row.get("reference"):
+            settlement_note = f"{settlement_note} • {row['reference']}"
         db.session.add(
             CashCounterEntry(
                 entry_type="deposit",
                 amount=tendered,
-                reason=f"Cash received for table settlement {settlement_label}",
+                reason="Customer Payment",
                 denominations_json=json.dumps(received_counts),
                 source_order_id=payable_orders[0].id,
                 table_id=table.id,
                 created_by_user_id=g.current_user.id if g.current_user else None,
-                note=row.get("reference") or None,
+                note=settlement_note,
             )
         )
         change_amount = round(float(row.get("change_amount") or 0), 2)
@@ -3184,12 +3206,12 @@ def _clear_table_orders_impl(table_id: int, next_url: str = ""):
                 CashCounterEntry(
                     entry_type="withdrawal",
                     amount=change_amount,
-                    reason=f"Change returned for table settlement {settlement_label}",
+                    reason="Return to Customer",
                     denominations_json=json.dumps(return_counts),
                     source_order_id=payable_orders[0].id,
                     table_id=table.id,
                     created_by_user_id=g.current_user.id if g.current_user else None,
-                    note=row.get("reference") or None,
+                    note=settlement_note,
                 )
             )
     table.service_charge_opt_out_requested = False
@@ -3653,6 +3675,8 @@ def _render_cashier_view(kiosk_mode: bool = False, access_key: str = ""):
         kiosk_mode=kiosk_mode,
         kiosk_access_key=access_key,
         current_cashier_url=current_cashier_url,
+        cash_note_denominations=CASH_NOTE_DENOMINATIONS,
+        cash_coin_denominations=CASH_COIN_DENOMINATIONS,
         hide_staff_nav=True,
         topbar_home_url=(
             url_for("cafe.reception_kiosk_orders", access_key=access_key)

@@ -42,10 +42,13 @@
       <h4>Notes</h4>
       <div class="cash-denomination-list">
         {% for key in ["note_500", "note_200", "note_100", "note_50", "note_20", "note_10", "note_5"] %}
-        <div class="cash-denomination-card">
-          <strong>₹{{ key.split('_')[1] }}</strong>
-          <span>{{ cash_snapshot.counts.get(key, 0) }} notes</span>
-          <b>₹{{ "%.2f"|format((cash_snapshot.counts.get(key, 0) or 0) * (key.split('_')[1]|int)) }}</b>
+        <div class="cash-denomination-card note-denomination-card">
+          <span class="cash-denomination-shape note-shape" aria-hidden="true">₹{{ key.split('_')[1] }}</span>
+          <div class="cash-denomination-card-info">
+            <strong>₹{{ key.split('_')[1] }}</strong>
+            <span>{{ cash_snapshot.counts.get(key, 0) }} notes</span>
+            <b>₹{{ "%.2f"|format((cash_snapshot.counts.get(key, 0) or 0) * (key.split('_')[1]|int)) }}</b>
+          </div>
         </div>
         {% endfor %}
       </div>
@@ -54,10 +57,13 @@
       <h4>Coins</h4>
       <div class="cash-denomination-list">
         {% for key in ["coin_20", "coin_10", "coin_5", "coin_2", "coin_1"] %}
-        <div class="cash-denomination-card">
-          <strong>₹{{ key.split('_')[1] }}</strong>
-          <span>{{ cash_snapshot.counts.get(key, 0) }} coins</span>
-          <b>₹{{ "%.2f"|format((cash_snapshot.counts.get(key, 0) or 0) * (key.split('_')[1]|int)) }}</b>
+        <div class="cash-denomination-card coin-denomination-card">
+          <span class="cash-denomination-shape coin-shape" aria-hidden="true">₹{{ key.split('_')[1] }}</span>
+          <div class="cash-denomination-card-info">
+            <strong>₹{{ key.split('_')[1] }}</strong>
+            <span>{{ cash_snapshot.counts.get(key, 0) }} coins</span>
+            <b>₹{{ "%.2f"|format((cash_snapshot.counts.get(key, 0) or 0) * (key.split('_')[1]|int)) }}</b>
+          </div>
         </div>
         {% endfor %}
       </div>
@@ -100,10 +106,12 @@
         <div class="cash-entry-denomination-grid">
           {% for kind, value, label in cash_denominations %}
           <div class="cash-denomination-choice">
-            <button type="button" class="cash-denomination-tile" data-denomination-key="{{ kind }}_{{ value }}" data-value="{{ value }}">
-              <span>{{ "Note" if kind == "note" else "Coin" }}</span>
-              <strong>₹{{ value }}</strong>
-              <b class="cash-denomination-count">0</b>
+            <button type="button" class="cash-denomination-tile {{ 'note-denomination-tile' if kind == 'note' else 'coin-denomination-tile' }}" data-denomination-key="{{ kind }}_{{ value }}" data-value="{{ value }}">
+              <span class="cash-denomination-shape {{ 'note-shape' if kind == 'note' else 'coin-shape' }}" aria-hidden="true">₹{{ value }}</span>
+              <span class="cash-denomination-tile-meta">
+                <span class="cash-denomination-kind">{{ "Note" if kind == "note" else "Coin" }}</span>
+                <b class="cash-denomination-count">0</b>
+              </span>
             </button>
             <input class="cash-denomination-input" data-value="{{ value }}" name="{{ kind }}_{{ value }}" type="hidden" value="0" />
           </div>

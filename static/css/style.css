@@ -4511,24 +4511,72 @@ body.cashier-shell.cashier-tablet-portrait .cashier-selected-sections {
 
 .cash-denomination-card {
   display: grid;
-  grid-template-columns: auto 1fr;
-  gap: 0.1rem 0.55rem;
+  grid-template-columns: 68px minmax(0, 1fr);
+  gap: 0.55rem;
   align-items: center;
+  min-height: 72px;
   padding: 0.65rem 0.75rem;
   border: 1px solid #eadbc9;
   border-radius: 10px;
   background: #fffdfa;
 }
 
-.cash-denomination-card b {
-  grid-column: 1 / -1;
+.cash-denomination-card-info {
+  min-width: 0;
+}
+
+.cash-denomination-card-info strong,
+.cash-denomination-card-info span,
+.cash-denomination-card-info b {
+  display: block;
+}
+
+.cash-denomination-card-info strong {
+  color: #3b2115;
+  font-size: 1.02rem;
+}
+
+.cash-denomination-card-info b {
   color: #6b3f28;
   font-size: 0.88rem;
 }
 
-.cash-denomination-card span {
+.cash-denomination-card-info span {
   color: #74675d;
   font-size: 0.84rem;
+}
+
+.cash-denomination-shape {
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  color: #fffaf4;
+  font-weight: 800;
+  text-shadow: 0 1px 1px rgba(59, 33, 21, 0.25);
+}
+
+.note-shape {
+  width: 66px;
+  height: 36px;
+  border: 2px solid #9f704a;
+  border-radius: 5px;
+  background:
+    linear-gradient(90deg, rgba(255, 250, 244, 0.16) 0 8%, transparent 8% 92%, rgba(255, 250, 244, 0.16) 92%),
+    linear-gradient(135deg, #9b6b45, #c19561 52%, #7f5436);
+  box-shadow: inset 0 0 0 2px rgba(255, 250, 244, 0.22), 0 2px 4px rgba(73, 47, 31, 0.16);
+  font-size: 0.82rem;
+}
+
+.coin-shape {
+  width: 50px;
+  height: 50px;
+  border: 3px solid #9f704a;
+  border-radius: 50%;
+  background: radial-gradient(circle at 35% 30%, #e6c58e, #b7834d 62%, #7f5436);
+  box-shadow: inset 0 0 0 2px rgba(255, 250, 244, 0.3), 0 2px 4px rgba(73, 47, 31, 0.16);
+  color: #4c2e1d;
+  text-shadow: none;
+  font-size: 0.8rem;
 }
 
 .cash-counter-layout {
@@ -4580,7 +4628,7 @@ body.cashier-shell.cashier-tablet-portrait .cashier-selected-sections {
   width: 100%;
   min-height: 76px;
   display: grid;
-  grid-template-columns: 1fr auto;
+  grid-template-columns: auto minmax(0, 1fr);
   align-items: center;
   gap: 0.15rem 0.4rem;
   padding: 0.55rem 0.65rem;
@@ -4592,17 +4640,33 @@ body.cashier-shell.cashier-tablet-portrait .cashier-selected-sections {
   cursor: pointer;
 }
 
-.cash-denomination-tile span {
+.cash-denomination-tile .cash-denomination-shape {
+  grid-row: 1 / span 2;
+  width: 56px;
+  height: 31px;
+  font-size: 0.74rem;
+}
+
+.cash-denomination-tile .coin-shape {
+  width: 42px;
+  height: 42px;
+  font-size: 0.72rem;
+}
+
+.cash-denomination-tile-meta {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.12rem;
+}
+
+.cash-denomination-tile .cash-denomination-kind {
   color: #74675d;
   font-size: 0.76rem;
 }
 
-.cash-denomination-tile strong {
-  font-size: 1rem;
-}
-
 .cash-denomination-tile .cash-denomination-count {
-  grid-column: 1 / -1;
   color: #6b3f28;
   font-size: 1.15rem;
 }
@@ -4660,9 +4724,7 @@ body.cashier-shell.cashier-tablet-portrait .cashier-selected-sections {
 
 .cash-payment-details {
   grid-column: 1 / -1;
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 0.6rem;
+  display: block;
   padding: 0.7rem;
   border-radius: 10px;
   background: #fbf6ef;
@@ -4671,6 +4733,117 @@ body.cashier-shell.cashier-tablet-portrait .cashier-selected-sections {
 
 .cash-payment-details.hidden {
   display: none;
+}
+
+.cash-payment-stage-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.7rem;
+}
+
+.cash-stage-radios {
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  flex-wrap: wrap;
+}
+
+.cash-stage-radios label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-weight: 700;
+  color: #5b3c29;
+}
+
+.cash-stage-submit {
+  min-height: 2.25rem;
+  padding: 0.35rem 0.75rem;
+  border: 0;
+  border-radius: 8px;
+  background: #6b3f28;
+  color: #fffaf4;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.cash-stage-instruction {
+  margin: 0.45rem 0 0.55rem;
+  font-size: 0.84rem;
+}
+
+.cash-denomination-picker {
+  display: grid;
+  grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr);
+  gap: 0.55rem;
+}
+
+.cash-denomination-picker-group {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(48px, 1fr));
+  gap: 0.4rem;
+}
+
+.cash-denomination-picker-tile {
+  min-height: 48px;
+  display: grid;
+  place-items: center;
+  gap: 0.05rem;
+  padding: 0.28rem;
+  border: 1px solid #decdbb;
+  background: #fffdfa;
+  color: #5b3c29;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.cash-note-tile {
+  border-radius: 7px;
+}
+
+.cash-coin-tile {
+  border-radius: 50%;
+  aspect-ratio: 1;
+}
+
+.cash-denomination-picker-tile b {
+  color: #8b5a37;
+  font-size: 0.78rem;
+}
+
+.cash-denomination-picker-tile.is-counted {
+  border-color: #6b3f28;
+  background: #ead9c5;
+  box-shadow: 0 0 0 2px rgba(107, 63, 40, 0.16);
+}
+
+.cash-denomination-picker-tile.is-unavailable,
+.cash-denomination-picker-tile:disabled {
+  border-color: #d8d2cc;
+  background: #ece9e6;
+  color: #aaa39d;
+  box-shadow: none;
+  cursor: not-allowed;
+  opacity: 0.62;
+}
+
+.cash-denomination-picker-tile.is-unavailable b,
+.cash-denomination-picker-tile:disabled b {
+  color: #aaa39d;
+}
+
+.cash-stage-totals {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.7rem 1rem;
+  margin-top: 0.6rem;
+  color: #5b3c29;
+  font-size: 0.84rem;
+}
+
+.cash-stage-totals b {
+  color: #3b2115;
 }
 
 .cash-change-hint {
@@ -4686,9 +4859,12 @@ body.cashier-shell.cashier-tablet-portrait .cashier-selected-sections {
     grid-template-columns: 1fr;
   }
 
-  .cash-entry-denomination-grid,
-  .cash-payment-details {
+  .cash-entry-denomination-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .cash-denomination-picker {
+    grid-template-columns: 1fr;
   }
 }
 

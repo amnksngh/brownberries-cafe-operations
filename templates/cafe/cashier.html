@@ -256,10 +256,31 @@
           <div class="cashier-payment-row-actions">
             <button type="button" class="button-link payment-remove-btn hidden">Remove</button>
           </div>
-          <div class="cash-payment-details hidden">
-            <label>Cash received <input name="cash_tendered_1" type="number" min="0" step="0.01" class="cash-tendered-input" /></label>
-            <label>Received notes/coins <input name="cash_received_denominations_1" class="cash-received-denominations-input" placeholder="200, 200, 20, 10" /></label>
-            <label>Returned change <input name="cash_return_denominations_1" class="cash-return-denominations-input" placeholder="Auto suggestion" /></label>
+          <div class="cash-payment-details hidden" data-cash-stage="received">
+            <div class="cash-payment-stage-head">
+              <div class="cash-stage-radios" role="radiogroup" aria-label="Cash movement">
+                <label><input type="radio" name="cash_stage_1" value="received" checked /> Received</label>
+                <label><input type="radio" name="cash_stage_1" value="returned" /> Returned</label>
+              </div>
+              <button type="button" class="cash-stage-submit">Submit</button>
+            </div>
+            <p class="cash-stage-instruction muted">Tap each note or coin received. One tap adds one.</p>
+            <div class="cash-denomination-picker">
+              <div class="cash-denomination-picker-group">
+                {% for value in cash_note_denominations %}
+                <button type="button" class="cash-denomination-picker-tile cash-note-tile" data-cash-key="note_{{ value }}" data-cash-value="{{ value }}"><span>₹{{ value }}</span><b>0</b></button>
+                {% endfor %}
+              </div>
+              <div class="cash-denomination-picker-group cash-coin-picker-group">
+                {% for value in cash_coin_denominations %}
+                <button type="button" class="cash-denomination-picker-tile cash-coin-tile" data-cash-key="coin_{{ value }}" data-cash-value="{{ value }}"><span>₹{{ value }}</span><b>0</b></button>
+                {% endfor %}
+              </div>
+            </div>
+            <div class="cash-stage-totals"><span>Received: ₹<b class="cash-received-total">0.00</b></span><span>Returned: ₹<b class="cash-returned-total">0.00</b></span><span>Net cash: ₹<b class="cash-net-total">0.00</b></span></div>
+            <input name="cash_tendered_1" type="hidden" class="cash-tendered-input" value="0" />
+            <input name="cash_received_denominations_1" type="hidden" class="cash-received-denominations-input" value="" />
+            <input name="cash_return_denominations_1" type="hidden" class="cash-return-denominations-input" value="" />
             <span class="cash-change-hint muted"></span>
           </div>
         </div>
@@ -284,10 +305,31 @@
           <div class="cashier-payment-row-actions">
             <button type="button" class="button-link payment-remove-btn">Remove</button>
           </div>
-          <div class="cash-payment-details hidden">
-            <label>Cash received <input name="cash_tendered___INDEX__" type="number" min="0" step="0.01" class="cash-tendered-input" /></label>
-            <label>Received notes/coins <input name="cash_received_denominations___INDEX__" class="cash-received-denominations-input" placeholder="200, 200, 20, 10" /></label>
-            <label>Returned change <input name="cash_return_denominations___INDEX__" class="cash-return-denominations-input" placeholder="Auto suggestion" /></label>
+          <div class="cash-payment-details hidden" data-cash-stage="received">
+            <div class="cash-payment-stage-head">
+              <div class="cash-stage-radios" role="radiogroup" aria-label="Cash movement">
+                <label><input type="radio" name="cash_stage___INDEX__" value="received" checked /> Received</label>
+                <label><input type="radio" name="cash_stage___INDEX__" value="returned" /> Returned</label>
+              </div>
+              <button type="button" class="cash-stage-submit">Submit</button>
+            </div>
+            <p class="cash-stage-instruction muted">Tap each note or coin received. One tap adds one.</p>
+            <div class="cash-denomination-picker">
+              <div class="cash-denomination-picker-group">
+                {% for value in cash_note_denominations %}
+                <button type="button" class="cash-denomination-picker-tile cash-note-tile" data-cash-key="note_{{ value }}" data-cash-value="{{ value }}"><span>₹{{ value }}</span><b>0</b></button>
+                {% endfor %}
+              </div>
+              <div class="cash-denomination-picker-group cash-coin-picker-group">
+                {% for value in cash_coin_denominations %}
+                <button type="button" class="cash-denomination-picker-tile cash-coin-tile" data-cash-key="coin_{{ value }}" data-cash-value="{{ value }}"><span>₹{{ value }}</span><b>0</b></button>
+                {% endfor %}
+              </div>
+            </div>
+            <div class="cash-stage-totals"><span>Received: ₹<b class="cash-received-total">0.00</b></span><span>Returned: ₹<b class="cash-returned-total">0.00</b></span><span>Net cash: ₹<b class="cash-net-total">0.00</b></span></div>
+            <input name="cash_tendered___INDEX__" type="hidden" class="cash-tendered-input" value="0" />
+            <input name="cash_received_denominations___INDEX__" type="hidden" class="cash-received-denominations-input" value="" />
+            <input name="cash_return_denominations___INDEX__" type="hidden" class="cash-return-denominations-input" value="" />
             <span class="cash-change-hint muted"></span>
           </div>
         </div>
@@ -579,19 +621,87 @@
     ["coin_10", 10], ["coin_5", 5], ["coin_2", 2], ["coin_1", 1],
   ];
 
-  function suggestCashDenominations(amount, useTrackedBalance = false) {
-    let remaining = Math.max(0, Math.round(Number(amount || 0)));
-    const counts = cashCounterSnapshot?.counts || {};
-    const parts = [];
-    for (const [key, value] of cashDenominations) {
-      let take = Math.floor(remaining / value);
-      if (useTrackedBalance) take = Math.min(take, Math.max(0, Number(counts[key] || 0)));
-      for (let index = 0; index < take; index += 1) {
-        parts.push(`${key.startsWith("coin_") ? "coin" : "note"}:${value}`);
+  function cashCountsFromText(raw) {
+    const counts = {};
+    String(raw || "").split(",").forEach((token) => {
+      token = token.trim().toLowerCase().replace("₹", "");
+      if (!token) return;
+      let kind = "note";
+      if (token.includes(":")) {
+        const parts = token.split(":", 2);
+        kind = parts[0].trim() === "coin" ? "coin" : "note";
+        token = parts[1].trim();
       }
-      remaining -= take * value;
+      const value = Number(token.replace(/[^0-9]/g, ""));
+      const key = `${kind}_${value}`;
+      if (cashDenominations.some(([denominationKey]) => denominationKey === key)) {
+        counts[key] = (counts[key] || 0) + 1;
+      }
+    });
+    return counts;
+  }
+
+  function cashCountsTotal(counts) {
+    return cashDenominations.reduce((sum, [key, value]) => sum + (Number(counts[key] || 0) * value), 0);
+  }
+
+  function cashCountsText(counts) {
+    return cashDenominations.flatMap(([key, value]) => {
+      const count = Math.max(0, Math.floor(Number(counts[key] || 0)));
+      return Array.from({ length: count }, () => `${key.startsWith("coin_") ? "coin" : "note"}:${value}`);
+    }).join(", ");
+  }
+
+  function syncCashPicker(row) {
+    const cashBox = row.querySelector(".cash-payment-details");
+    const tendered = row.querySelector(".cash-tendered-input");
+    const received = row.querySelector(".cash-received-denominations-input");
+    const returned = row.querySelector(".cash-return-denominations-input");
+    if (!cashBox || !tendered || !received || !returned) return;
+    const receivedCounts = row._cashReceivedCounts || {};
+    const returnedCounts = row._cashReturnedCounts || {};
+    const receivedTotal = cashCountsTotal(receivedCounts);
+    const returnedTotal = cashCountsTotal(returnedCounts);
+    const amount = Number(row.querySelector(".payment-amount-input")?.value || 0);
+    const stage = row.dataset.cashStage || "received";
+    const activeCounts = stage === "returned" ? returnedCounts : receivedCounts;
+    const drawerCounts = cashCounterSnapshot?.counts || {};
+    cashBox.dataset.cashStage = stage;
+    cashBox.querySelectorAll('input[type="radio"]').forEach((radio) => {
+      radio.checked = radio.value === stage;
+    });
+    cashBox.querySelectorAll(".cash-denomination-picker-tile").forEach((tile) => {
+      const count = Math.max(0, Math.floor(Number(activeCounts[tile.dataset.cashKey] || 0)));
+      const countLabel = tile.querySelector("b");
+      if (countLabel) countLabel.textContent = String(count);
+      tile.classList.toggle("is-counted", count > 0);
+      const available = Math.max(0, Math.floor(Number(drawerCounts[tile.dataset.cashKey] || 0)))
+        + (stage === "returned" ? Math.max(0, Math.floor(Number(receivedCounts[tile.dataset.cashKey] || 0))) : 0);
+      const unavailable = stage === "returned" && count >= available;
+      tile.disabled = unavailable;
+      tile.classList.toggle("is-unavailable", unavailable);
+      tile.setAttribute("aria-disabled", String(unavailable));
+    });
+    received.value = cashCountsText(receivedCounts);
+    returned.value = cashCountsText(returnedCounts);
+    tendered.value = receivedTotal.toFixed(2);
+    cashBox.querySelector(".cash-received-total").textContent = receivedTotal.toFixed(2);
+    cashBox.querySelector(".cash-returned-total").textContent = returnedTotal.toFixed(2);
+    cashBox.querySelector(".cash-net-total").textContent = (receivedTotal - returnedTotal).toFixed(2);
+    const hint = row.querySelector(".cash-change-hint");
+    if (hint) {
+      const expectedReturn = Math.max(0, receivedTotal - amount);
+      const difference = expectedReturn - returnedTotal;
+      hint.textContent = difference > 0.01
+        ? `Return remaining ₹${difference.toFixed(2)}`
+        : difference < -0.01
+          ? `Returned ₹${Math.abs(difference).toFixed(2)} too much`
+          : receivedTotal > 0
+            ? "Cash movement matches this payment"
+            : "Select the cash received from the customer";
     }
-    return { text: parts.join(", "), remaining };
+    const stageButton = cashBox.querySelector(".cash-stage-submit");
+    if (stageButton) stageButton.textContent = stage === "received" ? "Submit" : "Submit Returned";
   }
 
   function syncCashPaymentRow(row, resetAuto = false) {
@@ -600,42 +710,36 @@
     if (!cashBox) return;
     const isCash = type.toLowerCase() === "cash";
     cashBox.classList.toggle("hidden", !isCash);
-    if (!isCash) return;
-
-    const amountInput = row.querySelector(".payment-amount-input");
-    const tendered = row.querySelector(".cash-tendered-input");
-    const received = row.querySelector(".cash-received-denominations-input");
-    const returned = row.querySelector(".cash-return-denominations-input");
-    if (!tendered || !received || !returned) return;
-    const amount = Number(amountInput?.value || 0);
+    if (!row._cashReceivedCounts) row._cashReceivedCounts = cashCountsFromText(row.querySelector(".cash-received-denominations-input")?.value);
+    if (!row._cashReturnedCounts) row._cashReturnedCounts = cashCountsFromText(row.querySelector(".cash-return-denominations-input")?.value);
     if (resetAuto) {
-      tendered.dataset.auto = "1";
-      received.dataset.auto = "1";
-      returned.dataset.auto = "1";
+      row._cashReceivedCounts = {};
+      row._cashReturnedCounts = {};
+      row.dataset.cashStage = "received";
     }
-    if (!tendered.value || tendered.dataset.auto === "1") {
-      tendered.value = amount.toFixed(2);
-      tendered.dataset.auto = "1";
+    if (!isCash) return;
+    syncCashPicker(row);
+  }
+
+  function advanceCashStage(row) {
+    const amount = Number(row.querySelector(".payment-amount-input")?.value || 0);
+    const receivedTotal = cashCountsTotal(row._cashReceivedCounts || {});
+    const returnedTotal = cashCountsTotal(row._cashReturnedCounts || {});
+    if ((row.dataset.cashStage || "received") === "received") {
+      if (receivedTotal + 0.001 < amount) {
+        window.alert(`Received cash must be at least ₹${amount.toFixed(2)}.`);
+        return;
+      }
+      row.dataset.cashStage = "returned";
+      syncCashPicker(row);
+      return;
     }
-    const tenderedAmount = Number(tendered.value || 0);
-    if (!received.value || received.dataset.auto === "1") {
-      const suggestion = suggestCashDenominations(tenderedAmount);
-      received.value = suggestion.remaining ? "" : suggestion.text;
-      received.dataset.auto = "1";
+    const expectedReturn = Math.max(0, receivedTotal - amount);
+    if (Math.abs(returnedTotal - expectedReturn) > 0.01) {
+      window.alert(`Returned cash must total ₹${expectedReturn.toFixed(2)}.`);
+      return;
     }
-    const change = Math.max(0, tenderedAmount - amount);
-    if (!returned.value || returned.dataset.auto === "1") {
-      const suggestion = suggestCashDenominations(change, true);
-      returned.value = suggestion.remaining ? "" : suggestion.text;
-      returned.dataset.auto = "1";
-    }
-    const changeSuggestion = suggestCashDenominations(change, true);
-    const hint = row.querySelector(".cash-change-hint");
-    if (hint) {
-      hint.textContent = change > 0
-        ? `Change: ₹${change.toFixed(2)}${changeSuggestion.remaining ? " • Add/record suitable change denominations" : ` • Return ${changeSuggestion.text}`}`
-        : "Exact cash amount";
-    }
+    syncCashPicker(row);
   }
 
   function updateSettlementUi(syncPrimaryPayment = true) {
@@ -682,15 +786,26 @@
       updateSettlementUi(false);
       syncCashPaymentRow(row);
     });
-    row.querySelector(".cash-tendered-input")?.addEventListener("input", (event) => {
-      event.currentTarget.dataset.auto = "0";
-      syncCashPaymentRow(row);
+    row.querySelectorAll(".cash-denomination-picker-tile").forEach((tile) => {
+      tile.addEventListener("click", () => {
+        if (tile.disabled) return;
+        const stage = row.dataset.cashStage || "received";
+        const counts = stage === "returned" ? (row._cashReturnedCounts || {}) : (row._cashReceivedCounts || {});
+        const key = tile.dataset.cashKey;
+        counts[key] = Number(counts[key] || 0) + 1;
+        if (stage === "returned") row._cashReturnedCounts = counts;
+        else row._cashReceivedCounts = counts;
+        syncCashPicker(row);
+      });
     });
-    row.querySelector(".cash-received-denominations-input")?.addEventListener("input", (event) => {
-      event.currentTarget.dataset.auto = "0";
+    row.querySelectorAll('input[type="radio"][name^="cash_stage_"]').forEach((radio) => {
+      radio.addEventListener("change", (event) => {
+        row.dataset.cashStage = event.currentTarget.value;
+        syncCashPicker(row);
+      });
     });
-    row.querySelector(".cash-return-denominations-input")?.addEventListener("input", (event) => {
-      event.currentTarget.dataset.auto = "0";
+    row.querySelector(".cash-stage-submit")?.addEventListener("click", () => {
+      advanceCashStage(row);
     });
     syncCashPaymentRow(row, true);
   }
