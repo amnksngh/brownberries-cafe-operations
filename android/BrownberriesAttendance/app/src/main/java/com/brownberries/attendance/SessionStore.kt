@@ -54,6 +54,14 @@ class SessionStore(context: Context) {
         get() = prefs.getLong("location_failure_grace_minutes", 5L)
         set(value) = prefs.edit().putLong("location_failure_grace_minutes", value).apply()
 
+    var outsideGeofenceGraceMinutes: Long
+        get() = prefs.getLong("outside_geofence_grace_minutes", 5L)
+        set(value) = prefs.edit().putLong("outside_geofence_grace_minutes", value).apply()
+
+    var leniencyMinutes: Long
+        get() = prefs.getLong("leniency_minutes", 10L)
+        set(value) = prefs.edit().putLong("leniency_minutes", value).apply()
+
     var monitoringEnabled: Boolean
         get() = prefs.getBoolean("monitoring_enabled", false)
         set(value) = prefs.edit().putBoolean("monitoring_enabled", value).apply()
@@ -147,6 +155,8 @@ class SessionStore(context: Context) {
         heartbeatIntervalSeconds = bootstrap.heartbeatIntervalSeconds
         offlineGraceMinutes = bootstrap.offlineGraceMinutes
         locationFailureGraceMinutes = bootstrap.locationFailureGraceMinutes
+        outsideGeofenceGraceMinutes = bootstrap.outsideGeofenceGraceMinutes
+        leniencyMinutes = bootstrap.leniencyMinutes
         applyAttendanceState(bootstrap.activeSession)
     }
 

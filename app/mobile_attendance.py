@@ -37,10 +37,19 @@ def _attendance_settings():
         radius_m = float(cfg.get("ATTENDANCE_RADIUS_METERS") or DEFAULT_ATTENDANCE_RADIUS_METERS)
     except (TypeError, ValueError):
         radius_m = DEFAULT_ATTENDANCE_RADIUS_METERS
+    def _minutes(key, default):
+        try:
+            return max(0, min(120, int(float(cfg.get(key) or default))))
+        except (TypeError, ValueError):
+            return default
     return {
         "cafe_lat": cafe_lat,
         "cafe_lng": cafe_lng,
         "radius_m": max(20.0, radius_m),
+        "leniency_minutes": _minutes("ATTENDANCE_LENIENCY_MINUTES", 10),
+        "outside_grace_minutes": _minutes("ATTENDANCE_OUTSIDE_GRACE_MINUTES", 5),
+        "offline_grace_minutes": _minutes("ATTENDANCE_OFFLINE_GRACE_MINUTES", 60),
+        "location_failure_grace_minutes": _minutes("ATTENDANCE_LOCATION_FAILURE_GRACE_MINUTES", 5),
     }
 
 
@@ -123,11 +132,14 @@ def _parse_client_datetime(value: str | None) -> datetime:
     return parsed.astimezone(IST_TZ).replace(tzinfo=None)
 
 
-def _mobile_policy_payload() -> dict:
+def _mobile_policy_payload(settings: dict | None = None) -> dict:
+    settings = settings or _attendance_settings()
     return {
         "heartbeat_interval_seconds": HEARTBEAT_INTERVAL_SECONDS,
-        "offline_checkout_grace_minutes": OFFLINE_GRACE_MINUTES,
-        "location_failure_grace_minutes": LOCATION_FAILURE_GRACE_MINUTES,
+        "offline_checkout_grace_minutes": settings["offline_grace_minutes"],
+        "location_failure_grace_minutes": settings["location_failure_grace_minutes"],
+        "outside_geofence_grace_minutes": settings["outside_grace_minutes"],
+        "leniency_minutes": settings["leniency_minutes"],
     }
 
 
@@ -180,7 +192,7 @@ def _bootstrap_payload(user: User, session_row: StaffMobileSession | None = None
     return {
         "user": _user_payload(user),
         "geofence": settings,
-        "policy": _mobile_policy_payload(),
+        "policy": _mobile_policy_payload(settings),
         "shift": _user_shift_payload(user),
         "active_session": _attendance_row_payload(active_row),
         "mobile_session": {
@@ -239,7 +251,7 @@ def _close_mobile_attendance_row(row: StaffAttendance, checkout_time: datetime, 
     row.check_out_method = "android_auto_app"
     row.auto_checkout_reason = reason
     row.last_heartbeat_at = checkout_time
-    refresh_attendance_row(row)
+    refresh_attendance_row(row, leniency_minutes=_attendance_settings()["leniency_minutes"])
 
 
 def _reconcile_stale_mobile_session(row: StaffAttendance | None) -> bool:
@@ -254,7 +266,9 @@ def _reconcile_stale_mobile_session(row: StaffAttendance | None) -> bool:
     now = datetime.now(IST_TZ).replace(tzinfo=None)
     settings = _attendance_settings()
     outside = row.last_heartbeat_distance_m is not None and row.last_heartbeat_distance_m > settings["radius_m"]
-    grace = timedelta(minutes=LOCATION_FAILURE_GRACE_MINUTES if outside else OFFLINE_GRACE_MINUTES)
+    grace = timedelta(
+        minutes=settings["outside_grace_minutes"] if outside else settings["offline_grace_minutes"]
+    )
     if now - last_seen < grace:
         return False
     reason = "outside_geofence_timeout" if outside else "offline_timeout"
@@ -378,7 +392,7 @@ def mobile_check_in():
     row.last_heartbeat_distance_m = round(distance_m, 2)
     row.mobile_device_id = g.mobile_session.device_id
     row.auto_checkout_reason = None
-    refresh_attendance_row(row)
+    refresh_attendance_row(row, leniency_minutes=_attendance_settings()["leniency_minutes"])
     _update_mobile_session_status(
         g.mobile_session,
         lat=lat,
@@ -420,7 +434,7 @@ def mobile_heartbeat():
     settings = _attendance_settings()
     outside = distance_m is not None and distance_m > settings["radius_m"]
     if outside and previous_distance_m is not None and previous_distance_m > settings["radius_m"] and previous_heartbeat_at:
-        outside_grace = timedelta(minutes=LOCATION_FAILURE_GRACE_MINUTES)
+        outside_grace = timedelta(minutes=_attendance_settings()["outside_grace_minutes"])
         if event_time - previous_heartbeat_at >= outside_grace:
             _close_mobile_attendance_row(active_row, previous_heartbeat_at + outside_grace, "outside_geofence_timeout")
             _update_mobile_session_status(
@@ -438,7 +452,7 @@ def mobile_heartbeat():
                 "inside_geofence": False,
                 "distance_m": round(distance_m, 2),
                 "active_session": None,
-                "policy": _mobile_policy_payload(),
+                "policy": _mobile_policy_payload(_attendance_settings()),
             })
     active_row.last_heartbeat_at = event_time
     active_row.last_heartbeat_lat = lat
@@ -501,7 +515,7 @@ def mobile_check_out():
         active_row.last_heartbeat_lng = lng_value
     if distance_m is not None:
         active_row.last_heartbeat_distance_m = round(distance_m, 2)
-    refresh_attendance_row(active_row)
+    refresh_attendance_row(active_row, leniency_minutes=_attendance_settings()["leniency_minutes"])
     _update_mobile_session_status(
         g.mobile_session,
         lat=lat_value,

@@ -278,6 +278,38 @@
       {% if attendance_user_id %}
       <p><a class="button-link" href="{{ url_for('cafe.export_staff_attendance', user_id=attendance_user_id, month=attendance_month, year=attendance_year) }}">Download Attendance (Month/Year)</a></p>
       {% endif %}
+
+      {% if selected_day_detail and selected_day_detail.name %}
+      <div class="selected-attendance-day-detail">
+        <div class="section-heading-row">
+          <div>
+            <p class="eyebrow">Selected Day Detail</p>
+            <h4>{{ selected_day_detail.name }} · {{ selected_day_detail.date.strftime('%d %b %Y') }}</h4>
+            <p class="muted">Detailed IST attendance for the timeline date.</p>
+          </div>
+          <strong class="attendance-detail-status">{{ selected_day_detail.status }}</strong>
+        </div>
+        <div class="attendance-detail-grid">
+          <div><span>Check-In</span><strong>{{ selected_day_detail.check_in_at.strftime('%I:%M:%S %p') if selected_day_detail.check_in_at else '—' }}</strong></div>
+          <div><span>Check-Out</span><strong>{{ selected_day_detail.check_out_at.strftime('%I:%M:%S %p') if selected_day_detail.check_out_at else '—' }}</strong></div>
+          <div><span>Total Duration</span><strong>{{ selected_day_detail.worked_duration }}</strong></div>
+          <div><span>Check-In Distance</span><strong>{{ '%.0f m'|format(selected_day_detail.check_in_distance_m) if selected_day_detail.check_in_distance_m is not none else '—' }}</strong></div>
+          <div><span>Check-Out Distance</span><strong>{{ '%.0f m'|format(selected_day_detail.check_out_distance_m) if selected_day_detail.check_out_distance_m is not none else '—' }}</strong></div>
+          <div><span>Override</span><strong>{{ 'Admin / Manager' if selected_day_detail.manager_override else 'Automatic / Staff' }}</strong></div>
+        </div>
+        <p class="muted attendance-detail-meta">
+          Check-in: {{ selected_day_detail.check_in_method or '—' }} · Check-out: {{ selected_day_detail.check_out_method or '—' }}{% if selected_day_detail.auto_checkout_reason %} · Auto reason: {{ selected_day_detail.auto_checkout_reason }}{% endif %}{% if selected_day_detail.notes %} · Note: {{ selected_day_detail.notes }}{% endif %}
+        </p>
+        <div class="attendance-detail-links">
+          {% if selected_day_detail.check_in_lat is not none and selected_day_detail.check_in_lng is not none %}
+          <a class="button-link" target="_blank" rel="noopener" href="https://www.google.com/maps/search/?api=1&query={{ selected_day_detail.check_in_lat }},{{ selected_day_detail.check_in_lng }}">Open Check-In Location</a>
+          {% endif %}
+          {% if selected_day_detail.check_out_lat is not none and selected_day_detail.check_out_lng is not none %}
+          <a class="button-link" target="_blank" rel="noopener" href="https://www.google.com/maps/search/?api=1&query={{ selected_day_detail.check_out_lat }},{{ selected_day_detail.check_out_lng }}">Open Check-Out Location</a>
+          {% endif %}
+        </div>
+      </div>
+      {% endif %}
     </section>
 
     <section class="panel staff-team-timeline-panel">

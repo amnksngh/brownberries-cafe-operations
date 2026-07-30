@@ -531,10 +531,15 @@ def _attendance_settings():
         radius_m = float(cfg.get("ATTENDANCE_RADIUS_METERS") or DEFAULT_ATTENDANCE_RADIUS_METERS)
     except (TypeError, ValueError):
         radius_m = DEFAULT_ATTENDANCE_RADIUS_METERS
+    try:
+        leniency_minutes = int(float(cfg.get("ATTENDANCE_LENIENCY_MINUTES") or 10))
+    except (TypeError, ValueError):
+        leniency_minutes = 10
     return {
         "cafe_lat": cafe_lat,
         "cafe_lng": cafe_lng,
         "radius_m": max(20.0, radius_m),
+        "leniency_minutes": max(0, min(120, leniency_minutes)),
     }
 
 
@@ -1538,7 +1543,12 @@ def profile():
             row.check_out_at = check_out_time
             row.notes = notes
             row.manager_override = True
-            refresh_attendance_row(row, manual_status=status)
+            refresh_attendance_row(
+                row,
+                manual_status=status,
+                leniency_minutes=_attendance_settings()["leniency_minutes"],
+                force_recalculate=not bool(status),
+            )
             db.session.commit()
             flash("Attendance override saved.", "success")
             return redirect(url_for("main.profile", section="attendance", user_id=user.id if can_admin_view else None))
@@ -1558,7 +1568,7 @@ def profile():
                 return redirect(url_for("main.profile", section="attendance"))
             row.check_out_at = datetime.now(IST_TZ).replace(tzinfo=None)
             row.check_out_method = "profile"
-            refresh_attendance_row(row)
+            refresh_attendance_row(row, leniency_minutes=_attendance_settings()["leniency_minutes"])
             db.session.commit()
             flash("Check-out recorded.", "success")
             return redirect(url_for("main.profile", section="attendance"))
@@ -1691,6 +1701,7 @@ def profile():
             return redirect(url_for("main.profile", section="salary", user_id=target_user.id))
 
     today_ist = datetime.now(IST_TZ).date()
+    attendance_settings = _attendance_settings()
     summary_month = request.args.get("month", type=int) or today_ist.month
     summary_year = request.args.get("year", type=int) or today_ist.year
     if summary_month < 1 or summary_month > 12:
@@ -1719,12 +1730,19 @@ def profile():
     attendance_changed = False
     for row in attendance_rows_to_refresh.values():
         before = row.status
-        refresh_attendance_row(row, manual_status=before if (row.manager_override and not (row.check_in_at or row.check_out_at)) else None)
+        refresh_attendance_row(
+            row,
+            manual_status=before if (row.manager_override and not (row.check_in_at or row.check_out_at)) else None,
+            leniency_minutes=attendance_settings["leniency_minutes"],
+        )
         if row.status != before:
             attendance_changed = True
     if attendance_changed:
         db.session.commit()
-    attendance_summary = build_attendance_summary(month_attendance_logs)
+    attendance_summary = build_attendance_summary(
+        month_attendance_logs,
+        leniency_minutes=attendance_settings["leniency_minutes"],
+    )
     salary_summary = _build_salary_summary(profile, month_attendance_logs, month_start)
     receipts = (
         CafeOrder.query.filter_by(ordered_by_user_id=user.id, status="paid")
@@ -1803,7 +1821,10 @@ def profile():
         attendance_status_options=ATTENDANCE_STATUS_OPTIONS,
         leave_type_options=SELF_LEAVE_TYPE_OPTIONS,
         attendance_status_label=attendance_status_label,
-        attendance_flags_for_row=attendance_flags_for_row,
+        attendance_flags_for_row=lambda row: attendance_flags_for_row(
+            row,
+            leniency_minutes=attendance_settings["leniency_minutes"],
+        ),
         worked_hours_for_row=worked_hours_for_row,
         today_attendance=today_attendance,
         active_attendance_session=active_attendance_session,
@@ -1870,7 +1891,7 @@ def staff_attendance_check_in():
         row.check_in_distance_m = round(distance_m, 2)
         row.check_in_method = "qr_geofence"
         row.check_out_method = None
-        refresh_attendance_row(row)
+        refresh_attendance_row(row, leniency_minutes=settings["leniency_minutes"])
         db.session.commit()
         flash("Check-in recorded from cafe premises.", "success")
         return redirect(url_for("main.profile", section="attendance"))

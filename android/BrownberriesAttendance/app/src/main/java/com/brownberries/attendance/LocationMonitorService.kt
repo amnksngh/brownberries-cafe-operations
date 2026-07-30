@@ -4,6 +4,7 @@ import android.Manifest
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
@@ -16,6 +17,9 @@ import android.os.IBinder
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import com.google.android.gms.location.FusedLocationProviderClient
+import com.google.android.gms.location.Geofence
+import com.google.android.gms.location.GeofencingClient
+import com.google.android.gms.location.GeofencingRequest
 import com.google.android.gms.location.LocationServices
 import com.google.android.gms.location.Priority
 import com.google.android.gms.tasks.CancellationTokenSource
@@ -36,13 +40,17 @@ class LocationMonitorService : Service() {
     private lateinit var store: SessionStore
     private lateinit var api: MobileAttendanceApi
     private lateinit var fusedLocationClient: FusedLocationProviderClient
+    private lateinit var geofencingClient: GeofencingClient
     private var loopStarted = false
+    private var serverBootstrapped = false
+    private var lastServerBootstrapMs = 0L
 
     override fun onCreate() {
         super.onCreate()
         store = SessionStore(this)
         api = MobileAttendanceApi()
         fusedLocationClient = LocationServices.getFusedLocationProviderClient(this)
+        geofencingClient = LocationServices.getGeofencingClient(this)
         ensureNotificationChannel()
     }
 
@@ -50,6 +58,7 @@ class LocationMonitorService : Service() {
         when (intent?.action) {
             ACTION_STOP -> {
                 store.monitoringEnabled = false
+                removeGeofence()
                 stopSelf()
                 return START_NOT_STICKY
             }
@@ -69,6 +78,7 @@ class LocationMonitorService : Service() {
     }
 
     override fun onDestroy() {
+        removeGeofence()
         super.onDestroy()
         serviceScope.cancel()
     }
@@ -76,6 +86,7 @@ class LocationMonitorService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     private fun startLoopIfNeeded(forceImmediate: Boolean) {
+        registerGeofence()
         if (loopStarted) {
             if (forceImmediate) {
                 serviceScope.launch { runCycleSafely() }
@@ -123,6 +134,18 @@ class LocationMonitorService : Service() {
             syncPendingCheckout()
         }
 
+        val shouldRefreshPolicy = !serverBootstrapped ||
+            (System.currentTimeMillis() - lastServerBootstrapMs >= POLICY_REFRESH_INTERVAL_MS)
+        if (networkUp && shouldRefreshPolicy) {
+            runCatching { api.bootstrap(store.baseUrl, store.token) }
+                .onSuccess {
+                    store.applyBootstrap(it)
+                    serverBootstrapped = true
+                    lastServerBootstrapMs = System.currentTimeMillis()
+                    registerGeofence()
+                }
+        }
+
         val location = getCurrentLocationOrNull()
         if (location == null) {
             handleLocationFailure(networkUp)
@@ -158,7 +181,7 @@ class LocationMonitorService : Service() {
             if (store.checkedIn) {
                 if (store.outsideSinceMs == 0L) store.outsideSinceMs = System.currentTimeMillis()
                 val elapsedMs = System.currentTimeMillis() - store.outsideSinceMs
-                if (elapsedMs >= store.locationFailureGraceMinutes * 60_000L) {
+                if (elapsedMs >= store.outsideGeofenceGraceMinutes * 60_000L) {
                     val session = api.checkOut(
                         store.baseUrl,
                         store.token,
@@ -310,16 +333,62 @@ class LocationMonitorService : Service() {
         manager.notify(NOTIFICATION_ID, buildNotification(content))
     }
 
+    private fun registerGeofence() {
+        if (!hasLocationPermission() || store.token.isBlank()) return
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q &&
+            ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_BACKGROUND_LOCATION) != PackageManager.PERMISSION_GRANTED
+        ) return
+        val geofence = Geofence.Builder()
+            .setRequestId(GEOFENCE_ID)
+            .setCircularRegion(store.cafeLat, store.cafeLng, store.radiusM.toFloat().coerceAtLeast(20f))
+            .setExpirationDuration(Geofence.NEVER_EXPIRE)
+            .setTransitionTypes(Geofence.GEOFENCE_TRANSITION_ENTER or Geofence.GEOFENCE_TRANSITION_EXIT or Geofence.GEOFENCE_TRANSITION_DWELL)
+            .setLoiteringDelay(60_000)
+            .setNotificationResponsiveness(60_000)
+            .build()
+        val request = GeofencingRequest.Builder()
+            .setInitialTrigger(GeofencingRequest.INITIAL_TRIGGER_ENTER)
+            .addGeofence(geofence)
+            .build()
+        serviceScope.launch {
+            runCatching {
+                geofencingClient.removeGeofences(geofencePendingIntent()).await()
+            }
+            runCatching {
+                geofencingClient.addGeofences(request, geofencePendingIntent()).await()
+            }.onFailure {
+                store.lastSyncMessage = "Geofence registration unavailable"
+            }
+        }
+    }
+
+    private fun removeGeofence() {
+        if (!::geofencingClient.isInitialized) return
+        runCatching { geofencingClient.removeGeofences(geofencePendingIntent()) }
+    }
+
+    private fun geofencePendingIntent(): PendingIntent {
+        val intent = Intent(this, GeofenceReceiver::class.java).apply {
+            action = ACTION_GEOFENCE_EVENT
+        }
+        val flags = PendingIntent.FLAG_UPDATE_CURRENT or
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) PendingIntent.FLAG_IMMUTABLE else 0
+        return PendingIntent.getBroadcast(this, 44022, intent, flags)
+    }
+
     private fun nowIso(): String = ZonedDateTime.now(IST_ZONE).format(DateTimeFormatter.ISO_OFFSET_DATE_TIME)
 
     companion object {
         private const val CHANNEL_ID = "brownberries_attendance_monitor"
         private const val NOTIFICATION_ID = 44021
+        private const val POLICY_REFRESH_INTERVAL_MS = 5 * 60 * 1000L
         private val IST_ZONE = java.time.ZoneId.of("Asia/Kolkata")
 
         const val ACTION_START = "com.brownberries.attendance.START"
         const val ACTION_STOP = "com.brownberries.attendance.STOP"
         const val ACTION_REFRESH_NOW = "com.brownberries.attendance.REFRESH"
+        const val ACTION_GEOFENCE_EVENT = "com.brownberries.attendance.GEOFENCE_EVENT"
+        private const val GEOFENCE_ID = "brownberries_cafe_geofence"
 
         fun start(context: Context) {
             val intent = Intent(context, LocationMonitorService::class.java).apply {

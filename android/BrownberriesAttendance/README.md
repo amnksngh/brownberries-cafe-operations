@@ -10,7 +10,7 @@ Android-first staff workspace for Brownberries Cafe.
 - Before sign-in, the home screen shows only a clean email/password form
 - After sign-in, the top navigation is Profile, Table Ordering, Item Availability, and Sign Out
 - App downloads the cafe geofence and the assigned staff shift window
-- A foreground location monitor checks position every minute
+- A foreground location monitor checks position every minute and registers a Google Play Services geofence for enter/exit wake-ups
 - When the staff member is inside the geofence, the app can auto check-in
 - While checked in, the app sends heartbeats to the server
 - If location repeatedly fails while internet is available, the app auto checks out after the grace period
@@ -74,6 +74,34 @@ stop**; no app can restart itself after that system action. Closing the app
 normally leaves the foreground monitor running. The monitor is a foreground
 service, restarts after normal process termination, and is started again after
 device boot or app replacement when the staff session is still active.
+
+## Admin attendance setup
+
+In the web app, open **Cafe > Staff Attendance QR & Geofence**. Set:
+
+- **Cafe Latitude / Longitude**: the cafe center coordinates
+- **Allowed Radius**: the circular territory in meters
+- **Presence Leniency**: minutes allowed around the assigned shift start/end when calculating the automatic presence status
+- **Outside-Geofence Checkout Grace**: how long the phone must remain outside before automatic checkout
+- **Offline Checkout Grace**: how long an already checked-in staff member can remain without network before checkout is queued
+- **Location-Failure Grace**: how long repeated location failures are tolerated while internet is available
+
+The same page shows a map with the cafe marker and the live circular geofence. The
+server calculates distance using direct haversine distance between the cafe and
+the phone coordinates. Admins and managers can use **Staff > Attendance Entry**
+to correct a record, check out an active session, or override the automatic
+status. An override remains authoritative until an administrator changes it.
+
+## What staff should expect
+
+After the first successful sign-in and permission approval, the app starts
+monitoring without a Start button. Entering the circle creates the day's
+attendance record. Leaving the circle closes it after the configured grace
+period. The Profile attendance view and the admin calendar show check-in time,
+check-out time, actual hours and minutes, GPS distance, source, and any automatic
+checkout reason. If the phone loses connectivity, the app keeps the session
+locally and synchronizes the checkout when the network returns, subject to the
+offline grace policy.
 
 ## Important notes
 

@@ -1,5 +1,5 @@
 import math
-from datetime import date, datetime, time
+from datetime import date, datetime, time, timedelta
 
 
 ATTENDANCE_STATUS_LABELS = {
@@ -102,30 +102,42 @@ def worked_hours_for_row(row) -> float:
     return round(worked_minutes_for_row(row) / 60, 2)
 
 
-def late_minutes_for_row(row) -> int:
+def late_minutes_for_row(row, grace_minutes: int = LATE_GRACE_MINUTES) -> int:
     if not row or not row.check_in_at:
         return 0
     shift_start, _ = shift_window_for_row(row)
     shift_start_dt = datetime.combine(row.attendance_date, shift_start)
     delta = int((row.check_in_at - shift_start_dt).total_seconds() // 60)
-    return max(0, delta - LATE_GRACE_MINUTES)
+    return max(0, delta - max(0, int(grace_minutes)))
 
 
-def early_exit_minutes_for_row(row) -> int:
+def early_exit_minutes_for_row(row, grace_minutes: int = EARLY_EXIT_GRACE_MINUTES) -> int:
     if not row or not row.check_out_at:
         return 0
     _, shift_end = shift_window_for_row(row)
     shift_end_dt = datetime.combine(row.attendance_date, shift_end)
     delta = int((shift_end_dt - row.check_out_at).total_seconds() // 60)
-    return max(0, delta - EARLY_EXIT_GRACE_MINUTES)
+    return max(0, delta - max(0, int(grace_minutes)))
 
 
-def calculate_status_from_times(row) -> str:
+def calculate_status_from_times(row, leniency_minutes: int = LATE_GRACE_MINUTES) -> str:
     if not row:
         return "absent"
     if row.check_in_at and not row.check_out_at:
         return "pending_correction"
     worked_minutes = worked_minutes_for_row(row)
+    # A small admin-configured grace window prevents a few minutes of GPS or
+    # clock drift from turning an otherwise complete shift into a half day.
+    shift_start, shift_end = shift_window_for_row(row)
+    effective_start = row.check_in_at
+    effective_end = row.check_out_at
+    grace = timedelta(minutes=max(0, int(leniency_minutes)))
+    if effective_start and effective_start <= datetime.combine(row.attendance_date, shift_start) + grace:
+        effective_start = datetime.combine(row.attendance_date, shift_start)
+    if effective_end and effective_end >= datetime.combine(row.attendance_date, shift_end) - grace:
+        effective_end = datetime.combine(row.attendance_date, shift_end)
+    if effective_start and effective_end:
+        worked_minutes = max(0, int((effective_end - effective_start).total_seconds() // 60))
     required_minutes = shift_required_minutes_for_row(row)
     present_minutes = math.ceil(required_minutes * 0.85)
     half_day_minutes = math.ceil(required_minutes * 0.50)
@@ -139,24 +151,36 @@ def calculate_status_from_times(row) -> str:
     return "absent"
 
 
-def refresh_attendance_row(row, manual_status: str | None = None) -> str:
+def refresh_attendance_row(
+    row,
+    manual_status: str | None = None,
+    *,
+    leniency_minutes: int = LATE_GRACE_MINUTES,
+    force_recalculate: bool = False,
+) -> str:
     chosen_manual_status = (manual_status or "").strip()
     if chosen_manual_status:
         row.status = chosen_manual_status
         return row.status
+    if getattr(row, "manager_override", False) and not force_recalculate:
+        return row.status
     if not row.check_in_at and not row.check_out_at:
         row.status = row.status or "absent"
         return row.status
-    row.status = calculate_status_from_times(row)
+    row.status = calculate_status_from_times(row, leniency_minutes=leniency_minutes)
     return row.status
 
 
-def attendance_flags_for_row(row) -> list[str]:
+def attendance_flags_for_row(
+    row,
+    *,
+    leniency_minutes: int = LATE_GRACE_MINUTES,
+) -> list[str]:
     if not row:
         return []
     flags = []
-    late_minutes = late_minutes_for_row(row)
-    early_exit_minutes = early_exit_minutes_for_row(row)
+    late_minutes = late_minutes_for_row(row, grace_minutes=leniency_minutes)
+    early_exit_minutes = early_exit_minutes_for_row(row, grace_minutes=leniency_minutes)
     worked_minutes = worked_minutes_for_row(row)
     if late_minutes > 0:
         flags.append(f"Late by {late_minutes} min")
@@ -203,7 +227,7 @@ def late_penalty_days(late_marks: int) -> float:
     return math.ceil((late_marks - 3) / 3) * 0.5
 
 
-def build_attendance_summary(attendance_logs: list):
+def build_attendance_summary(attendance_logs: list, *, leniency_minutes: int = LATE_GRACE_MINUTES):
     summary = {
         "present_days": 0,
         "half_days": 0,
@@ -250,9 +274,9 @@ def build_attendance_summary(attendance_logs: list):
             summary["weekly_off_days"] += 1
         elif status in ["pending_correction", "missed_checkout"]:
             summary["pending_corrections"] += 1
-        if late_minutes_for_row(row) > 0:
+        if late_minutes_for_row(row, grace_minutes=leniency_minutes) > 0:
             summary["late_marks"] += 1
-        if early_exit_minutes_for_row(row) > 0:
+        if early_exit_minutes_for_row(row, grace_minutes=leniency_minutes) > 0:
             summary["early_exits"] += 1
         if row.check_in_at and not row.check_out_at and status not in ["pending_correction", "missed_checkout"]:
             summary["pending_corrections"] += 1

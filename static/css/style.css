@@ -3205,12 +3205,92 @@ th {
   font-size: 0.84rem;
 }
 
+.attendance-geofence-map-wrap {
+  margin-top: 0.9rem;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface-soft);
+}
+
+.attendance-geofence-map {
+  min-height: 320px;
+  background: #e8ded4;
+}
+
+.attendance-geofence-map-caption {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.65rem 0.8rem;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.selected-attendance-day-detail {
+  margin-top: 1rem;
+  padding: 0.9rem;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface-soft);
+}
+
+.attendance-detail-status {
+  color: var(--accent);
+}
+
+.attendance-detail-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.65rem;
+  margin-top: 0.8rem;
+}
+
+.attendance-detail-grid div {
+  display: grid;
+  gap: 0.15rem;
+  padding: 0.65rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+}
+
+.attendance-detail-grid span {
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.attendance-detail-meta {
+  margin: 0.8rem 0 0;
+}
+
+.attendance-detail-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 0.7rem;
+}
+
 @media (max-width: 700px) {
   .section-heading-row {
     display: grid;
   }
   .timeline-date-form {
     width: 100%;
+  }
+
+  .attendance-geofence-map {
+    min-height: 260px;
+  }
+
+  .attendance-geofence-map-caption {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .attendance-detail-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 

@@ -32,6 +32,8 @@ data class BootstrapResponse(
     val heartbeatIntervalSeconds: Long,
     val offlineGraceMinutes: Long,
     val locationFailureGraceMinutes: Long,
+    val outsideGeofenceGraceMinutes: Long,
+    val leniencyMinutes: Long,
     val activeSession: AttendanceSessionInfo?,
 )
 
@@ -228,6 +230,8 @@ class MobileAttendanceApi {
             heartbeatIntervalSeconds = policy.optLong("heartbeat_interval_seconds", 60L),
             offlineGraceMinutes = policy.optLong("offline_checkout_grace_minutes", 60L),
             locationFailureGraceMinutes = policy.optLong("location_failure_grace_minutes", 5L),
+            outsideGeofenceGraceMinutes = policy.optLong("outside_geofence_grace_minutes", 5L),
+            leniencyMinutes = policy.optLong("leniency_minutes", 10L),
             activeSession = activeSession,
         )
     }

@@ -302,10 +302,19 @@ def _attendance_settings():
         radius_m = float(cfg.get("ATTENDANCE_RADIUS_METERS") or DEFAULT_ATTENDANCE_RADIUS_METERS)
     except (TypeError, ValueError):
         radius_m = DEFAULT_ATTENDANCE_RADIUS_METERS
+    def _minutes(key, default, maximum=120):
+        try:
+            return max(0, min(maximum, int(float(cfg.get(key) or default))))
+        except (TypeError, ValueError):
+            return default
     return {
         "cafe_lat": cafe_lat,
         "cafe_lng": cafe_lng,
         "radius_m": max(20.0, radius_m),
+        "leniency_minutes": _minutes("ATTENDANCE_LENIENCY_MINUTES", 10),
+        "outside_grace_minutes": _minutes("ATTENDANCE_OUTSIDE_GRACE_MINUTES", 5),
+        "offline_grace_minutes": _minutes("ATTENDANCE_OFFLINE_GRACE_MINUTES", 60, 240),
+        "location_failure_grace_minutes": _minutes("ATTENDANCE_LOCATION_FAILURE_GRACE_MINUTES", 5),
     }
 
 
@@ -2125,6 +2134,10 @@ def home():
         attendance_cafe_lat=attendance_settings["cafe_lat"],
         attendance_cafe_lng=attendance_settings["cafe_lng"],
         attendance_radius_m=attendance_settings["radius_m"],
+        attendance_leniency_minutes=attendance_settings["leniency_minutes"],
+        attendance_outside_grace_minutes=attendance_settings["outside_grace_minutes"],
+        attendance_offline_grace_minutes=attendance_settings["offline_grace_minutes"],
+        attendance_location_failure_grace_minutes=attendance_settings["location_failure_grace_minutes"],
         staff_attendance_qr_url=f"{public_base}{url_for('main.staff_attendance_check_in')}",
         staff_attendance_qr_png_url=url_for("cafe.staff_attendance_qr_png"),
     )
@@ -2215,15 +2228,29 @@ def update_attendance_settings():
     raw_lat = (request.form.get("attendance_cafe_lat") or "").strip()
     raw_lng = (request.form.get("attendance_cafe_lng") or "").strip()
     raw_radius = (request.form.get("attendance_radius_m") or "").strip()
+    raw_leniency = (request.form.get("attendance_leniency_minutes") or "").strip()
+    raw_outside_grace = (request.form.get("attendance_outside_grace_minutes") or "").strip()
+    raw_offline_grace = (request.form.get("attendance_offline_grace_minutes") or "").strip()
+    raw_location_failure_grace = (request.form.get("attendance_location_failure_grace_minutes") or "").strip()
     try:
         cafe_lat = float(raw_lat)
         cafe_lng = float(raw_lng)
         radius_m = float(raw_radius)
+        leniency_minutes = int(float(raw_leniency or 10))
+        outside_grace_minutes = int(float(raw_outside_grace or 5))
+        offline_grace_minutes = int(float(raw_offline_grace or 60))
+        location_failure_grace_minutes = int(float(raw_location_failure_grace or 5))
     except (TypeError, ValueError):
         flash("Attendance geofence settings must be valid numbers.", "error")
         return redirect(url_for("cafe.home"))
     if radius_m < 20 or radius_m > 10000:
         flash("Attendance geofence radius must be between 20 and 10000 meters.", "error")
+        return redirect(url_for("cafe.home"))
+    if not 0 <= leniency_minutes <= 120:
+        flash("Attendance leniency must be between 0 and 120 minutes.", "error")
+        return redirect(url_for("cafe.home"))
+    if not 1 <= outside_grace_minutes <= 120 or not 1 <= offline_grace_minutes <= 240 or not 1 <= location_failure_grace_minutes <= 120:
+        flash("Attendance grace values are outside the allowed range.", "error")
         return redirect(url_for("cafe.home"))
     save_deployment_config(
         current_app.instance_path,
@@ -2231,6 +2258,10 @@ def update_attendance_settings():
             "ATTENDANCE_CAFE_LAT": str(cafe_lat),
             "ATTENDANCE_CAFE_LNG": str(cafe_lng),
             "ATTENDANCE_RADIUS_METERS": str(radius_m),
+            "ATTENDANCE_LENIENCY_MINUTES": str(leniency_minutes),
+            "ATTENDANCE_OUTSIDE_GRACE_MINUTES": str(outside_grace_minutes),
+            "ATTENDANCE_OFFLINE_GRACE_MINUTES": str(offline_grace_minutes),
+            "ATTENDANCE_LOCATION_FAILURE_GRACE_MINUTES": str(location_failure_grace_minutes),
         },
     )
     flash("Attendance geofence settings saved.", "success")
@@ -7098,7 +7129,12 @@ def staff():
                 existing.check_out_at = check_out_time
                 existing.notes = notes
                 existing.manager_override = True
-                refresh_attendance_row(existing, manual_status=status)
+                refresh_attendance_row(
+                    existing,
+                    manual_status=status,
+                    leniency_minutes=_attendance_settings()["leniency_minutes"],
+                    force_recalculate=not bool(status),
+                )
             else:
                 existing = StaffAttendance(
                     user_id=target_user_id,
@@ -7110,7 +7146,12 @@ def staff():
                     notes=notes,
                 )
                 db.session.add(existing)
-                refresh_attendance_row(existing, manual_status=status)
+                refresh_attendance_row(
+                    existing,
+                    manual_status=status,
+                    leniency_minutes=_attendance_settings()["leniency_minutes"],
+                    force_recalculate=not bool(status),
+                )
             db.session.commit()
             flash("Attendance override saved for selected staff member.", "success")
             return _staff_redirect("attendance_entry", attendance_user_id=target_user_id)
@@ -7141,7 +7182,7 @@ def staff():
                 if existing.notes
                 else admin_note
             )
-            refresh_attendance_row(existing)
+            refresh_attendance_row(existing, leniency_minutes=_attendance_settings()["leniency_minutes"], force_recalculate=True)
             db.session.commit()
             flash("Active session checked out.", "success")
             return _staff_redirect("attendance_entry", attendance_user_id=existing.user_id)
@@ -7173,7 +7214,7 @@ def staff():
                     if existing.notes
                     else admin_note
                 )
-                refresh_attendance_row(existing)
+                refresh_attendance_row(existing, leniency_minutes=_attendance_settings()["leniency_minutes"], force_recalculate=True)
             db.session.commit()
             flash(f"Closed {len(rows)} active session(s).", "success")
             return _staff_redirect("attendance_entry")
@@ -7335,6 +7376,41 @@ def staff():
             "bar_color": bar_color,
         })
 
+    selected_day_profile = next(
+        (profile for profile in active_profiles if profile.user_id == selected_user_id),
+        None,
+    )
+    selected_day_row = timeline_attendance.get(selected_user_id) if selected_user_id else None
+    selected_day_leave = approved_timeline_leave.get(selected_user_id) if selected_user_id else None
+    selected_day_detail = {
+        "name": selected_day_profile.user.full_name if selected_day_profile else "",
+        "date": timeline_date,
+        "status": attendance_status_label(selected_day_row.status) if selected_day_row else (
+            f"On Leave · {selected_day_leave.leave_type.title()}" if selected_day_leave else (
+                "Weekly Off" if weekly_off_config().enabled and timeline_date.weekday() == weekly_off_config().weekday else (
+                    "Company Holiday" if CompanyHoliday.query.filter_by(
+                        active=True,
+                        holiday_date=timeline_date,
+                    ).first() else ("Absent" if timeline_date < today_ist else "Unknown")
+                )
+            )
+        ),
+        "check_in_at": selected_day_row.check_in_at if selected_day_row else None,
+        "check_out_at": selected_day_row.check_out_at if selected_day_row else None,
+        "worked_duration": _timeline_duration_text(selected_day_row),
+        "check_in_distance_m": selected_day_row.check_in_distance_m if selected_day_row else None,
+        "check_out_distance_m": selected_day_row.check_out_distance_m if selected_day_row else None,
+        "check_in_method": selected_day_row.check_in_method if selected_day_row else None,
+        "check_out_method": selected_day_row.check_out_method if selected_day_row else None,
+        "auto_checkout_reason": selected_day_row.auto_checkout_reason if selected_day_row else None,
+        "manager_override": bool(selected_day_row.manager_override) if selected_day_row else False,
+        "notes": selected_day_row.notes if selected_day_row else None,
+        "check_in_lat": selected_day_row.check_in_lat if selected_day_row else None,
+        "check_in_lng": selected_day_row.check_in_lng if selected_day_row else None,
+        "check_out_lat": selected_day_row.check_out_lat if selected_day_row else None,
+        "check_out_lng": selected_day_row.check_out_lng if selected_day_row else None,
+    }
+
     shared_leave_map = {}
     approved_month_leaves = StaffLeaveRequest.query.filter(
         StaffLeaveRequest.status == "approved",
@@ -7441,6 +7517,7 @@ def staff():
         selected_attendance_map=selected_attendance_map,
         timeline_date=timeline_date,
         team_timeline=team_timeline,
+        selected_day_detail=selected_day_detail,
         shared_leave_map=shared_leave_map,
         staff_role_options=_get_role_options(),
         user_types=UserType.query.order_by(UserType.name.asc()).all(),
@@ -7656,7 +7733,7 @@ def my_staff():
             existing.check_out_at = datetime.now(IST_TZ).replace(tzinfo=None)
             existing.check_out_method = "profile"
             existing.manager_override = False
-            refresh_attendance_row(existing)
+            refresh_attendance_row(existing, leniency_minutes=_attendance_settings()["leniency_minutes"])
             flash("Check-out recorded.", "success")
             db.session.commit()
             return redirect(url_for("cafe.my_staff"))
@@ -7720,7 +7797,11 @@ def my_staff():
     attendance_changed = False
     for row in attendance_logs:
         before = row.status
-        refresh_attendance_row(row, manual_status=before if (row.manager_override and not (row.check_in_at or row.check_out_at)) else None)
+        refresh_attendance_row(
+            row,
+            manual_status=before if (row.manager_override and not (row.check_in_at or row.check_out_at)) else None,
+            leniency_minutes=_attendance_settings()["leniency_minutes"],
+        )
         if row.status != before:
             attendance_changed = True
     if attendance_changed:
@@ -7734,7 +7815,11 @@ def my_staff():
     today_ist = datetime.now(IST_TZ).date()
     month_start = today_ist.replace(day=1)
     month_logs = [row for row in attendance_logs if row.attendance_date >= month_start]
-    attendance_summary = build_attendance_summary(month_logs)
+    attendance_settings = _attendance_settings()
+    attendance_summary = build_attendance_summary(
+        month_logs,
+        leniency_minutes=attendance_settings["leniency_minutes"],
+    )
     today_attendance = next((row for row in attendance_logs if row.attendance_date == today_ist), None)
     active_attendance_session = next((row for row in attendance_logs if row.check_in_at and not row.check_out_at), None)
     next_attendance_action = "completed"
@@ -7752,7 +7837,10 @@ def my_staff():
         active_attendance_session=active_attendance_session,
         next_attendance_action=next_attendance_action,
         attendance_status_label=attendance_status_label,
-        attendance_flags_for_row=attendance_flags_for_row,
+        attendance_flags_for_row=lambda row: attendance_flags_for_row(
+            row,
+            leniency_minutes=attendance_settings["leniency_minutes"],
+        ),
         worked_hours_for_row=worked_hours_for_row,
         leave_type_options=SELF_LEAVE_TYPE_OPTIONS,
     )
