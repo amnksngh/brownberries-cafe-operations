@@ -28,6 +28,9 @@ import androidx.activity.result.ActivityResultLauncher
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
 import androidx.lifecycle.lifecycleScope
 import com.brownberries.attendance.databinding.ActivityMainBinding
 import kotlinx.coroutines.Dispatchers
@@ -56,7 +59,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var store: SessionStore
     private val api = MobileAttendanceApi()
     private var workspaceJson: JSONObject? = null
-    private var activeTab = "profile"
+    private var activeTab = "home"
     private var pendingDocumentUri: Uri? = null
     private var backgroundPermissionPrompted = false
     private lateinit var permissionLauncher: ActivityResultLauncher<Array<String>>
@@ -76,9 +79,20 @@ class MainActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        WindowCompat.setDecorFitsSystemWindows(window, true)
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
         store = SessionStore(this)
+
+        ViewCompat.setOnApplyWindowInsetsListener(binding.root) { _, insets ->
+            val navigation = insets.getInsets(WindowInsetsCompat.Type.navigationBars())
+            val currentLeft = binding.workspaceNav.paddingLeft
+            val currentTop = binding.workspaceNav.paddingTop
+            val currentRight = binding.workspaceNav.paddingRight
+            binding.workspaceNav.setPadding(currentLeft, currentTop, currentRight, dp(8) + navigation.bottom)
+            insets
+        }
+        ViewCompat.requestApplyInsets(binding.root)
 
         permissionLauncher = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
             if (hasCorePermissions()) {
@@ -95,10 +109,10 @@ class MainActivity : AppCompatActivity() {
         }
 
         binding.loginButton.setOnClickListener { doLogin() }
-        binding.logoutNavButton.setOnClickListener { doLogout() }
-        binding.profileTabButton.setOnClickListener { showTab("profile") }
+        binding.homeTabButton.setOnClickListener { showTab("home") }
         binding.tableOrderingTabButton.setOnClickListener { showTab("table") }
         binding.availabilityTabButton.setOnClickListener { showTab("availability") }
+        binding.profileTabButton.setOnClickListener { showTab("profile") }
         binding.tableCartBar.setOnClickListener {
             binding.workspaceScroll.post { binding.workspaceScroll.fullScroll(View.FOCUS_DOWN) }
         }
@@ -274,8 +288,10 @@ class MainActivity : AppCompatActivity() {
         }
         runCatching {
             when (activeTab) {
+                "home" -> renderHome(data)
                 "table" -> renderTableOrdering(data)
                 "availability" -> renderAvailability(data)
+                "attendance" -> renderAttendance(data)
                 else -> renderProfile(data)
             }
         }.onFailure { error ->
@@ -283,10 +299,62 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private fun renderHome(data: JSONObject) {
+        val user = data.optJSONObject("user") ?: JSONObject()
+        val today = data.optJSONObject("attendance")?.optJSONObject("today")
+        val roles = jsonArrayText(user.optJSONArray("roles"))
+        val root = workspaceRoot()
+
+        val header = tileCard().apply {
+            background = rounded(Color.rgb(87, 56, 45), 20)
+            addView(text("Good day, ${user.optString("full_name", "there")}", 23, true).apply { setTextColor(Color.WHITE) })
+            addView(text("${roles.replace(", ", "  •  ")}  ·  Brownberries Café", 14, false).apply { setTextColor(Color.rgb(255, 232, 214)) })
+            addView(badge(if (store.lastSyncMessage.equals("Idle", true)) "Live account  •  IST" else store.lastSyncMessage).apply {
+                setTextColor(Color.rgb(45, 93, 66)); background = rounded(Color.rgb(224, 244, 231), 12)
+            })
+        }
+        root.addView(header)
+
+        val attendanceCard = section(
+            if (store.checkedIn) "CHECKED IN" else "SHIFT STATUS",
+            if (store.checkedIn) "Location verified · automatic monitoring is active" else "Automatic geofence attendance is ready in the background",
+        )
+        addAttendanceMetrics(attendanceCard, today)
+        root.addView(attendanceCard)
+
+        val quick = section("Quick actions", "The four things you are most likely to do now.")
+        val quickRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+        quickRow.addView(smallAction("New order") { showTab("table") }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+        quickRow.addView(smallAction("Availability") { showTab("availability") }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+        quick.addView(quickRow)
+        val secondRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+        secondRow.addView(smallAction("Attendance") { showProfileSubsection(data, "attendance") }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+        secondRow.addView(smallAction("My profile") { showTab("profile") }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+        quick.addView(secondRow)
+        root.addView(quick)
+
+        val pendingOrders = (0 until (data.optJSONArray("tables")?.length() ?: 0)).sumOf { index ->
+            data.optJSONArray("tables")?.optJSONObject(index)?.optInt("active_orders", 0) ?: 0
+        }
+        val leave = data.optJSONObject("leave") ?: JSONObject()
+        val requests = leave.optJSONArray("requests") ?: JSONArray()
+        val pendingLeave = (0 until requests.length()).count { requests.optJSONObject(it)?.optString("status") == "pending" }
+        root.addView(section("Pending attention", "Small signals worth checking before the next task.").apply {
+            addView(text("${if (pendingOrders > 0) "• $pendingOrders live table order(s)" else "• No live table orders"}\n" +
+                "${if (pendingLeave > 0) "• $pendingLeave leave request(s) awaiting review" else "• No pending leave request"}\n" +
+                "• ${store.lastSyncMessage.ifBlank { "Workspace synced" }}", 15, false))
+        })
+        root.addView(section("Recent activity", "Live data from the cafe workspace.").apply {
+            addView(text("Server time  ${data.optString("server_time_ist", "—")}", 14, false))
+            addView(text("Your next action is always available from the navigation below.", 14, false))
+        })
+        binding.workspaceContent.addView(root)
+    }
+
     private fun renderProfile(data: JSONObject) {
         val profile = data.optJSONObject("profile") ?: JSONObject()
         val user = data.optJSONObject("user") ?: JSONObject()
-        val root = workspaceRoot()
+        val root = screen("Me", "Your profile, salary, documents, leave and security.")
         val roles = jsonArrayText(user.optJSONArray("roles"))
         val identity = tileCard()
         identity.addView(text(user.optString("full_name"), 21, true))
@@ -334,6 +402,10 @@ class MainActivity : AppCompatActivity() {
         val rulebookData = data.optJSONObject("rulebook")
         rulebook.addView(text(rulebookData?.optString("content") ?: "The current rule book is not available."))
         root.addView(rulebook)
+        root.addView(section("Security & Login", "Keep your staff session under your control.").apply {
+            addView(text("Signed in as ${user.optString("email")}", 14, false))
+            addView(actionButton("Log out") { doLogout() })
+        })
         binding.workspaceContent.addView(root)
     }
 
@@ -460,27 +532,42 @@ class MainActivity : AppCompatActivity() {
         val tableButtons = mutableMapOf<Int, Button>()
         var selectedTableId: Int? = null
         var refreshLiveOrders: (() -> Unit)? = null
-        val tableCard = section("Choose a table", "Select the table before adding items.")
-        val tableRow = horizontalScroll()
+        val tableCard = section("Tables", "Select a table before adding items.")
+        val tableGrid = GridLayout(this).apply {
+            columnCount = 2
+            alignmentMode = GridLayout.ALIGN_BOUNDS
+            useDefaultMargins = false
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+        }
         for (i in 0 until tables.length()) {
             val row = tables.optJSONObject(i) ?: continue
             val id = row.optInt("id")
             if (id <= 0) continue
             tableIds += id
-            val button = smallAction("${row.optString("name")}\n${row.optInt("active_orders")} open") {
+            val orderCount = row.optInt("active_orders")
+            val button = smallAction("${row.optString("name")}\n${if (orderCount > 0) "● $orderCount active" else "Available"}\n₹${"%.0f".format(row.optDouble("pending_amount", 0.0))}") {
                 selectedTableId = id
                 tableButtons.values.forEach { it.background = rounded(Color.WHITE, 14) }
                 buttonBackground(tableButtons[id], true)
                 refreshLiveOrders?.invoke()
             }
-            button.minWidth = dp(92); button.minHeight = dp(64)
+            button.minHeight = dp(76)
+            button.textSize = 13f
+            button.gravity = Gravity.START or Gravity.CENTER_VERTICAL
+            button.layoutParams = GridLayout.LayoutParams(
+                GridLayout.spec((tableIds.size - 1) / 2, 1),
+                GridLayout.spec((tableIds.size - 1) % 2, 1, 1f),
+            ).apply {
+                width = 0
+                setMargins(dp(4), dp(4), dp(4), dp(4))
+            }
             tableButtons[id] = button
-            addScrollItem(tableRow, button)
+            tableGrid.addView(button)
         }
         selectedTableId = tableIds.firstOrNull()
         selectedTableId?.let { buttonBackground(tableButtons[it], true) }
-        if (tableIds.isEmpty()) addScrollItem(tableRow, text("No active tables available."))
-        tableCard.addView(tableRow); body.addView(tableCard)
+        if (tableIds.isEmpty()) tableGrid.addView(text("No active tables available."))
+        tableCard.addView(tableGrid); body.addView(tableCard)
 
         val liveOrdersCard = section("Live orders", "Current-day orders already running at the selected table.")
         val liveOrdersBody = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
@@ -610,8 +697,17 @@ class MainActivity : AppCompatActivity() {
                     height = LinearLayout.LayoutParams.WRAP_CONTENT
                     setMargins(dp(4), dp(4), dp(4), dp(4))
                 }
-                tile.addView(text(item.optString("name"), 18, true))
-                tile.addView(text(item.optString("short_description").ifBlank { categoriesForItem.joinToString("  •  ") }, 13, false))
+                tile.addView(text(item.optString("name"), 17, true))
+                val shortDescription = item.optString("short_description").trim()
+                tile.addView(text(
+                    shortDescription.ifBlank { "A Brownberries favourite" },
+                    13,
+                    false,
+                ).apply {
+                    maxLines = 2
+                    ellipsize = android.text.TextUtils.TruncateAt.END
+                    setTextColor(mutedInk)
+                })
                 addMenuImage(tile, item.optString("image_url"))
                 val priceText = text("₹${"%.2f".format(item.optDouble("price", 0.0))}", 17, true)
                 tile.addView(priceText)
@@ -624,7 +720,10 @@ class MainActivity : AppCompatActivity() {
                         val option = options.optJSONObject(j) ?: JSONObject()
                         "${option.optString("size")}  |  ₹${"%.2f".format(option.optDouble("price", 0.0))}"
                     }
-                    val size = Spinner(this).apply { adapter = simpleAdapter(labels); layoutParams = fieldParams() }
+                    val size = Spinner(this).apply {
+                        adapter = simpleAdapter(labels)
+                        layoutParams = fieldParams().apply { topMargin = dp(4) }
+                    }
                     tile.addView(size)
                     fun syncSize() {
                         val option = options.optJSONObject(size.selectedItemPosition) ?: JSONObject()
@@ -637,21 +736,31 @@ class MainActivity : AppCompatActivity() {
                         override fun onItemSelected(parent: android.widget.AdapterView<*>?, view: View?, position: Int, id: Long) = syncSize()
                     })
                     syncSize()
+                } else {
+                    tile.addView(text("Serving Size/Options  •  Standard", 12, false).apply { setTextColor(mutedInk) })
                 }
-                val parcel = CheckBox(this).apply { text = "Parcel  (+₹20 each)"; textSize = 13f }
+                val parcel = CheckBox(this).apply { text = "Parcel  (+₹20 each)"; textSize = 13f; minHeight = dp(42) }
                 tile.addView(parcel)
                 var quantity = 1
-                val quantityText = text("1", 16, true, 0f).apply { gravity = Gravity.CENTER; minWidth = dp(34) }
-                val controls = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
-                controls.addView(smallAction("−") { quantity = (quantity - 1).coerceAtLeast(1); quantityText.text = quantity.toString() })
-                controls.addView(quantityText)
-                controls.addView(smallAction("+") { quantity++; quantityText.text = quantity.toString() })
-                controls.addView(actionButton("Add") {
+                val quantityText = text("1", 16, true).apply { gravity = Gravity.CENTER; setTextColor(ink) }
+                val controls = LinearLayout(this).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    gravity = Gravity.CENTER_VERTICAL
+                    layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(44)).apply { topMargin = dp(4) }
+                }
+                controls.addView(compactControl("−") { quantity = (quantity - 1).coerceAtLeast(1); quantityText.text = quantity.toString() })
+                controls.addView(quantityText, LinearLayout.LayoutParams(0, dp(44), 1f))
+                controls.addView(compactControl("+") { quantity++; quantityText.text = quantity.toString() })
+                tile.addView(controls)
+                val addButton = actionButton("Add to cart") {
                     val existing = cart.firstOrNull { it.item.optInt("id") == item.optInt("id") && it.sizeLabel == selectedSize && it.parcel == parcel.isChecked }
                     if (existing != null) existing.quantity += quantity else cart += StaffCartLine(item, quantity, selectedSize, selectedPrice, parcel.isChecked)
                     renderCart(); toast("${item.optString("name")} × $quantity added")
-                })
-                tile.addView(controls)
+                }.apply {
+                    layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(46)).apply { topMargin = dp(6) }
+                    textSize = 14f
+                }
+                tile.addView(addButton)
                 menuList.addView(tile)
             }
             if (shown == 0) {
@@ -696,7 +805,10 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun renderAvailability(data: JSONObject) {
-        val root = workspaceRoot()
+        val root = screen("Work", "Availability and workstation operations for today's service.")
+        root.addView(section("Item Availability", "Tap a workstation to open its items. Changes are saved to the live cafe menu.").apply {
+            addView(text("Unavailable items are hidden from customer ordering. Protected utility items remain staff-only.", 14, false))
+        })
         val search = input("Search menu items…")
         root.addView(search)
         val status = text("Changes save automatically.", 13, false)
@@ -745,11 +857,32 @@ class MainActivity : AppCompatActivity() {
                 if (!expanded.contains(key) && query.isBlank()) return@forEach
                 val itemList = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
                 items.forEach { item ->
-                    val card = tileCard().apply { setPadding(dp(12), dp(10), dp(12), dp(10)) }
-                    val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
-                    row.addView(text(item.optString("name"), 16, true, 1f), LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
-                    val check = CheckBox(this).apply { isChecked = item.optBoolean("available", true); contentDescription = "Availability for ${item.optString("name")}" }
+                    val card = LinearLayout(this).apply {
+                        orientation = LinearLayout.HORIZONTAL
+                        gravity = Gravity.CENTER_VERTICAL
+                        setPadding(dp(10), dp(2), dp(10), dp(2))
+                        minimumHeight = dp(54)
+                        background = rounded(Color.WHITE, 12)
+                        elevation = dp(1).toFloat()
+                        layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(58)).apply { topMargin = dp(4) }
+                    }
+                    val state = text(if (item.optBoolean("available", true)) "Available" else "Unavailable", 12, true).apply {
+                        setTextColor(if (item.optBoolean("available", true)) Color.rgb(40, 122, 70) else Color.rgb(179, 38, 30))
+                        gravity = Gravity.END
+                        minWidth = dp(78)
+                    }
+                    card.addView(text(item.optString("name"), 14, true), LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+                    card.addView(state)
+                    val check = CheckBox(this).apply {
+                        isChecked = item.optBoolean("available", true)
+                        contentDescription = "Availability for ${item.optString("name")}"
+                        minWidth = 0
+                        minHeight = dp(48)
+                        setPadding(0, 0, 0, 0)
+                    }
                     check.setOnCheckedChangeListener { _, checked ->
+                        state.text = if (checked) "Available" else "Unavailable"
+                        state.setTextColor(if (checked) Color.rgb(40, 122, 70) else Color.rgb(179, 38, 30))
                         status.text = "Saving ${item.optString("name")}…"
                         lifecycleScope.launch {
                             runCatching { api.updateAvailability(store.baseUrl, store.token, item.optInt("id"), checked) }
@@ -757,7 +890,7 @@ class MainActivity : AppCompatActivity() {
                                 .onFailure { status.text = it.message ?: "Availability update failed"; check.setOnCheckedChangeListener(null); check.isChecked = !checked }
                         }
                     }
-                    row.addView(check); card.addView(row); itemList.addView(card)
+                    card.addView(check); itemList.addView(card)
                 }
                 list.addView(itemList)
             }
@@ -774,7 +907,7 @@ class MainActivity : AppCompatActivity() {
     private fun addMenuImage(parent: LinearLayout, rawUrl: String) {
         if (rawUrl.isBlank()) return
         val image = ImageView(this).apply {
-            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(170)).apply { topMargin = dp(8) }
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(128)).apply { topMargin = dp(6) }
             scaleType = ImageView.ScaleType.CENTER_CROP
             background = rounded(Color.rgb(248, 241, 234), 14)
             contentDescription = "Menu item image"
@@ -846,6 +979,22 @@ class MainActivity : AppCompatActivity() {
         minHeight = dp(42); textSize = 13f; background = rounded(Color.rgb(246, 236, 226), 12); setTextColor(ink)
     }
 
+    private fun compactControl(label: String, action: () -> Unit): Button = Button(this).apply {
+        text = label
+        textSize = 18f
+        isAllCaps = false
+        gravity = Gravity.CENTER
+        setTextColor(Color.WHITE)
+        background = rounded(cocoa, 12)
+        minWidth = dp(44)
+        minimumWidth = dp(44)
+        minHeight = dp(44)
+        minimumHeight = dp(44)
+        setPadding(0, 0, 0, 0)
+        setOnClickListener { action() }
+        layoutParams = LinearLayout.LayoutParams(dp(44), dp(44)).apply { marginEnd = dp(6) }
+    }
+
     private fun buttonBackground(button: Button?, selected: Boolean) {
         button ?: return
         button.background = rounded(if (selected) Color.rgb(242, 222, 199) else Color.WHITE, 14)
@@ -854,12 +1003,15 @@ class MainActivity : AppCompatActivity() {
 
     private fun updateNavSelection(tab: String) {
         val inactive = Color.rgb(255, 250, 246)
-        listOf("profile" to binding.profileTabButton, "table" to binding.tableOrderingTabButton, "availability" to binding.availabilityTabButton).forEach { (key, button) ->
+        listOf(
+            "home" to binding.homeTabButton,
+            "table" to binding.tableOrderingTabButton,
+            "availability" to binding.availabilityTabButton,
+            "profile" to binding.profileTabButton,
+        ).forEach { (key, button) ->
             button.background = rounded(if (key == tab) cocoa else inactive, 12)
             button.setTextColor(if (key == tab) Color.WHITE else ink)
         }
-        binding.logoutNavButton.background = rounded(darkCocoa, 12)
-        binding.logoutNavButton.setTextColor(Color.WHITE)
     }
 
     private fun renderState() {
@@ -870,6 +1022,9 @@ class MainActivity : AppCompatActivity() {
         binding.workspaceNav.visibility = if (loggedIn) View.VISIBLE else View.GONE
         binding.workspaceScroll.visibility = if (loggedIn) View.VISIBLE else View.GONE
         binding.tableCartBar.visibility = if (loggedIn && activeTab == "table") View.VISIBLE else View.GONE
+        val capabilities = workspaceJson?.optJSONObject("capabilities")
+        binding.tableOrderingTabButton.visibility = if (!loggedIn || capabilities?.optBoolean("can_manage_orders", true) != false) View.VISIBLE else View.GONE
+        binding.availabilityTabButton.visibility = if (!loggedIn || capabilities?.optBoolean("can_manage_availability", true) != false) View.VISIBLE else View.GONE
         if (loggedIn) updateNavSelection(activeTab) else binding.workspaceContent.removeAllViews()
     }
 

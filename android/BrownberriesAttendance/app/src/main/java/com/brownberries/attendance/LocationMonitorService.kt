@@ -16,6 +16,7 @@ import android.os.Build
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
+import android.annotation.SuppressLint
 import com.google.android.gms.location.FusedLocationProviderClient
 import com.google.android.gms.location.Geofence
 import com.google.android.gms.location.GeofencingClient
@@ -33,6 +34,8 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withTimeoutOrNull
 import java.time.ZonedDateTime
+import java.time.LocalDate
+import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 
 class LocationMonitorService : Service() {
@@ -134,6 +137,10 @@ class LocationMonitorService : Service() {
             syncPendingCheckout()
         }
 
+        // A cached session from yesterday must never keep the new IST day in
+        // a false checked-in or completed state when the first sync is late.
+        resetStaleLocalAttendanceForToday()
+
         val shouldRefreshPolicy = !serverBootstrapped ||
             (System.currentTimeMillis() - lastServerBootstrapMs >= POLICY_REFRESH_INTERVAL_MS)
         if (networkUp && shouldRefreshPolicy) {
@@ -143,6 +150,9 @@ class LocationMonitorService : Service() {
                     serverBootstrapped = true
                     lastServerBootstrapMs = System.currentTimeMillis()
                     registerGeofence()
+                }
+                .onFailure {
+                    store.lastSyncMessage = "Sync retry: ${it.message ?: "server unavailable"}"
                 }
         }
 
@@ -277,12 +287,29 @@ class LocationMonitorService : Service() {
         updateNotification(store.lastSyncMessage)
     }
 
+    @SuppressLint("MissingPermission")
     private suspend fun getCurrentLocationOrNull(): Location? {
+        if (!hasLocationPermission()) return null
         val tokenSource = CancellationTokenSource()
-        return withTimeoutOrNull(20_000L) {
-            fusedLocationClient
-                .getCurrentLocation(Priority.PRIORITY_HIGH_ACCURACY, tokenSource.token)
-                .await()
+        return runCatching {
+            withTimeoutOrNull(20_000L) {
+                fusedLocationClient
+                    .getCurrentLocation(Priority.PRIORITY_HIGH_ACCURACY, tokenSource.token)
+                    .await()
+            }
+        }.getOrNull() ?: runCatching {
+            // getCurrentLocation can return null while the radio is warming
+            // up. A recent fused fix is still useful for the one-minute sync
+            // loop and avoids treating a present employee as absent.
+            fusedLocationClient.lastLocation.await()
+        }.getOrNull()
+    }
+
+    private fun resetStaleLocalAttendanceForToday() {
+        val cachedDate = store.activeAttendanceDate
+        if (cachedDate.isNotBlank() && cachedDate != LocalDate.now(IST_ZONE).toString()) {
+            store.applyAttendanceState(null)
+            store.lastSyncMessage = "New IST day • checking attendance"
         }
     }
 

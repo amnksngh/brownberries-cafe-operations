@@ -1,6 +1,6 @@
 import hashlib
 import secrets
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from functools import wraps
 from zoneinfo import ZoneInfo
 
@@ -21,6 +21,11 @@ DEFAULT_ATTENDANCE_RADIUS_METERS = 120.0
 OFFLINE_GRACE_MINUTES = 60
 LOCATION_FAILURE_GRACE_MINUTES = 5
 HEARTBEAT_INTERVAL_SECONDS = 60
+
+
+def _ist_now_naive() -> datetime:
+    """Return the current cafe-local time in the format used by the DB."""
+    return datetime.now(IST_TZ).replace(tzinfo=None)
 
 
 def _attendance_settings():
@@ -82,15 +87,31 @@ def _attendance_distance_from_cafe(lat: float | None, lng: float | None) -> floa
 
 
 def _active_attendance_session_for_user(user_id: int):
-    return (
+    rows = (
         StaffAttendance.query.filter(
             StaffAttendance.user_id == user_id,
             StaffAttendance.check_in_at.is_not(None),
             StaffAttendance.check_out_at.is_(None),
         )
         .order_by(StaffAttendance.attendance_date.desc(), StaffAttendance.check_in_at.desc())
-        .first()
+        .all()
     )
+    today = datetime.now(IST_TZ).date()
+    current = None
+    changed = False
+    for row in rows:
+        if row.attendance_date and row.attendance_date < today:
+            # A phone can stay inside the cafe overnight, but attendance
+            # belongs to the day on which it started. Close every stale open
+            # row at its local-day boundary before accepting today's session.
+            close_at = datetime.combine(row.attendance_date, time(23, 59, 59))
+            _close_mobile_attendance_row(row, close_at, "new_day_rollover")
+            changed = True
+        elif current is None:
+            current = row
+    if changed:
+        db.session.commit()
+    return current
 
 
 def _is_staff_attendance_user(user: User | None) -> bool:
@@ -152,10 +173,21 @@ def _user_shift_payload(user: User | None) -> dict:
     }
 
 
+def _ist_iso(value: datetime | None) -> str | None:
+    if not value:
+        return None
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=IST_TZ)
+    return value.astimezone(IST_TZ).isoformat()
+
+
 def _attendance_row_payload(row: StaffAttendance | None) -> dict | None:
     if not row:
         return None
-    duration_end = row.check_out_at or datetime.now(IST_TZ).replace(tzinfo=None)
+    # Database timestamps are intentionally naive and represent IST. Keep the
+    # duration calculation in that same representation; mixing an aware IST
+    # value with a naive DB value raises during bootstrap/check-in.
+    duration_end = row.check_out_at or _ist_now_naive()
     worked_minutes = max(0, int((duration_end - row.check_in_at).total_seconds() // 60)) if row.check_in_at else 0
     duration_hours, duration_remainder = divmod(worked_minutes, 60)
     return {
@@ -163,11 +195,11 @@ def _attendance_row_payload(row: StaffAttendance | None) -> dict | None:
         "attendance_date": row.attendance_date.isoformat() if row.attendance_date else "",
         "status": row.status or "",
         "status_label": attendance_status_label(row.status),
-        "check_in_at": row.check_in_at.isoformat() if row.check_in_at else None,
-        "check_out_at": row.check_out_at.isoformat() if row.check_out_at else None,
+        "check_in_at": _ist_iso(row.check_in_at),
+        "check_out_at": _ist_iso(row.check_out_at),
         "check_in_method": row.check_in_method or "",
         "check_out_method": row.check_out_method or "",
-        "last_heartbeat_at": row.last_heartbeat_at.isoformat() if row.last_heartbeat_at else None,
+        "last_heartbeat_at": _ist_iso(row.last_heartbeat_at),
         "check_in_distance_m": float(row.check_in_distance_m or 0) if row.check_in_distance_m is not None else None,
         "last_heartbeat_distance_m": float(row.last_heartbeat_distance_m or 0) if row.last_heartbeat_distance_m is not None else None,
         "mobile_device_id": row.mobile_device_id or "",
@@ -200,7 +232,7 @@ def _bootstrap_payload(user: User, session_row: StaffMobileSession | None = None
             "device_name": session_row.device_name if session_row else "",
             "platform": session_row.platform if session_row else "android",
             "app_version": session_row.app_version if session_row else "",
-            "last_seen_at": session_row.last_seen_at.isoformat() if session_row and session_row.last_seen_at else None,
+            "last_seen_at": _ist_iso(session_row.last_seen_at) if session_row else None,
         } if session_row else None,
         "server_time_ist": datetime.now(IST_TZ).isoformat(),
     }
@@ -231,7 +263,7 @@ def _update_mobile_session_status(
     status: str = "",
     message: str = "",
 ):
-    session_row.last_seen_at = datetime.now()
+    session_row.last_seen_at = _ist_now_naive()
     if lat is not None:
         session_row.last_lat = lat
     if lng is not None:
@@ -368,9 +400,22 @@ def mobile_check_in():
             403,
         )
     today = datetime.now(IST_TZ).date()
-    completed_today = StaffAttendance.query.filter_by(user_id=g.mobile_user.id, attendance_date=today).first()
+    completed_today = (
+        StaffAttendance.query.filter_by(user_id=g.mobile_user.id, attendance_date=today)
+        .order_by(StaffAttendance.check_in_at.desc(), StaffAttendance.id.desc())
+        .first()
+    )
     if completed_today and completed_today.check_in_at and completed_today.check_out_at:
-        return _api_error("Today's attendance is already completed. Ask admin if a correction is needed.", 409)
+        # An Android auto-checkout is a recoverable session boundary. GPS can
+        # briefly report a false exit, and staff may also leave and return on
+        # the same day. A manual/admin checkout remains final for the day.
+        automatic_checkout = (
+            (completed_today.check_out_method or "").startswith("android_auto_app")
+            or bool(completed_today.auto_checkout_reason)
+        )
+        if not automatic_checkout or completed_today.manager_override:
+            return _api_error("Today's attendance was completed manually. Ask admin if a correction is needed.", 409)
+        completed_today = None
     row = completed_today or StaffAttendance(user_id=g.mobile_user.id, attendance_date=today)
     if row.id is None:
         db.session.add(row)

@@ -6,9 +6,11 @@ Android-first staff workspace for Brownberries Cafe.
 
 - Staff logs in with their existing Brownberries staff account
 - Staff can manage their profile, attendance history, leave requests, and documents
-- Staff can place table orders and update menu-item availability from the Cafe tab
+- Staff can place table orders and update menu-item availability from the native Work and Orders tabs
 - Before sign-in, the home screen shows only a clean email/password form
-- After sign-in, the top navigation is Profile, Table Ordering, Item Availability, and Sign Out
+- After sign-in, the app uses four Android-native destinations: Home, Orders, Work, and Me
+- Attendance remains available from the Home shift card and Me > Staff Management; it is not a separate bottom tab
+- Logout is kept under Me > Security & Login instead of competing with daily work destinations
 - App downloads the cafe geofence and the assigned staff shift window
 - A foreground location monitor checks position every minute and registers a Google Play Services geofence for enter/exit wake-ups
 - When the staff member is inside the geofence, the app can auto check-in
@@ -17,7 +19,9 @@ Android-first staff workspace for Brownberries Cafe.
 - If internet is unavailable, the app waits longer, queues the checkout locally, and syncs it when the network returns
 - Monitoring starts automatically after login, at every app launch, after device restart, and after an app update
 - The only manual attendance action is **Check-Out**; automatic checkout remains controlled by the server policy and monitor
-- The staff workspaces are native Android screens backed by the existing production APIs. The app has its own four-tab navigation and does not embed the web UI.
+- The staff workspace is a native Android experience backed by the existing production APIs. It does not embed the web UI or duplicate the public/customer navigation.
+- Home is the daily command centre, Orders is the fast table-ordering flow, Work groups item availability by workstation, and Me contains personal information, attendance, leave, documents, rule book and security.
+- Navigation is capability-aware: when the server denies an operation, its destination is hidden instead of showing an unusable locked screen.
 
 ## Current backend endpoints used
 

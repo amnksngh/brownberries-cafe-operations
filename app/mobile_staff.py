@@ -74,7 +74,10 @@ def _dt(value):
     if not value:
         return None
     if value.tzinfo is None:
-        value = value.replace(tzinfo=ZoneInfo("UTC"))
+        # The application stores its naive database datetimes in cafe-local
+        # time. Treating them as UTC shifts morning attendance into the
+        # afternoon when the mobile app formats them for staff.
+        value = value.replace(tzinfo=IST)
     return value.astimezone(IST).isoformat()
 
 
@@ -99,7 +102,8 @@ def _profile_payload(user):
 def _attendance_payload(row):
     if not row:
         return None
-    worked_minutes = max(0, int((row.check_out_at - row.check_in_at).total_seconds() // 60)) if row.check_in_at and row.check_out_at else 0
+    duration_end = row.check_out_at or datetime.now(IST).replace(tzinfo=None)
+    worked_minutes = max(0, int((duration_end - row.check_in_at).total_seconds() // 60)) if row.check_in_at else 0
     return {
         "id": row.id,
         "date": row.attendance_date.isoformat() if row.attendance_date else "",
@@ -109,9 +113,7 @@ def _attendance_payload(row):
         "check_in_method": row.check_in_method or "",
         "check_out_method": row.check_out_method or "",
         "auto_checkout_reason": row.auto_checkout_reason or "",
-        "worked_hours": round(max(0.0, (row.check_out_at - row.check_in_at).total_seconds() / 3600), 2)
-        if row.check_in_at and row.check_out_at
-        else None,
+        "worked_hours": round(worked_minutes / 60, 2) if row.check_in_at else None,
         "worked_minutes": worked_minutes,
         "worked_duration": f"{worked_minutes // 60:02d}h {worked_minutes % 60:02d}m" if row.check_in_at else "00h 00m",
     }
@@ -301,12 +303,20 @@ def workspace():
             if cursor.weekday() == weekly.weekday:
                 shared_calendar.append({"date": cursor.isoformat(), "label": f"Everyone · {weekly.label}", "kind": "weekly_off"})
             cursor += timedelta(days=1)
+    today_rows = [row for row in attendance if row.attendance_date == today]
+    today_row = next((row for row in today_rows if row.check_in_at and not row.check_out_at), None)
+    if today_row is None:
+        today_row = max(
+            today_rows,
+            key=lambda row: (row.check_in_at or datetime.min, row.id or 0),
+            default=None,
+        )
     return jsonify({
         "ok": True,
         "server_time_ist": datetime.now(IST).isoformat(),
         "user": {"id": user.id, "full_name": user.full_name, "email": user.email, "roles": user.assigned_roles()},
         "profile": _profile_payload(user),
-        "attendance": {"today": _attendance_payload(next((row for row in attendance if row.attendance_date == today), None)), "history": [_attendance_payload(row) for row in attendance]},
+        "attendance": {"today": _attendance_payload(today_row), "history": [_attendance_payload(row) for row in attendance]},
         "leave": {
             "balance": {"earned": float(balance.earned_balance if balance else 0), "urgent": float(balance.urgent_balance if balance else 0)},
             "requests": [_leave_payload(row) for row in leave_requests],

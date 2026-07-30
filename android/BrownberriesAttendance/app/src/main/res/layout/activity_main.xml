@@ -127,78 +127,6 @@
         </LinearLayout>
     </ScrollView>
 
-        <LinearLayout
-            android:id="@+id/workspaceNav"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="12dp"
-            android:background="#F2E5D9"
-            android:gravity="center_vertical"
-            android:padding="4dp"
-            android:visibility="gone"
-            android:weightSum="4"
-            android:orientation="horizontal">
-            <Button
-                android:id="@+id/profileTabButton"
-                android:layout_width="0dp"
-                android:layout_height="wrap_content"
-                android:layout_weight="1"
-                android:text="Profile"
-                android:textAllCaps="false"
-                android:textSize="11sp"
-                android:maxLines="2"
-                android:gravity="center"
-                android:paddingRight="2dp"
-                android:insetLeft="0dp"
-                android:insetRight="0dp"
-                android:textColor="#FFFFFFFF" />
-            <Button
-                android:id="@+id/tableOrderingTabButton"
-                android:layout_width="0dp"
-                android:layout_height="wrap_content"
-                android:layout_marginStart="4dp"
-                android:layout_weight="1"
-                android:text="Table\nOrdering"
-                android:textAllCaps="false"
-                android:textSize="11sp"
-                android:maxLines="2"
-                android:gravity="center"
-                android:paddingLeft="2dp"
-                android:paddingRight="2dp"
-                android:insetLeft="0dp"
-                android:insetRight="0dp" />
-            <Button
-                android:id="@+id/availabilityTabButton"
-                android:layout_width="0dp"
-                android:layout_height="wrap_content"
-                android:layout_marginStart="4dp"
-                android:layout_weight="1"
-                android:text="Items\nAvailable"
-                android:textAllCaps="false"
-                android:textSize="11sp"
-                android:maxLines="2"
-                android:gravity="center"
-                android:paddingLeft="2dp"
-                android:paddingRight="2dp"
-                android:insetLeft="0dp"
-                android:insetRight="0dp" />
-            <Button
-                android:id="@+id/logoutNavButton"
-                android:layout_width="0dp"
-                android:layout_height="wrap_content"
-                android:layout_marginStart="4dp"
-                android:layout_weight="1"
-                android:text="Sign Out"
-                android:textAllCaps="false"
-                android:textSize="11sp"
-                android:maxLines="2"
-                android:gravity="center"
-                android:paddingLeft="2dp"
-                android:paddingRight="2dp"
-                android:insetLeft="0dp"
-                android:insetRight="0dp" />
-        </LinearLayout>
-
     <ScrollView
         android:id="@+id/workspaceScroll"
         android:layout_width="match_parent"
@@ -221,11 +149,45 @@
         android:layout_height="wrap_content"
         android:layout_marginStart="12dp"
         android:layout_marginEnd="12dp"
-        android:layout_marginBottom="8dp"
-        android:backgroundTint="#6F4A35"
-        android:minHeight="48dp"
+        android:layout_marginBottom="6dp"
+        android:backgroundTint="#57382D"
+        android:minHeight="52dp"
         android:text="Cart"
         android:textAllCaps="false"
         android:textColor="#FFFFFFFF"
         android:visibility="gone" />
+
+    <LinearLayout
+        android:id="@+id/workspaceNav"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:background="#FFFFFF"
+        android:elevation="8dp"
+        android:gravity="center_vertical"
+        android:orientation="horizontal"
+        android:padding="6dp"
+        android:visibility="gone"
+        android:weightSum="4">
+        <Button
+            android:id="@+id/homeTabButton"
+            style="@style/StaffNavButton"
+            android:layout_weight="1"
+            android:text="Home" />
+        <Button
+            android:id="@+id/tableOrderingTabButton"
+            style="@style/StaffNavButton"
+            android:layout_weight="1"
+            android:text="Orders" />
+        <Button
+            android:id="@+id/availabilityTabButton"
+            style="@style/StaffNavButton"
+            android:layout_weight="1"
+            android:text="Work" />
+        <Button
+            android:id="@+id/profileTabButton"
+            style="@style/StaffNavButton"
+            android:layout_weight="1"
+            android:text="Me" />
+    </LinearLayout>
+
 </LinearLayout>
