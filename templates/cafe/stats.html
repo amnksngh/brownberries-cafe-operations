@@ -157,6 +157,14 @@
       <h4>Peak Business Hours</h4>
       <canvas id="peak-hours-chart" height="130"></canvas>
     </article>
+    <article class="panel inner">
+      <h4>Sales by Day of Week</h4>
+      <canvas id="weekday-sales-chart" height="130"></canvas>
+    </article>
+    <article class="panel inner">
+      <h4>Sales by Week of Month</h4>
+      <canvas id="week-of-month-sales-chart" height="130"></canvas>
+    </article>
   </div>
   <div class="stats-best-days">
     <article class="metric">
@@ -304,6 +312,21 @@
 </section>
 
 <section class="panel">
+  <h3>Preparation Responsibility</h3>
+  <p class="muted">Assigned Chef and Barista responsibility, recipe coverage, sold quantity, and paid sales for this period.</p>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Staff Member</th><th>Assigned Dishes</th><th>Mapped Recipes</th><th>Quantity Sold</th><th>Paid Sales</th><th>Contribution</th></tr></thead>
+      <tbody>
+        {% for row in stats_payload.item_analytics.responsibility %}
+        <tr><td>{{ row.name }}</td><td>{{ row.assigned_dishes }}</td><td>{{ row.recipe_mapped_dishes }}</td><td>{{ row.sold_qty }}</td><td>₹{{ "%.2f"|format(row.sales) }}</td><td>{{ "%.2f"|format(row.contribution_pct) }}%</td></tr>
+        {% else %}<tr><td colspan="6">Assign Chef or Barista responsibility to menu items to see contribution data.</td></tr>{% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section class="panel">
   <h3>All Orders (Filtered)</h3>
   <div class="table-wrap">
     <table>
@@ -411,6 +434,20 @@
     (statsPayload.orders_analytics.peak_hours || []).map((x) => x.orders),
     "Order Volume",
     "#8b5e3c"
+  );
+  buildBarChart(
+    "weekday-sales-chart",
+    statsPayload.orders_analytics.weekday_sales.labels || [],
+    statsPayload.orders_analytics.weekday_sales.revenue || [],
+    "Sales",
+    "#6f4a35"
+  );
+  buildBarChart(
+    "week-of-month-sales-chart",
+    statsPayload.orders_analytics.week_of_month_sales.labels || [],
+    statsPayload.orders_analytics.week_of_month_sales.revenue || [],
+    "Sales",
+    "#2d7070"
   );
   buildPieChart(
     "item-contribution-chart",

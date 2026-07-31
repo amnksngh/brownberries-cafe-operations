@@ -16,6 +16,7 @@ from flask import Blueprint, current_app, g, jsonify, redirect, request, send_fi
 from werkzeug.utils import secure_filename
 
 from .auth_helpers import user_has_any_role, user_has_permission
+from .attendance_logic import aggregate_attendance_rows, worked_minutes_for_row
 from .cafe import _current_ist_day_bounds, _recalculate_order_totals, create_cafe_order
 from .extensions import db
 from .leave_logic import (
@@ -102,8 +103,10 @@ def _profile_payload(user):
 def _attendance_payload(row):
     if not row:
         return None
-    duration_end = row.check_out_at or datetime.now(IST).replace(tzinfo=None)
-    worked_minutes = max(0, int((duration_end - row.check_in_at).total_seconds() // 60)) if row.check_in_at else 0
+    worked_minutes = worked_minutes_for_row(
+        row,
+        now=datetime.now(IST).replace(tzinfo=None),
+    )
     return {
         "id": row.id,
         "date": row.attendance_date.isoformat() if row.attendance_date else "",
@@ -256,11 +259,14 @@ def workspace():
     balance = ensure_leave_balance(user)
     db.session.commit()
     today = datetime.now(IST).date()
-    attendance = (
+    attendance_sessions = (
         StaffAttendance.query.filter_by(user_id=user.id)
         .order_by(StaffAttendance.attendance_date.desc())
-        .limit(60)
         .all()
+    )
+    attendance = aggregate_attendance_rows(
+        attendance_sessions,
+        now=datetime.now(IST).replace(tzinfo=None),
     )
     leave_requests = StaffLeaveRequest.query.filter_by(user_id=user.id).order_by(StaffLeaveRequest.created_at.desc()).limit(40).all()
     documents = StaffDocument.query.filter_by(user_id=user.id).order_by(StaffDocument.created_at.desc()).all()

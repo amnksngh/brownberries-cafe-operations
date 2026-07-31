@@ -62,6 +62,7 @@ class MainActivity : AppCompatActivity() {
     private var activeTab = "home"
     private var pendingDocumentUri: Uri? = null
     private var backgroundPermissionPrompted = false
+    private var availabilitySaveAction: (() -> Unit)? = null
     private lateinit var permissionLauncher: ActivityResultLauncher<Array<String>>
 
     private data class StaffCartLine(
@@ -113,6 +114,7 @@ class MainActivity : AppCompatActivity() {
         binding.tableOrderingTabButton.setOnClickListener { showTab("table") }
         binding.availabilityTabButton.setOnClickListener { showTab("availability") }
         binding.profileTabButton.setOnClickListener { showTab("profile") }
+        binding.availabilitySaveBar.setOnClickListener { availabilitySaveAction?.invoke() }
         binding.tableCartBar.setOnClickListener {
             binding.workspaceScroll.post { binding.workspaceScroll.fullScroll(View.FOCUS_DOWN) }
         }
@@ -281,6 +283,8 @@ class MainActivity : AppCompatActivity() {
         if (store.token.isBlank()) return
         binding.workspaceContent.removeAllViews()
         binding.tableCartBar.visibility = View.GONE
+        binding.availabilitySaveBar.visibility = if (activeTab == "availability") View.VISIBLE else View.GONE
+        if (activeTab != "availability") availabilitySaveAction = null
         val data = workspaceJson
         if (data == null) {
             showLoading("Loading your workspace…")
@@ -805,17 +809,23 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun renderAvailability(data: JSONObject) {
-        val root = screen("Work", "Availability and workstation operations for today's service.")
-        root.addView(section("Item Availability", "Tap a workstation to open its items. Changes are saved to the live cafe menu.").apply {
+        val root = screen("Items Availability", "Quickly mark what is available at each workstation.")
+        root.addView(section("Item Availability", "Tap a workstation to open its items. Save changes when you are ready.").apply {
             addView(text("Unavailable items are hidden from customer ordering. Protected utility items remain staff-only.", 14, false))
         })
         val search = input("Search menu items…")
         root.addView(search)
-        val status = text("Changes save automatically.", 13, false)
+        val status = text("Select items, then tap Save Availability.", 13, false)
         root.addView(status)
         val list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         root.addView(list)
         val availability = data.optJSONArray("availability_menu") ?: JSONArray()
+        val savedAvailability = mutableMapOf<Int, Boolean>()
+        val pendingAvailability = linkedMapOf<Int, Boolean>()
+        for (i in 0 until availability.length()) {
+            val item = availability.optJSONObject(i) ?: continue
+            savedAvailability[item.optInt("id")] = item.optBoolean("available", true)
+        }
         val workstationNames = linkedMapOf<String, String>()
         val workstations = data.optJSONArray("workstations")
         for (i in 0 until (workstations?.length() ?: 0)) {
@@ -825,6 +835,44 @@ class MainActivity : AppCompatActivity() {
             workstationNames[slug] = station.optString("name").trim().ifBlank { slug }
         }
         val expanded = mutableSetOf<String>()
+
+        fun updateSaveFooter() {
+            val count = pendingAvailability.size
+            binding.availabilitySaveBar.text = if (count == 0) "Save Availability" else "Save Availability  ·  $count change${if (count == 1) "" else "s"}"
+            binding.availabilitySaveBar.isEnabled = count > 0
+            binding.availabilitySaveBar.alpha = if (count > 0) 1f else 0.58f
+        }
+
+        availabilitySaveAction = save@{
+            if (pendingAvailability.isEmpty()) {
+                status.text = "Everything is already saved."
+                return@save
+            }
+            binding.availabilitySaveBar.isEnabled = false
+            status.text = "Saving ${pendingAvailability.size} change${if (pendingAvailability.size == 1) "" else "s"}…"
+            lifecycleScope.launch {
+                val changes = pendingAvailability.toMap()
+                val failed = mutableListOf<Int>()
+                for ((itemId, checked) in changes) {
+                    runCatching { api.updateAvailability(store.baseUrl, store.token, itemId, checked) }
+                        .onSuccess { savedAvailability[itemId] = checked }
+                        .onFailure { failed += itemId }
+                }
+                failed.forEach { itemId ->
+                    val item = (0 until availability.length()).mapNotNull { availability.optJSONObject(it) }.firstOrNull { it.optInt("id") == itemId }
+                    item?.put("available", savedAvailability[itemId] ?: true)
+                    pendingAvailability.remove(itemId)
+                }
+                changes.keys.filterNot(failed::contains).forEach(pendingAvailability::remove)
+                status.text = if (failed.isEmpty()) {
+                    "Saved — live for guests and staff."
+                } else {
+                    "${failed.size} change${if (failed.size == 1) "" else "s"} could not be saved. Try again."
+                }
+                updateSaveFooter()
+            }
+        }
+        updateSaveFooter()
 
         fun stationKey(item: JSONObject): String = item.optString("prep_station").trim().ifBlank { "__unassigned__" }
         fun stationLabel(key: String): String = if (key == "__unassigned__") "No workstation" else workstationNames[key] ?: key.replace('_', ' ').replaceFirstChar { it.uppercase() }
@@ -857,40 +905,57 @@ class MainActivity : AppCompatActivity() {
                 if (!expanded.contains(key) && query.isBlank()) return@forEach
                 val itemList = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
                 items.forEach { item ->
+                    val itemName = listOf("name", "item_name", "menu_item_name", "title")
+                        .firstNotNullOfOrNull { key -> item.optString(key).trim().takeIf { it.isNotBlank() } }
+                        ?: "Menu item #${item.optInt("id")}"
                     val card = LinearLayout(this).apply {
                         orientation = LinearLayout.HORIZONTAL
                         gravity = Gravity.CENTER_VERTICAL
-                        setPadding(dp(10), dp(2), dp(10), dp(2))
-                        minimumHeight = dp(54)
+                        setPadding(dp(10), dp(2), dp(6), dp(2))
+                        minimumHeight = dp(52)
                         background = rounded(Color.WHITE, 12)
                         elevation = dp(1).toFloat()
-                        layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(58)).apply { topMargin = dp(4) }
+                        layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(4) }
                     }
-                    val state = text(if (item.optBoolean("available", true)) "Available" else "Unavailable", 12, true).apply {
-                        setTextColor(if (item.optBoolean("available", true)) Color.rgb(40, 122, 70) else Color.rgb(179, 38, 30))
-                        gravity = Gravity.END
-                        minWidth = dp(78)
+                    val nameView = TextView(this).apply {
+                        text = itemName
+                        textSize = 15f
+                        setTextColor(ink)
+                        setTypeface(typeface, android.graphics.Typeface.BOLD)
+                        gravity = Gravity.CENTER_VERTICAL or Gravity.START
+                        maxLines = 2
+                        ellipsize = android.text.TextUtils.TruncateAt.END
+                        minWidth = 0
+                        layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
                     }
-                    card.addView(text(item.optString("name"), 14, true), LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
-                    card.addView(state)
+                    card.addView(nameView)
                     val check = CheckBox(this).apply {
                         isChecked = item.optBoolean("available", true)
-                        contentDescription = "Availability for ${item.optString("name")}"
-                        minWidth = 0
-                        minHeight = dp(48)
+                        contentDescription = "Availability for $itemName"
+                        layoutParams = LinearLayout.LayoutParams(dp(48), dp(48)).apply {
+                            marginStart = dp(4)
+                            marginEnd = dp(4)
+                        }
                         setPadding(0, 0, 0, 0)
                     }
+                    card.addView(check)
+                    val state = text(if (item.optBoolean("available", true)) "Available" else "Unavailable", 11, true).apply {
+                        setTextColor(if (item.optBoolean("available", true)) Color.rgb(40, 122, 70) else Color.rgb(179, 38, 30))
+                        gravity = Gravity.CENTER or Gravity.END
+                        layoutParams = LinearLayout.LayoutParams(dp(92), LinearLayout.LayoutParams.WRAP_CONTENT)
+                        maxLines = 1
+                    }
+                    card.addView(state)
                     check.setOnCheckedChangeListener { _, checked ->
                         state.text = if (checked) "Available" else "Unavailable"
                         state.setTextColor(if (checked) Color.rgb(40, 122, 70) else Color.rgb(179, 38, 30))
-                        status.text = "Saving ${item.optString("name")}…"
-                        lifecycleScope.launch {
-                            runCatching { api.updateAvailability(store.baseUrl, store.token, item.optInt("id"), checked) }
-                                .onSuccess { status.text = "Saved — live for guests and staff." }
-                                .onFailure { status.text = it.message ?: "Availability update failed"; check.setOnCheckedChangeListener(null); check.isChecked = !checked }
-                        }
+                        item.put("available", checked)
+                        val itemId = item.optInt("id")
+                        if (savedAvailability[itemId] == checked) pendingAvailability.remove(itemId) else pendingAvailability[itemId] = checked
+                        status.text = if (pendingAvailability.isEmpty()) "Select items, then tap Save Availability." else "${pendingAvailability.size} unsaved change${if (pendingAvailability.size == 1) "" else "s"}."
+                        updateSaveFooter()
                     }
-                    card.addView(check); itemList.addView(card)
+                    itemList.addView(card)
                 }
                 list.addView(itemList)
             }
@@ -1022,10 +1087,14 @@ class MainActivity : AppCompatActivity() {
         binding.workspaceNav.visibility = if (loggedIn) View.VISIBLE else View.GONE
         binding.workspaceScroll.visibility = if (loggedIn) View.VISIBLE else View.GONE
         binding.tableCartBar.visibility = if (loggedIn && activeTab == "table") View.VISIBLE else View.GONE
+        binding.availabilitySaveBar.visibility = if (loggedIn && activeTab == "availability") View.VISIBLE else View.GONE
         val capabilities = workspaceJson?.optJSONObject("capabilities")
         binding.tableOrderingTabButton.visibility = if (!loggedIn || capabilities?.optBoolean("can_manage_orders", true) != false) View.VISIBLE else View.GONE
         binding.availabilityTabButton.visibility = if (!loggedIn || capabilities?.optBoolean("can_manage_availability", true) != false) View.VISIBLE else View.GONE
-        if (loggedIn) updateNavSelection(activeTab) else binding.workspaceContent.removeAllViews()
+        if (loggedIn) updateNavSelection(activeTab) else {
+            binding.workspaceContent.removeAllViews()
+            availabilitySaveAction = null
+        }
     }
 
     private fun showLoading(message: String) {

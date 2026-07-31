@@ -255,6 +255,26 @@ class InventoryItem(TimestampMixin, db.Model):
     vendor = db.relationship("InventoryVendor", backref="items")
 
 
+class InventoryMovement(TimestampMixin, db.Model):
+    """Immutable audit entry for every operational stock change."""
+
+    id = db.Column(db.Integer, primary_key=True)
+    item_id = db.Column(db.Integer, db.ForeignKey("inventory_item.id"), nullable=False)
+    movement_type = db.Column(db.String(30), nullable=False)
+    quantity_delta = db.Column(db.Float, nullable=False, default=0)
+    quantity_before = db.Column(db.Float, nullable=False, default=0)
+    quantity_after = db.Column(db.Float, nullable=False, default=0)
+    unit = db.Column(db.String(20), nullable=False, default="pcs")
+    workstation_slug = db.Column(db.String(80), nullable=True)
+    storage_location = db.Column(db.String(120), nullable=True)
+    reference_type = db.Column(db.String(40), nullable=True)
+    reference_id = db.Column(db.Integer, nullable=True)
+    reason = db.Column(db.String(255), nullable=True)
+    created_by_user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=True)
+    item = db.relationship("InventoryItem", backref="movements")
+    created_by = db.relationship("User", backref="inventory_movements")
+
+
 class InventoryCategory(TimestampMixin, db.Model):
     id = db.Column(db.Integer, primary_key=True)
     name = db.Column(db.String(80), unique=True, nullable=False)
@@ -357,6 +377,7 @@ class InventoryExpenseLog(TimestampMixin, db.Model):
     entry_date = db.Column(db.Date, nullable=False, default=date.today)
     category_id = db.Column(db.Integer, db.ForeignKey("inventory_category.id"), nullable=False)
     vendor_id = db.Column(db.Integer, db.ForeignKey("inventory_vendor.id"), nullable=True)
+    workstation_slug = db.Column(db.String(80), nullable=True)
     amount = db.Column(db.Float, nullable=False, default=0)
     transaction_mode = db.Column(db.String(20), nullable=True)
     note = db.Column(db.String(255), nullable=True)
@@ -369,6 +390,10 @@ class InventoryExpenseLog(TimestampMixin, db.Model):
 class InventoryToPurchase(TimestampMixin, db.Model):
     id = db.Column(db.Integer, primary_key=True)
     item_name = db.Column(db.String(120), nullable=False)
+    inventory_item_id = db.Column(db.Integer, db.ForeignKey("inventory_item.id"), nullable=True)
+    workstation_slug = db.Column(db.String(80), nullable=True)
+    quantity_amount = db.Column(db.Float, nullable=True)
+    quantity_unit = db.Column(db.String(20), nullable=True)
     category_id = db.Column(db.Integer, db.ForeignKey("inventory_category.id"), nullable=True)
     quantity_note = db.Column(db.String(80), nullable=True)
     note = db.Column(db.String(255), nullable=True)
@@ -380,6 +405,7 @@ class InventoryToPurchase(TimestampMixin, db.Model):
     closed_at = db.Column(db.DateTime, nullable=True)
     closed_by_user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=True)
     category = db.relationship("InventoryCategory", backref="purchase_todos")
+    inventory_item = db.relationship("InventoryItem", backref="purchase_todos")
     created_by = db.relationship("User", foreign_keys=[created_by_user_id], backref="created_inventory_purchase_todos")
     completed_by = db.relationship("User", foreign_keys=[completed_by_user_id], backref="completed_inventory_purchase_todos")
     closed_by = db.relationship("User", foreign_keys=[closed_by_user_id], backref="closed_inventory_purchase_todos")

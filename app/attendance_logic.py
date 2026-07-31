@@ -1,5 +1,7 @@
 import math
+from collections import defaultdict
 from datetime import date, datetime, time, timedelta
+from types import SimpleNamespace
 
 
 ATTENDANCE_STATUS_LABELS = {
@@ -92,14 +94,114 @@ def attendance_datetime_for(date_value: date, value: str | None):
     return datetime.combine(date_value, parsed.time())
 
 
-def worked_minutes_for_row(row) -> int:
-    if not row or not row.check_in_at or not row.check_out_at:
+def worked_minutes_for_row(row, *, now: datetime | None = None) -> int:
+    override = getattr(row, "_worked_minutes_override", None) if row else None
+    if override is not None:
+        return max(0, int(override))
+    if not row or not row.check_in_at:
         return 0
-    return max(0, int((row.check_out_at - row.check_in_at).total_seconds() // 60))
+    end = row.check_out_at or now
+    if not end:
+        return 0
+    return max(0, int((end - row.check_in_at).total_seconds() // 60))
 
 
 def worked_hours_for_row(row) -> float:
     return round(worked_minutes_for_row(row) / 60, 2)
+
+
+def calculate_status_from_worked_minutes(row, worked_minutes: int, *, has_open_session: bool = False) -> str:
+    """Classify a whole day from the sum of all its attendance sessions."""
+    if not row:
+        return "absent"
+    if has_open_session:
+        return "pending_correction"
+    required_minutes = shift_required_minutes_for_row(row)
+    present_minutes = math.ceil(required_minutes * 0.85)
+    half_day_minutes = math.ceil(required_minutes * 0.50)
+    short_attendance_minutes = math.ceil(required_minutes * 0.25)
+    if worked_minutes >= present_minutes:
+        return "present_all_day"
+    if worked_minutes >= half_day_minutes:
+        return "first_half"
+    if worked_minutes >= short_attendance_minutes:
+        return "short_attendance"
+    return "absent"
+
+
+def aggregate_attendance_rows(rows: list, *, now: datetime | None = None) -> list:
+    """Return one report row per user/day without discarding split sessions.
+
+    Geofence attendance intentionally stores each check-in/check-out interval.
+    The web and mobile reports need a daily view, so this creates a lightweight
+    report object with the first check-in, final check-out, total minutes, and
+    the original ``session_rows`` for timeline rendering.
+    """
+    now = now or datetime.now()
+    groups = defaultdict(list)
+    for row in rows or []:
+        if row and row.attendance_date is not None:
+            groups[(row.user_id, row.attendance_date)].append(row)
+
+    aggregated = []
+    for _, sessions in sorted(groups.items(), key=lambda item: item[0][1], reverse=True):
+        sessions.sort(key=lambda row: (row.check_in_at or datetime.min, row.id or 0))
+        first = sessions[0]
+        checkins = [row.check_in_at for row in sessions if row.check_in_at]
+        checkouts = [row.check_out_at for row in sessions if row.check_out_at]
+        has_open_session = any(row.check_in_at and not row.check_out_at for row in sessions)
+        total_minutes = sum(worked_minutes_for_row(row, now=now) for row in sessions)
+        manual_rows = [row for row in sessions if getattr(row, "manager_override", False)]
+        status_row = manual_rows[-1] if manual_rows else first
+        status = (
+            status_row.status
+            if manual_rows and status_row.status
+            else calculate_status_from_worked_minutes(
+                status_row,
+                total_minutes,
+                has_open_session=has_open_session,
+            )
+        )
+        last = sessions[-1]
+        reasons = []
+        for row in sessions:
+            reason = (getattr(row, "auto_checkout_reason", None) or "").strip()
+            if reason and reason not in reasons:
+                reasons.append(reason)
+        aggregated.append(
+            SimpleNamespace(
+                id=last.id,
+                user_id=last.user_id,
+                user=getattr(first, "user", None),
+                attendance_date=last.attendance_date,
+                status=status,
+                check_in_at=min(checkins) if checkins else None,
+                check_out_at=None if has_open_session else (max(checkouts) if checkouts else None),
+                manager_override=bool(manual_rows),
+                check_in_lat=next((row.check_in_lat for row in sessions if row.check_in_lat is not None), None),
+                check_in_lng=next((row.check_in_lng for row in sessions if row.check_in_lng is not None), None),
+                check_in_distance_m=next((row.check_in_distance_m for row in sessions if row.check_in_distance_m is not None), None),
+                check_in_method=next((row.check_in_method for row in sessions if row.check_in_method), None),
+                check_out_lat=getattr(last, "check_out_lat", None),
+                check_out_lng=getattr(last, "check_out_lng", None),
+                check_out_distance_m=getattr(last, "check_out_distance_m", None),
+                check_out_method=next((row.check_out_method for row in reversed(sessions) if row.check_out_method), None),
+                last_heartbeat_at=max(
+                    (row.last_heartbeat_at for row in sessions if row.last_heartbeat_at),
+                    default=None,
+                ),
+                last_heartbeat_lat=getattr(last, "last_heartbeat_lat", None),
+                last_heartbeat_lng=getattr(last, "last_heartbeat_lng", None),
+                last_heartbeat_distance_m=getattr(last, "last_heartbeat_distance_m", None),
+                mobile_device_id=next((row.mobile_device_id for row in reversed(sessions) if row.mobile_device_id), None),
+                auto_checkout_reason=", ".join(reasons) or None,
+                notes=next((row.notes for row in reversed(sessions) if row.notes), None),
+                _worked_minutes_override=total_minutes,
+                session_count=len(sessions),
+                session_rows=sessions,
+            )
+        )
+    return aggregated
 
 
 def late_minutes_for_row(row, grace_minutes: int = LATE_GRACE_MINUTES) -> int:

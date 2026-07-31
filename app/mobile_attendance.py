@@ -7,7 +7,7 @@ from zoneinfo import ZoneInfo
 from flask import Blueprint, Response, current_app, g, jsonify, request
 from werkzeug.security import check_password_hash
 
-from .attendance_logic import attendance_status_label, refresh_attendance_row, shift_window_for_profile
+from .attendance_logic import attendance_status_label, refresh_attendance_row, shift_window_for_profile, worked_minutes_for_row
 from .deploy_config import load_deployment_config
 from .extensions import db
 from .models import StaffAttendance, StaffMobileSession, User
@@ -187,8 +187,7 @@ def _attendance_row_payload(row: StaffAttendance | None) -> dict | None:
     # Database timestamps are intentionally naive and represent IST. Keep the
     # duration calculation in that same representation; mixing an aware IST
     # value with a naive DB value raises during bootstrap/check-in.
-    duration_end = row.check_out_at or _ist_now_naive()
-    worked_minutes = max(0, int((duration_end - row.check_in_at).total_seconds() // 60)) if row.check_in_at else 0
+    worked_minutes = worked_minutes_for_row(row, now=_ist_now_naive())
     duration_hours, duration_remainder = divmod(worked_minutes, 60)
     return {
         "attendance_id": row.id,
@@ -400,25 +399,20 @@ def mobile_check_in():
             403,
         )
     today = datetime.now(IST_TZ).date()
-    completed_today = (
-        StaffAttendance.query.filter_by(user_id=g.mobile_user.id, attendance_date=today)
-        .order_by(StaffAttendance.check_in_at.desc(), StaffAttendance.id.desc())
-        .first()
-    )
-    if completed_today and completed_today.check_in_at and completed_today.check_out_at:
-        # An Android auto-checkout is a recoverable session boundary. GPS can
-        # briefly report a false exit, and staff may also leave and return on
-        # the same day. A manual/admin checkout remains final for the day.
-        automatic_checkout = (
-            (completed_today.check_out_method or "").startswith("android_auto_app")
-            or bool(completed_today.auto_checkout_reason)
-        )
-        if not automatic_checkout or completed_today.manager_override:
-            return _api_error("Today's attendance was completed manually. Ask admin if a correction is needed.", 409)
-        completed_today = None
-    row = completed_today or StaffAttendance(user_id=g.mobile_user.id, attendance_date=today)
-    if row.id is None:
-        db.session.add(row)
+    completed_today = StaffAttendance.query.filter(
+        StaffAttendance.user_id == g.mobile_user.id,
+        StaffAttendance.attendance_date == today,
+        StaffAttendance.check_in_at.is_not(None),
+        StaffAttendance.check_out_at.is_not(None),
+    ).all()
+    if any(row.manager_override for row in completed_today):
+        return _api_error("Today's attendance was completed manually. Ask admin if a correction is needed.", 409)
+
+    # Every geofence re-entry is a new session. Reusing the last closed row
+    # overwrote the earlier interval and made daily totals show only the last
+    # slot. Daily reports aggregate these rows without losing the intervals.
+    row = StaffAttendance(user_id=g.mobile_user.id, attendance_date=today)
+    db.session.add(row)
     event_time = _parse_client_datetime(payload.get("captured_at"))
     row.check_in_at = event_time
     row.check_out_at = None

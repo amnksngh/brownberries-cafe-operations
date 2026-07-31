@@ -23,8 +23,10 @@ from .attendance_logic import (
     attendance_flags_for_row,
     attendance_pay_fraction,
     attendance_status_label,
+    aggregate_attendance_rows,
     build_attendance_summary,
     refresh_attendance_row,
+    worked_minutes_for_row,
     worked_hours_for_row,
 )
 from .auth_helpers import login_required, roles_required, user_has_any_role, user_has_permission
@@ -51,6 +53,7 @@ from .models import (
     InventoryCategory,
     InventoryExpenseLog,
     InventoryItem,
+    InventoryMovement,
     InventoryDailyClosing,
     InventoryPurchase,
     InventoryPurchaseLine,
@@ -1756,7 +1759,17 @@ def _apply_recipe_inventory_deduction(order: CafeOrder):
             if not inv_item:
                 continue
             deduct_qty = float(ing.qty_per_menu or 0) * float(qty)
-            inv_item.current_amount = round(max(0.0, float(inv_item.current_amount or 0) - deduct_qty), 3)
+            before = float(inv_item.current_amount or 0)
+            inv_item.current_amount = round(max(0.0, before - deduct_qty), 3)
+            _record_inventory_movement(
+                inv_item,
+                before=before,
+                after=inv_item.current_amount,
+                movement_type="consumption",
+                reason=f"Recipe consumption for order {order.id}",
+                reference_type="order",
+                reference_id=order.id,
+            )
 
 
 def _receipt_link_for_order(order: CafeOrder) -> str:
@@ -2245,6 +2258,9 @@ def update_attendance_settings():
         return redirect(url_for("cafe.home"))
     if radius_m < 20 or radius_m > 10000:
         flash("Attendance geofence radius must be between 20 and 10000 meters.", "error")
+        return redirect(url_for("cafe.home"))
+    if not -90 <= cafe_lat <= 90 or not -180 <= cafe_lng <= 180:
+        flash("Cafe latitude must be between -90 and 90, and longitude must be between -180 and 180.", "error")
         return redirect(url_for("cafe.home"))
     if not 0 <= leniency_minutes <= 120:
         flash("Attendance leniency must be between 0 and 120 minutes.", "error")
@@ -2776,6 +2792,8 @@ def update_workstation(workstation_id):
     workstation.active = True if request.form.get("active") else False
     if old_slug != slug:
         MenuItem.query.filter_by(prep_station=old_slug).update({"prep_station": slug}, synchronize_session=False)
+        InventoryExpenseLog.query.filter_by(workstation_slug=old_slug).update({"workstation_slug": slug}, synchronize_session=False)
+        InventoryToPurchase.query.filter_by(workstation_slug=old_slug).update({"workstation_slug": slug}, synchronize_session=False)
     db.session.commit()
     flash("Workstation updated.", "success")
     return redirect(url_for("cafe.menu"))
@@ -2787,6 +2805,8 @@ def delete_workstation(workstation_id):
     _ensure_workstations_seeded()
     workstation = Workstation.query.get_or_404(workstation_id)
     MenuItem.query.filter_by(prep_station=workstation.slug).update({"prep_station": ""}, synchronize_session=False)
+    InventoryExpenseLog.query.filter_by(workstation_slug=workstation.slug).update({"workstation_slug": "unassigned"}, synchronize_session=False)
+    InventoryToPurchase.query.filter_by(workstation_slug=workstation.slug).update({"workstation_slug": "unassigned"}, synchronize_session=False)
     db.session.delete(workstation)
     db.session.commit()
     flash("Workstation deleted. Linked menu items are now unassigned.", "success")
@@ -4422,6 +4442,73 @@ def _inventory_item_status(item: InventoryItem):
     return "healthy"
 
 
+def _next_inventory_item_code() -> str:
+    """Return the next stable human-readable inventory code."""
+    used_codes = {
+        (value or "").strip().upper()
+        for (value,) in InventoryItem.query.with_entities(InventoryItem.item_code).all()
+        if (value or "").strip()
+    }
+    highest = 0
+    for code in used_codes:
+        prefix, separator, number = code.partition("-")
+        if prefix == "INV" and separator and number.isdigit():
+            highest = max(highest, int(number))
+    next_number = highest + 1
+    candidate = f"INV-{next_number:05d}"
+    while candidate in used_codes:
+        next_number += 1
+        candidate = f"INV-{next_number:05d}"
+    return candidate
+
+
+def _ensure_inventory_item_codes() -> None:
+    missing_items = InventoryItem.query.filter(
+        db.or_(InventoryItem.item_code.is_(None), db.func.trim(InventoryItem.item_code) == "")
+    ).order_by(InventoryItem.id.asc()).all()
+    if not missing_items:
+        return
+    for item in missing_items:
+        item.item_code = _next_inventory_item_code()
+    db.session.commit()
+
+
+def _record_inventory_movement(
+    item: InventoryItem,
+    *,
+    before: float,
+    after: float,
+    movement_type: str,
+    reason: str | None = None,
+    reference_type: str | None = None,
+    reference_id: int | None = None,
+    workstation_slug: str | None = None,
+    storage_location: str | None = None,
+) -> InventoryMovement | None:
+    """Record the actual stock delta after an operation has been applied."""
+    before = round(float(before or 0), 3)
+    after = round(float(after or 0), 3)
+    delta = round(after - before, 3)
+    if delta == 0:
+        return None
+    row = InventoryMovement(
+        item_id=item.id,
+        movement_type=(movement_type or "adjustment").strip().lower(),
+        quantity_delta=delta,
+        quantity_before=before,
+        quantity_after=after,
+        unit=item.unit or "pcs",
+        workstation_slug=(workstation_slug or item.area or "cafe").strip().lower() or None,
+        storage_location=(storage_location if storage_location is not None else item.storage_location) or None,
+        reference_type=reference_type,
+        reference_id=reference_id,
+        reason=(reason or "").strip() or None,
+        created_by_user_id=g.current_user.id if getattr(g, "current_user", None) else None,
+    )
+    db.session.add(row)
+    return row
+
+
 def _inventory_filtered_items(items, search_text: str, area_filter: str, category_filter: str, status_filter: str):
     filtered = []
     q = search_text.strip().lower()
@@ -4506,6 +4593,7 @@ def _purchase_todo_payloads():
     active_rows = (
         InventoryToPurchase.query.options(
             joinedload(InventoryToPurchase.category),
+            joinedload(InventoryToPurchase.inventory_item),
             joinedload(InventoryToPurchase.created_by),
             joinedload(InventoryToPurchase.completed_by),
             joinedload(InventoryToPurchase.closed_by),
@@ -4520,6 +4608,7 @@ def _purchase_todo_payloads():
     history_rows = (
         InventoryToPurchase.query.options(
             joinedload(InventoryToPurchase.category),
+            joinedload(InventoryToPurchase.inventory_item),
             joinedload(InventoryToPurchase.created_by),
             joinedload(InventoryToPurchase.completed_by),
             joinedload(InventoryToPurchase.closed_by),
@@ -4535,6 +4624,17 @@ def _purchase_todo_payloads():
             "item_name": row.item_name,
             "category_name": row.category.name if row.category else "",
             "quantity_note": row.quantity_note or "",
+            "inventory_item_id": row.inventory_item_id,
+            "workstation_slug": row.workstation_slug or "unassigned",
+            "workstation_name": _workstation_display_name(row.workstation_slug),
+            "quantity_amount": float(row.quantity_amount) if row.quantity_amount is not None else None,
+            "quantity_unit": row.quantity_unit or (row.inventory_item.unit if row.inventory_item else ""),
+            "purchase_price": float(row.inventory_item.purchase_price or 0) if row.inventory_item else 0.0,
+            "quantity_display": (
+                f"{float(row.quantity_amount):g} {row.quantity_unit or (row.inventory_item.unit if row.inventory_item else '')}".strip()
+                if row.quantity_amount is not None
+                else (row.quantity_note or "")
+            ),
             "note": row.note or "",
             "status": row.status,
             "created_by_name": row.created_by.full_name if row.created_by else "-",
@@ -4549,6 +4649,14 @@ def _purchase_todo_payloads():
             "item_name": row.item_name,
             "category_name": row.category.name if row.category else "-",
             "quantity_note": row.quantity_note or "",
+            "inventory_item_id": row.inventory_item_id,
+            "workstation_slug": row.workstation_slug or "unassigned",
+            "workstation_name": _workstation_display_name(row.workstation_slug),
+            "quantity_display": (
+                f"{float(row.quantity_amount):g} {row.quantity_unit or (row.inventory_item.unit if row.inventory_item else '')}".strip()
+                if row.quantity_amount is not None
+                else (row.quantity_note or "")
+            ),
             "status": row.status.replace("_", " ").title(),
             "created_by_name": row.created_by.full_name if row.created_by else "-",
             "closed_by_name": row.closed_by.full_name if row.closed_by else "-",
@@ -4565,12 +4673,13 @@ def _dedupe_active_purchase_todos():
         .order_by(InventoryToPurchase.created_at.asc(), InventoryToPurchase.id.asc())
         .all()
     )
-    seen: set[tuple[str, str]] = set()
+    seen: set[tuple[str, str, str]] = set()
     changed = False
     for row in rows:
         key = (
-            (row.item_name or "").strip().lower(),
-            (row.quantity_note or "").strip().lower(),
+            str(row.inventory_item_id or (row.item_name or "").strip().lower()),
+            (row.workstation_slug or "unassigned").strip().lower(),
+            (row.quantity_unit or row.quantity_note or "").strip().lower(),
         )
         if not key[0]:
             continue
@@ -4592,30 +4701,56 @@ def to_purchase():
         action = (request.form.get("action") or "add_batch_to_purchase").strip().lower()
 
         if action == "add_batch_to_purchase":
+            item_ids = request.form.getlist("inventory_item_id[]")
             item_names = request.form.getlist("item_name[]")
-            quantities = request.form.getlist("quantity_note[]")
+            quantities = request.form.getlist("quantity_amount[]")
+            quantity_notes = request.form.getlist("quantity_note[]")
+            units = request.form.getlist("quantity_unit[]")
+            workstations = request.form.getlist("workstation_slug[]")
+            notes = request.form.getlist("note[]")
             added = 0
-            for idx, raw_name in enumerate(item_names):
-                item_name = (raw_name or "").strip()
-                quantity_note = (quantities[idx] if idx < len(quantities) else "").strip()
-                if not item_name or not quantity_note:
+            for idx, raw_id in enumerate(item_ids):
+                item = InventoryItem.query.get(_safe_int(raw_id, 0)) if raw_id else None
+                item_name = item.name if item else ((item_names[idx] if idx < len(item_names) else "") or "").strip()
+                raw_quantity = (quantities[idx] if idx < len(quantities) else "").strip()
+                quantity_note = (quantity_notes[idx] if idx < len(quantity_notes) else "").strip()
+                workstation_slug = (workstations[idx] if idx < len(workstations) else "").strip().lower() or "unassigned"
+                if workstation_slug != "unassigned" and workstation_slug not in _workstation_slug_set(include_inactive=True):
+                    workstation_slug = "unassigned"
+                quantity_unit = (units[idx] if idx < len(units) else "").strip() or (item.unit if item else "pcs")
+                quantity_amount = _safe_float(raw_quantity, 0) if raw_quantity else 0
+                note = (notes[idx] if idx < len(notes) else "").strip() or None
+                if not item_name or (quantity_amount <= 0 and not quantity_note):
                     continue
-                existing = InventoryToPurchase.query.filter(
-                    InventoryToPurchase.active.is_(True),
-                    db.func.lower(db.func.trim(InventoryToPurchase.item_name)) == item_name.lower(),
-                    db.func.lower(db.func.trim(db.func.coalesce(InventoryToPurchase.quantity_note, ""))) == quantity_note.lower(),
-                ).first()
-                if existing:
-                    continue
-                db.session.add(
-                    InventoryToPurchase(
-                        item_name=item_name,
-                        quantity_note=quantity_note,
-                        status="open",
+                existing = None
+                if item and quantity_amount > 0:
+                    existing = InventoryToPurchase.query.filter_by(
                         active=True,
-                        created_by_user_id=g.current_user.id if g.current_user else None,
+                        inventory_item_id=item.id,
+                        workstation_slug=workstation_slug,
+                        quantity_unit=quantity_unit,
+                        status="open",
+                    ).first()
+                if existing:
+                    existing.quantity_amount = round(float(existing.quantity_amount or 0) + quantity_amount, 3)
+                    if note:
+                        existing.note = "; ".join(filter(None, [existing.note, note]))[:255]
+                else:
+                    db.session.add(
+                        InventoryToPurchase(
+                            item_name=item_name,
+                            inventory_item_id=item.id if item else None,
+                            workstation_slug=workstation_slug,
+                            quantity_amount=round(quantity_amount, 3) if quantity_amount > 0 else None,
+                            quantity_unit=quantity_unit if quantity_amount > 0 else None,
+                            quantity_note=quantity_note or None,
+                            note=note,
+                            category_id=item.category_id if item and hasattr(item, "category_id") else None,
+                            status="open",
+                            active=True,
+                            created_by_user_id=g.current_user.id if g.current_user else None,
+                        )
                     )
-                )
                 added += 1
             if added == 0:
                 flash("Please enter at least one item with quantity.", "error")
@@ -4665,10 +4800,14 @@ def to_purchase():
 
     _dedupe_active_purchase_todos()
     purchase_todos_active, purchase_todos_history = _purchase_todo_payloads()
+    inventory_items = InventoryItem.query.order_by(InventoryItem.name.asc()).all()
+    workstation_options = _all_workstations()
     return render_template(
         "cafe/to_purchase.html",
         purchase_todos_active=purchase_todos_active,
         purchase_todos_history=purchase_todos_history,
+        inventory_items=inventory_items,
+        workstation_options=workstation_options,
     )
 
 
@@ -4677,11 +4816,13 @@ def to_purchase():
 def inventory():
     section = (request.args.get("section") or "dashboard").strip().lower()
     allowed_sections = {
-        "dashboard", "daily_closing", "stock_levels", "purchases", "vendors",
-        "recipes", "wastage", "analytics", "categories", "settings", "to_purchase"
+        "dashboard", "daily_closing", "stock_levels", "items", "purchases", "vendors",
+        "recipes", "wastage", "analytics", "categories", "settings", "to_purchase", "movements"
     }
     if section not in allowed_sections:
         section = "dashboard"
+
+    _ensure_inventory_item_codes()
 
     if request.method == "POST":
         action = (request.form.get("action") or "").strip().lower()
@@ -4692,6 +4833,9 @@ def inventory():
             transaction_mode = (request.form.get("transaction_mode") or "qr").strip().lower()
             if transaction_mode not in {"cash", "card", "qr"}:
                 transaction_mode = "qr"
+            workstation_slug = (request.form.get("workstation_slug") or "").strip().lower() or "unassigned"
+            if workstation_slug != "unassigned" and workstation_slug not in _workstation_slug_set(include_inactive=True):
+                workstation_slug = "unassigned"
             entry_date_raw = (request.form.get("entry_date") or "").strip()
             try:
                 entry_date = date.fromisoformat(entry_date_raw) if entry_date_raw else date.today()
@@ -4707,6 +4851,7 @@ def inventory():
                 entry_date=entry_date,
                 category_id=category_id,
                 vendor_id=vendor_id,
+                workstation_slug=workstation_slug,
                 amount=round(amount, 2),
                 transaction_mode=transaction_mode,
                 note=(request.form.get("note") or "").strip() or None,
@@ -4718,42 +4863,40 @@ def inventory():
             return redirect(url_for("cafe.inventory", section="dashboard", period=request.args.get("period") or "today"))
 
         if action == "add_item":
-            item = InventoryItem(
-                item_code=(request.form.get("item_code") or "").strip() or None,
-                area=_normalize_inventory_area(request.form.get("area")),
-                name=request.form.get("name", "").strip(),
-                category_name=(request.form.get("category_name") or "").strip() or None,
-                subcategory_name=(request.form.get("subcategory_name") or "").strip() or None,
-                unit=(request.form.get("unit") or "pcs").strip(),
-                current_amount=_safe_float(request.form.get("current_amount"), 0),
-                required_amount=_safe_float(request.form.get("required_amount"), 0),
-                reorder_level=_safe_float(request.form.get("reorder_level"), 0),
-                average_daily_usage=_safe_float(request.form.get("average_daily_usage"), 0),
-                purchase_price=_safe_float(request.form.get("purchase_price"), 0),
-                selling_relation=(request.form.get("selling_relation") or "").strip() or None,
-                shelf_life_days=_safe_int(request.form.get("shelf_life_days"), 0) if request.form.get("shelf_life_days") else None,
-                expiry_tracking=True if request.form.get("expiry_tracking") else False,
-                storage_location=(request.form.get("storage_location") or "").strip() or None,
-                vendor_id=int(request.form.get("vendor_id")) if request.form.get("vendor_id") else None,
-                note=(request.form.get("note") or "").strip() or None,
-            )
-            if not item.name:
+            item_name = (request.form.get("name") or "").strip()
+            category_name = (request.form.get("category_name") or "").strip()
+            unit = (request.form.get("unit") or "").strip()
+            storage_location = (request.form.get("storage_location") or "").strip() or None
+            if not item_name:
                 flash("Item name is required.", "error")
-                return redirect(url_for("cafe.inventory", section="stock_levels"))
+                return redirect(url_for("cafe.inventory", section="items"))
+            if category_name not in {"Perishable", "Non-perishable"}:
+                flash("Choose either Perishable or Non-perishable.", "error")
+                return redirect(url_for("cafe.inventory", section="items"))
+            if not unit:
+                flash("Unit is required.", "error")
+                return redirect(url_for("cafe.inventory", section="items"))
+            item = InventoryItem(
+                area=_normalize_inventory_area("cafe"),
+                name=item_name,
+                category_name=category_name,
+                unit=unit,
+                storage_location=storage_location,
+            )
             db.session.add(item)
+            item.item_code = _next_inventory_item_code()
             db.session.commit()
             flash("Inventory item added.", "success")
-            return redirect(url_for("cafe.inventory", section="stock_levels"))
+            return redirect(url_for("cafe.inventory", section="items"))
 
         if action == "update_item":
             item = InventoryItem.query.get_or_404(_safe_int(request.form.get("item_id"), 0))
-            item.item_code = (request.form.get("item_code") or "").strip() or None
-            item.name = (request.form.get("name") or "").strip()
             item.category_name = (request.form.get("category_name") or "").strip() or None
             item.subcategory_name = (request.form.get("subcategory_name") or "").strip() or None
             item.area = _normalize_inventory_area(request.form.get("area"), item.area)
             item.unit = (request.form.get("unit") or item.unit or "pcs").strip()
-            item.current_amount = _safe_float(request.form.get("current_amount"), item.current_amount or 0)
+            previous_amount = float(item.current_amount or 0)
+            item.current_amount = max(0.0, _safe_float(request.form.get("current_amount"), previous_amount))
             item.reorder_level = _safe_float(request.form.get("reorder_level"), item.reorder_level or 0)
             item.required_amount = _safe_float(request.form.get("required_amount"), item.required_amount or 0)
             item.average_daily_usage = _safe_float(request.form.get("average_daily_usage"), item.average_daily_usage or 0)
@@ -4764,9 +4907,15 @@ def inventory():
             item.storage_location = (request.form.get("storage_location") or "").strip() or None
             item.selling_relation = (request.form.get("selling_relation") or "").strip() or None
             item.note = (request.form.get("note") or "").strip() or None
-            if not item.name:
-                flash("Item name is required.", "error")
-                return redirect(url_for("cafe.inventory", section="stock_levels", edit_item_id=item.id))
+            _record_inventory_movement(
+                item,
+                before=previous_amount,
+                after=item.current_amount,
+                movement_type="correction",
+                reason="Inventory item edit",
+                reference_type="inventory_item",
+                reference_id=item.id,
+            )
             db.session.commit()
             flash("Inventory item updated.", "success")
             return redirect(url_for("cafe.inventory", section="stock_levels", edit_item_id=item.id))
@@ -4777,7 +4926,20 @@ def inventory():
             if adjustment == 0:
                 flash("Enter a stock adjustment value.", "error")
                 return redirect(url_for("cafe.inventory", section="stock_levels"))
-            item.current_amount = round(max(0.0, float(item.current_amount or 0) + adjustment), 3)
+            before = float(item.current_amount or 0)
+            if adjustment < 0 and before + adjustment < 0:
+                flash(f"Insufficient stock for {item.name}. Stock cannot go below zero.", "error")
+                return redirect(url_for("cafe.inventory", section="stock_levels", edit_item_id=item.id))
+            item.current_amount = round(max(0.0, before + adjustment), 3)
+            _record_inventory_movement(
+                item,
+                before=before,
+                after=item.current_amount,
+                movement_type="adjustment",
+                reason="Manual stock adjustment",
+                reference_type="inventory_item",
+                reference_id=item.id,
+            )
             db.session.commit()
             flash("Stock adjusted.", "success")
             return redirect(url_for("cafe.inventory", section="stock_levels", edit_item_id=item.id))
@@ -4808,12 +4970,23 @@ def inventory():
                 if not row:
                     row = InventoryDailyClosing(item_id=item_id, closing_date=closing_date)
                     db.session.add(row)
+                    db.session.flush()
                 row.opening_stock = opening_stock
                 row.closing_stock = closing_stock
                 row.consumed_amount = consumed
                 row.variance_amount = variance
                 row.note = (request.form.get(f"closing_note_{item_id}") or "").strip() or None
+                before = float(item.current_amount or 0)
                 item.current_amount = closing_stock
+                _record_inventory_movement(
+                    item,
+                    before=before,
+                    after=item.current_amount,
+                    movement_type="count",
+                    reason=row.note or f"Daily closing {closing_date.isoformat()}",
+                    reference_type="daily_closing",
+                    reference_id=row.id if row.id else None,
+                )
             db.session.commit()
             flash("Daily closing saved.", "success")
             return redirect(url_for("cafe.inventory", section="daily_closing", closing_date=closing_date.isoformat()))
@@ -4857,12 +5030,23 @@ def inventory():
             return redirect(url_for("cafe.inventory", section="vendors", edit_vendor_id=vendor.id))
 
         if action == "add_to_purchase":
-            item_name = (request.form.get("item_name") or "").strip()
+            inventory_item = InventoryItem.query.get(_safe_int(request.form.get("inventory_item_id"), 0))
+            item_name = inventory_item.name if inventory_item else (request.form.get("item_name") or "").strip()
             if not item_name:
                 flash("Please enter an item to purchase.", "error")
                 return redirect(url_for("cafe.inventory", section="to_purchase"))
+            workstation_slug = (request.form.get("workstation_slug") or "").strip().lower() or "unassigned"
+            if workstation_slug != "unassigned" and workstation_slug not in _workstation_slug_set(include_inactive=True):
+                workstation_slug = "unassigned"
+            quantity_amount_raw = (request.form.get("quantity_amount") or "").strip()
+            quantity_amount = _safe_float(quantity_amount_raw, 0) if quantity_amount_raw else 0
+            quantity_unit = (request.form.get("quantity_unit") or (inventory_item.unit if inventory_item else "pcs")).strip()
             row = InventoryToPurchase(
                 item_name=item_name,
+                inventory_item_id=inventory_item.id if inventory_item else None,
+                workstation_slug=workstation_slug,
+                quantity_amount=round(quantity_amount, 3) if quantity_amount > 0 else None,
+                quantity_unit=quantity_unit if quantity_amount > 0 else None,
                 category_id=_safe_int(request.form.get("category_id"), 0) or None,
                 quantity_note=(request.form.get("quantity_note") or "").strip() or None,
                 note=(request.form.get("note") or "").strip() or None,
@@ -4944,9 +5128,19 @@ def inventory():
                 )
                 item = InventoryItem.query.get(item_id)
                 if item:
-                    item.current_amount = round(float(item.current_amount or 0) + qty, 3)
+                    before = float(item.current_amount or 0)
+                    item.current_amount = round(before + qty, 3)
                     if unit_price > 0:
                         item.purchase_price = unit_price
+                    _record_inventory_movement(
+                        item,
+                        before=before,
+                        after=item.current_amount,
+                        movement_type="purchase",
+                        reason=f"Purchase #{purchase.id}",
+                        reference_type="purchase",
+                        reference_id=purchase.id,
+                    )
                 subtotal += line_total
             purchase.subtotal = round(subtotal, 2)
             purchase.total_amount = round(subtotal + float(purchase.tax_amount or 0), 2)
@@ -4959,6 +5153,19 @@ def inventory():
             if menu_item_id <= 0:
                 flash("Please select a menu item.", "error")
                 return redirect(url_for("cafe.inventory", section="recipes"))
+            menu_item = MenuItem.query.get(menu_item_id)
+            if not menu_item:
+                flash("Selected menu item was not found.", "error")
+                return redirect(url_for("cafe.inventory", section="recipes"))
+            chef_user_id_raw = (request.form.get("chef_user_id") or "").strip()
+            if chef_user_id_raw:
+                chef_user = User.query.get(_safe_int(chef_user_id_raw, 0))
+                if not chef_user or not chef_user.active or not _is_preparation_responsibility_user(chef_user):
+                    flash("Please select an active Chef or Barista for recipe responsibility.", "error")
+                    return redirect(url_for("cafe.inventory", section="recipes"))
+                menu_item.chef_user_id = chef_user.id
+            else:
+                menu_item.chef_user_id = None
             recipe = InventoryRecipe.query.filter_by(menu_item_id=menu_item_id).first()
             if not recipe:
                 recipe = InventoryRecipe(menu_item_id=menu_item_id, yield_qty=1, active=True)
@@ -5011,7 +5218,22 @@ def inventory():
             db.session.add(wastage)
             item = InventoryItem.query.get(item_id)
             if item:
-                item.current_amount = round(max(0.0, float(item.current_amount or 0) - qty), 3)
+                before = float(item.current_amount or 0)
+                if qty > before:
+                    flash(f"Insufficient stock for {item.name}. Stock cannot go below zero.", "error")
+                    db.session.rollback()
+                    return redirect(url_for("cafe.inventory", section="wastage"))
+                item.current_amount = round(max(0.0, before - qty), 3)
+                db.session.flush()
+                _record_inventory_movement(
+                    item,
+                    before=before,
+                    after=item.current_amount,
+                    movement_type="wastage",
+                    reason=wastage.reason or "Wastage logged",
+                    reference_type="wastage",
+                    reference_id=wastage.id if wastage.id else None,
+                )
             db.session.commit()
             flash("Wastage logged.", "success")
             return redirect(url_for("cafe.inventory", section="wastage"))
@@ -5052,6 +5274,32 @@ def inventory():
     if inventory_period not in {key for key, _ in _inventory_period_options()}:
         inventory_period = "today"
     inventory_period_start, inventory_period_end = _inventory_period_bounds(inventory_period)
+    movement_start_utc = _utc_naive_from_ist(datetime.combine(inventory_period_start, time.min))
+    movement_end_utc = _utc_naive_from_ist(
+        datetime.combine(inventory_period_end + timedelta(days=1), time.min)
+    )
+    movement_rows = (
+        InventoryMovement.query.options(
+            joinedload(InventoryMovement.item),
+            joinedload(InventoryMovement.created_by),
+        )
+        .filter(
+            InventoryMovement.created_at >= movement_start_utc,
+            InventoryMovement.created_at < movement_end_utc,
+        )
+        .order_by(InventoryMovement.created_at.desc(), InventoryMovement.id.desc())
+        .limit(300)
+        .all()
+    )
+    movement_summary = {
+        "inbound": round(sum(float(row.quantity_delta or 0) for row in movement_rows if row.quantity_delta > 0), 3),
+        "outbound": round(sum(abs(float(row.quantity_delta or 0)) for row in movement_rows if row.quantity_delta < 0), 3),
+        "entries": len(movement_rows),
+    }
+    movement_time_map = {
+        row.id: _format_ist(row.created_at, "%d %b %Y, %I:%M:%S %p")
+        for row in movement_rows
+    }
     inventory_tracking_category_id = request.args.get("track_category_id", type=int) or 0
     inventory_area_options = _inventory_area_options(include_all=True)
     inventory_area_name_map = _inventory_area_name_map()
@@ -5105,6 +5353,7 @@ def inventory():
     recipe_payload_map = {
         recipe.menu_item_id: {
             "yield_qty": round(float(recipe.yield_qty or 0), 3),
+            "chef_user_id": recipe.menu_item.chef_user_id if recipe.menu_item else None,
             "yield_unit": recipe.yield_unit or "",
             "prep_time_minutes": int(recipe.prep_time_minutes or 0),
             "ingredients_note": recipe.ingredients_note or "",
@@ -5249,8 +5498,13 @@ def inventory():
         cursor += timedelta(days=1)
     max_timeline_amount = max([row["amount"] for row in timeline_rows], default=0.0)
 
-    paid_orders = CafeOrder.query.filter(CafeOrder.status == "paid").all()
+    paid_orders = (
+        CafeOrder.query.options(joinedload(CafeOrder.order_items).joinedload(CafeOrderItem.menu_item))
+        .filter(CafeOrder.status == "paid")
+        .all()
+    )
     period_revenue = 0.0
+    workstation_sales = {row["slug"]: 0.0 for row in _stats_station_registry(include_unassigned=True)}
     for order in paid_orders:
         revenue_dt = order.paid_at or order.created_at
         revenue_local = _ist_from_utc_naive(revenue_dt)
@@ -5259,6 +5513,15 @@ def inventory():
         revenue_date = revenue_local.date()
         if inventory_period_start <= revenue_date <= inventory_period_end:
             period_revenue = round(period_revenue + float(order.total_amount or 0), 2)
+            for order_item in order.order_items:
+                if (order_item.approval_status or "pending") == "rejected" or not order_item.menu_item:
+                    continue
+                station_slug = _station_slug_for_stats(order_item.menu_item.prep_station)
+                workstation_sales[station_slug] = round(
+                    workstation_sales.get(station_slug, 0.0)
+                    + float(order_item.unit_price or 0) * int(order_item.quantity or 0),
+                    2,
+                )
 
     total_period_expense = round(sum(float(row.amount or 0) for row in expense_logs), 2)
     expense_vs_earning = {
@@ -5266,6 +5529,68 @@ def inventory():
         "revenue": period_revenue,
         "difference": round(period_revenue - total_period_expense, 2),
     }
+    workstation_expenses = {row["slug"]: 0.0 for row in _stats_station_registry(include_unassigned=True)}
+    for log_row in expense_logs:
+        station_slug = (log_row.workstation_slug or "unassigned").strip().lower() or "unassigned"
+        workstation_expenses[station_slug] = round(
+            workstation_expenses.get(station_slug, 0.0) + float(log_row.amount or 0),
+            2,
+        )
+    workstation_financial_rows = []
+    for station in _stats_station_registry(include_unassigned=True):
+        sales = round(workstation_sales.get(station["slug"], 0.0), 2)
+        expenses = round(workstation_expenses.get(station["slug"], 0.0), 2)
+        workstation_financial_rows.append(
+            {
+                "slug": station["slug"],
+                "label": station["label"],
+                "sales": sales,
+                "expenses": expenses,
+                "net": round(sales - expenses, 2),
+                "expense_pct": round((expenses / sales) * 100, 2) if sales else 0.0,
+                "color": station["color"],
+            }
+        )
+    purchase_accumulated_map = {}
+    purchase_workstation_map = {}
+    for row in purchase_todos_active:
+        if row["status"] == "purchased" or row.get("quantity_amount") is None:
+            continue
+        item_key = row.get("inventory_item_id") or row["item_name"].strip().lower()
+        unit = row.get("quantity_unit") or "unit"
+        item_data = purchase_accumulated_map.setdefault(
+            item_key,
+            {
+                "item_name": row["item_name"],
+                "unit": unit,
+                "quantity": 0.0,
+                "estimated_cost": 0.0,
+                "workstations": set(),
+            },
+        )
+        item_data["quantity"] = round(item_data["quantity"] + float(row["quantity_amount"] or 0), 3)
+        item_data["estimated_cost"] = round(item_data["estimated_cost"] + float(row["quantity_amount"] or 0) * float(row.get("purchase_price") or 0), 2)
+        item_data["workstations"].add(row["workstation_name"])
+        station_data = purchase_workstation_map.setdefault(row["workstation_slug"], {"label": row["workstation_name"], "items": {}})
+        station_item = station_data["items"].setdefault(item_key, {"item_name": row["item_name"], "unit": unit, "quantity": 0.0})
+        station_item["quantity"] = round(station_item["quantity"] + float(row["quantity_amount"] or 0), 3)
+    purchase_accumulated_rows = [
+        {
+            **data,
+            "workstations": ", ".join(sorted(data["workstations"])),
+        }
+        for data in purchase_accumulated_map.values()
+    ]
+    purchase_accumulated_rows.sort(key=lambda row: row["item_name"].lower())
+    purchase_by_workstation = []
+    for station_data in purchase_workstation_map.values():
+        purchase_by_workstation.append(
+            {
+                "label": station_data["label"],
+                "items": sorted(station_data["items"].values(), key=lambda row: row["item_name"].lower()),
+            }
+        )
+    purchase_by_workstation.sort(key=lambda row: row["label"].lower())
     average_daily_expense = round(total_period_expense / max((inventory_period_end - inventory_period_start).days + 1, 1), 2)
     recent_expense_logs = [
         {
@@ -5275,6 +5600,7 @@ def inventory():
             "amount": round(float(row.amount or 0), 2),
             "transaction_mode": ((row.transaction_mode or "qr").strip().title() if (row.transaction_mode or "").strip() else "QR"),
             "logged_by": row.created_by.full_name if row.created_by else "-",
+            "workstation_name": _workstation_display_name(row.workstation_slug),
             "logged_at_ist": _format_ist(row.created_at, "%d %b %Y, %I:%M:%S %p"),
             "note": row.note or "",
         }
@@ -5310,6 +5636,8 @@ def inventory():
         inventory_period_start=inventory_period_start,
         inventory_period_end=inventory_period_end,
         inventory_tracking_category_id=inventory_tracking_category_id,
+        workstation_options=_all_workstations(),
+        chef_options=_chef_options(),
         inventory_area=inventory_area,
         inventory_area_options=inventory_area_options,
         inventory_area_name_map=inventory_area_name_map,
@@ -5322,6 +5650,9 @@ def inventory():
         recipe_payload_map=recipe_payload_map,
         expense_logs=expense_logs,
         recent_expense_logs=recent_expense_logs,
+        movement_rows=movement_rows,
+        movement_summary=movement_summary,
+        movement_time_map=movement_time_map,
         purchase_todos_active=purchase_todos_active,
         purchase_todos_history=purchase_todos_history,
         category_spend_rows=category_spend_rows,
@@ -5330,6 +5661,9 @@ def inventory():
         max_timeline_amount=max_timeline_amount,
         expense_vs_earning=expense_vs_earning,
         average_daily_expense=average_daily_expense,
+        workstation_financial_rows=workstation_financial_rows,
+        purchase_accumulated_rows=purchase_accumulated_rows,
+        purchase_by_workstation=purchase_by_workstation,
     )
 
 
@@ -5413,6 +5747,20 @@ def export_stats():
     ws3.append(["Average Order Value", kpi["revenue"]["average_order_value"]])
     for row in kpi["operations"]["workstation_rows"]:
         ws3.append([f'{row["label"]} Sales', row["sales"]])
+    ws4 = wb.create_sheet(title="Sales Patterns")
+    ws4.append(["Day of Week", "Revenue", "Orders"])
+    weekday_data = payload["orders_analytics"]["weekday_sales"]
+    for label, revenue, orders_count in zip(weekday_data["labels"], weekday_data["revenue"], weekday_data["orders"]):
+        ws4.append([label, revenue, orders_count])
+    ws4.append([])
+    ws4.append(["Week of Month", "Revenue", "Orders"])
+    week_data = payload["orders_analytics"]["week_of_month_sales"]
+    for label, revenue, orders_count in zip(week_data["labels"], week_data["revenue"], week_data["orders"]):
+        ws4.append([label, revenue, orders_count])
+    ws5 = wb.create_sheet(title="Responsibility")
+    ws5.append(["Staff Member", "Assigned Dishes", "Mapped Recipes", "Quantity Sold", "Paid Sales", "Contribution %"])
+    for row in payload["item_analytics"]["responsibility"]:
+        ws5.append([row["name"], row["assigned_dishes"], row["recipe_mapped_dishes"], row["sold_qty"], row["sales"], row["contribution_pct"]])
     from io import BytesIO
 
     output = BytesIO()
@@ -6269,6 +6617,28 @@ def _build_stats_payload(filters, use_cache=True):
     category_order_ids = {}
     customers = set()
     mobile_customers = set()
+    weekday_sales = {day_name: {"revenue": 0.0, "orders": 0} for day_name in calendar.day_name}
+    week_of_month_sales = {f"Week {week_number}": {"revenue": 0.0, "orders": 0} for week_number in range(1, 6)}
+    responsibility_stats = {}
+    assigned_menu_items = MenuItem.query.options(joinedload(MenuItem.chef)).filter(
+        MenuItem.chef_user_id.is_not(None),
+        MenuItem.is_deleted.is_(False),
+    ).all()
+    for assigned_item in assigned_menu_items:
+        if not assigned_item.chef:
+            continue
+        row = responsibility_stats.setdefault(
+            assigned_item.chef_user_id,
+            {
+                "user_id": assigned_item.chef_user_id,
+                "name": assigned_item.chef.full_name,
+                "assigned_dishes": 0,
+                "sold_qty": 0,
+                "sales": 0.0,
+                "recipe_mapped_dishes": 0,
+            },
+        )
+        row["assigned_dishes"] += 1
 
     for row in filtered_orders:
         order = row["order"]
@@ -6278,6 +6648,12 @@ def _build_stats_payload(filters, use_cache=True):
         bucket = _bucket_key(order_local_dt.replace(tzinfo=None), granularity)
         bucket_sales[bucket] = round(bucket_sales.get(bucket, 0.0) + row["matched_total"], 2)
         bucket_orders[bucket] = bucket_orders.get(bucket, 0) + 1
+        weekday_name = calendar.day_name[order_local_dt.weekday()]
+        weekday_sales[weekday_name]["revenue"] = round(weekday_sales[weekday_name]["revenue"] + row["matched_total"], 2)
+        weekday_sales[weekday_name]["orders"] += 1
+        week_name = f"Week {min(((order_local_dt.day - 1) // 7) + 1, 5)}"
+        week_of_month_sales[week_name]["revenue"] = round(week_of_month_sales[week_name]["revenue"] + row["matched_total"], 2)
+        week_of_month_sales[week_name]["orders"] += 1
         peak_hour_orders[order_local_dt.hour] += 1
         peak_hour_sales[order_local_dt.hour] = round(peak_hour_sales[order_local_dt.hour] + row["matched_total"], 2)
         if order.is_delivery and (order.delivery_customer_mobile or "").strip():
@@ -6293,6 +6669,10 @@ def _build_stats_payload(filters, use_cache=True):
             line_amount = round(float(oi.unit_price or 0) * qty, 2)
             total_items_sold += qty
             unique_item_ids.add(oi.menu_item_id)
+            assigned_row = responsibility_stats.get(oi.menu_item.chef_user_id)
+            if assigned_row:
+                assigned_row["sold_qty"] += qty
+                assigned_row["sales"] = round(assigned_row["sales"] + line_amount, 2)
 
             stat = item_stats.setdefault(
                 oi.menu_item_id,
@@ -6353,6 +6733,7 @@ def _build_stats_payload(filters, use_cache=True):
                 "packaging_charge": packaging_m,
                 "delivery_charge": delivery_m,
                 "total_amount": row["matched_total"],
+                "created_at": _format_ist(order.created_at),
                 "settled_at": _format_ist(revenue_dt),
                 "items": [
                     {
@@ -6557,6 +6938,20 @@ def _build_stats_payload(filters, use_cache=True):
         .all()
     )
     recipe_map = {r.menu_item_id: r for r in recipes}
+    for recipe in recipes:
+        if recipe.menu_item and recipe.menu_item.chef_user_id in responsibility_stats:
+            responsibility_stats[recipe.menu_item.chef_user_id]["recipe_mapped_dishes"] += 1
+    responsibility_rows = sorted(
+        [
+            {
+                **row,
+                "sales": round(row["sales"], 2),
+                "contribution_pct": round((row["sales"] / total_sales) * 100, 2) if total_sales else 0.0,
+            }
+            for row in responsibility_stats.values()
+        ],
+        key=lambda row: (-row["sales"], row["name"].lower()),
+    )
     ingredient_usage = {}
     for row in filtered_orders:
         for oi, _categories, _station_slug in row["matched_items"]:
@@ -6664,6 +7059,16 @@ def _build_stats_payload(filters, use_cache=True):
             "orders_over_time": {"labels": revenue_trend_labels, "values": order_trend_values},
             "order_type_distribution": order_type_counts,
             "peak_hours": peak_hours,
+            "weekday_sales": {
+                "labels": list(calendar.day_name),
+                "revenue": [round(weekday_sales[name]["revenue"], 2) for name in calendar.day_name],
+                "orders": [int(weekday_sales[name]["orders"]) for name in calendar.day_name],
+            },
+            "week_of_month_sales": {
+                "labels": list(week_of_month_sales.keys()),
+                "revenue": [round(week_of_month_sales[name]["revenue"], 2) for name in week_of_month_sales],
+                "orders": [int(week_of_month_sales[name]["orders"]) for name in week_of_month_sales],
+            },
             "best_sales_days": {
                 "best_day_ever": best_day_ever,
                 "best_day_this_month": best_day_this_month,
@@ -6689,6 +7094,7 @@ def _build_stats_payload(filters, use_cache=True):
                 }
                 for x in top_items[:20]
             ],
+            "responsibility": responsibility_rows,
         },
         "category_analytics": {
             "rows": category_rows_out,
@@ -7282,6 +7688,7 @@ def staff():
     calendar_month_rows = calendar.Calendar(firstweekday=0).monthdayscalendar(selected_year, selected_month)
     selected_start = date(selected_year, selected_month, 1)
     selected_end = date(selected_year, selected_month, days_in_month)
+    now_ist_naive = datetime.now(IST_TZ).replace(tzinfo=None)
     selected_attendance_map = {}
     if selected_user_id:
         rows = StaffAttendance.query.filter(
@@ -7289,7 +7696,8 @@ def staff():
             StaffAttendance.attendance_date >= selected_start,
             StaffAttendance.attendance_date <= selected_end,
         ).all()
-        selected_attendance_map = {row.attendance_date.day: row.status for row in rows}
+        selected_days = aggregate_attendance_rows(rows, now=now_ist_naive)
+        selected_attendance_map = {row.attendance_date.day: row.status for row in selected_days}
         for holiday in CompanyHoliday.query.filter(
             CompanyHoliday.active.is_(True),
             CompanyHoliday.holiday_date >= selected_start,
@@ -7316,15 +7724,15 @@ def staff():
         return round(max(0.0, min(100.0, minutes / 1440 * 100)), 3)
 
     def _timeline_duration_text(row):
-        if not row or not row.check_in_at:
+        if not row:
             return "00h 00m"
-        end_time = row.check_out_at or now_ist_naive
-        minutes = max(0, int((end_time - row.check_in_at).total_seconds() // 60))
+        minutes = worked_minutes_for_row(row, now=now_ist_naive)
         return f"{minutes // 60:02d}h {minutes % 60:02d}m"
 
+    timeline_rows = StaffAttendance.query.filter_by(attendance_date=timeline_date).all()
     timeline_attendance = {
         row.user_id: row
-        for row in StaffAttendance.query.filter_by(attendance_date=timeline_date).all()
+        for row in aggregate_attendance_rows(timeline_rows, now=now_ist_naive)
     }
     approved_timeline_leave = {
         leave.user_id: leave
@@ -7334,7 +7742,6 @@ def staff():
             StaffLeaveRequest.end_date >= timeline_date,
         ).all()
     }
-    now_ist_naive = datetime.now(IST_TZ).replace(tzinfo=None)
     team_timeline = []
     for profile in active_profiles:
         row = timeline_attendance.get(profile.user_id)
@@ -7343,16 +7750,25 @@ def staff():
         shift_end = profile.shift_end_time or time(18, 0)
         shift_start_min = _clock_minutes(shift_start)
         shift_end_min = max(shift_start_min + 30, _clock_minutes(shift_end))
+        timeline_bars = []
         if row and row.check_in_at:
-            bar_start_min = _clock_minutes(row.check_in_at.time())
-            bar_end_dt = row.check_out_at or (now_ist_naive if timeline_date == today_ist else row.check_in_at)
-            bar_end_min = max(bar_start_min + 1, _clock_minutes(bar_end_dt.time()))
-            if row.status in {"first_half", "second_half", "short_attendance"}:
-                bar_color = "#f4c95d"
-            elif row.status in {"absent", "urgent_leave"}:
-                bar_color = "#e98b8b"
-            else:
-                bar_color = "#62b879"
+            for session in getattr(row, "session_rows", [row]):
+                if not session.check_in_at:
+                    continue
+                bar_start_min = _clock_minutes(session.check_in_at.time())
+                bar_end_dt = session.check_out_at or (now_ist_naive if timeline_date == today_ist else session.check_in_at)
+                bar_end_min = max(bar_start_min + 1, _clock_minutes(bar_end_dt.time()))
+                if session.status in {"first_half", "second_half", "short_attendance"}:
+                    bar_color = "#f4c95d"
+                elif session.status in {"absent", "urgent_leave"}:
+                    bar_color = "#e98b8b"
+                else:
+                    bar_color = "#62b879"
+                timeline_bars.append({
+                    "left": _timeline_percent(bar_start_min),
+                    "width": max(0.5, _timeline_percent(bar_end_min) - _timeline_percent(bar_start_min)),
+                    "color": bar_color,
+                })
             display_status = attendance_status_label(row.status)
         elif leave:
             bar_start_min, bar_end_min, bar_color = 0, 1440, "#8bb7e8"
@@ -7374,6 +7790,7 @@ def staff():
             "bar_left": _timeline_percent(bar_start_min),
             "bar_width": max(0.5, _timeline_percent(bar_end_min) - _timeline_percent(bar_start_min)),
             "bar_color": bar_color,
+            "bars": timeline_bars,
         })
 
     selected_day_profile = next(
@@ -7630,6 +8047,10 @@ def export_staff_attendance():
         .order_by(StaffAttendance.attendance_date.asc())
         .all()
     )
+    logs = sorted(
+        aggregate_attendance_rows(logs, now=datetime.now(IST_TZ).replace(tzinfo=None)),
+        key=lambda row: row.attendance_date,
+    )
 
     wb = Workbook()
     ws = wb.active
@@ -7791,7 +8212,6 @@ def my_staff():
     attendance_logs = (
         StaffAttendance.query.filter_by(user_id=user.id)
         .order_by(StaffAttendance.attendance_date.desc())
-        .limit(40)
         .all()
     )
     attendance_changed = False
@@ -7806,6 +8226,10 @@ def my_staff():
             attendance_changed = True
     if attendance_changed:
         db.session.commit()
+    attendance_logs = aggregate_attendance_rows(
+        attendance_logs,
+        now=datetime.now(IST_TZ).replace(tzinfo=None),
+    )
     leave_logs = (
         StaffLeaveRequest.query.filter_by(user_id=user.id)
         .order_by(StaffLeaveRequest.created_at.desc())

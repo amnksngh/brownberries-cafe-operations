@@ -24,6 +24,7 @@ from .attendance_logic import (
     attendance_flags_for_row,
     attendance_pay_fraction,
     attendance_status_label,
+    aggregate_attendance_rows,
     build_attendance_summary,
     late_penalty_days,
     refresh_attendance_row,
@@ -1714,7 +1715,6 @@ def profile():
     attendance_logs = (
         StaffAttendance.query.filter_by(user_id=user.id)
         .order_by(StaffAttendance.attendance_date.desc())
-        .limit(60)
         .all()
     )
     month_attendance_logs = (
@@ -1739,6 +1739,14 @@ def profile():
             attendance_changed = True
     if attendance_changed:
         db.session.commit()
+    attendance_logs = aggregate_attendance_rows(
+        attendance_logs,
+        now=datetime.now(IST_TZ).replace(tzinfo=None),
+    )
+    month_attendance_logs = aggregate_attendance_rows(
+        month_attendance_logs,
+        now=datetime.now(IST_TZ).replace(tzinfo=None),
+    )
     attendance_summary = build_attendance_summary(
         month_attendance_logs,
         leniency_minutes=attendance_settings["leniency_minutes"],

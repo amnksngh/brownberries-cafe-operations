@@ -68,10 +68,10 @@
   <p class="muted">Staff will scan this QR, allow phone location, and check in only if they are within the cafe premises radius.</p>
   <form method="post" action="{{ url_for('cafe.update_attendance_settings') }}" class="grid grid-4">
     <label>Cafe Latitude
-      <input name="attendance_cafe_lat" value="{{ attendance_cafe_lat }}" />
+      <input name="attendance_cafe_lat" type="number" step="0.0000001" min="-90" max="90" value="{{ attendance_cafe_lat }}" />
     </label>
     <label>Cafe Longitude
-      <input name="attendance_cafe_lng" value="{{ attendance_cafe_lng }}" />
+      <input name="attendance_cafe_lng" type="number" step="0.0000001" min="-180" max="180" value="{{ attendance_cafe_lng }}" />
     </label>
     <label>Allowed Radius (meters)
       <input name="attendance_radius_m" type="text" inputmode="numeric" value="{{ attendance_radius_m }}" />
@@ -90,10 +90,10 @@
     </label>
     <button type="submit">Save Attendance Settings</button>
   </form>
-  <p class="muted">Distance uses direct coordinate-to-coordinate distance. Leniency affects presence classification near shift start/end; the admin can still override any attendance record.</p>
+  <p class="muted">Drag the cafe pin to the correct point on the map. The latitude and longitude fields update automatically; click <strong>Save Attendance Settings</strong> to use the new point for all future geofence checks. Distance uses direct coordinate-to-coordinate distance. Leniency affects presence classification near shift start/end; the admin can still override any attendance record.</p>
   <div class="attendance-geofence-map-wrap">
     <div id="attendance-geofence-map" class="attendance-geofence-map" aria-label="Cafe attendance geofence map"></div>
-    <div class="attendance-geofence-map-caption"><strong>Geofence territory</strong><span>Center: {{ attendance_cafe_lat }}, {{ attendance_cafe_lng }} · Radius: {{ attendance_radius_m|round(0) }} m</span></div>
+    <div class="attendance-geofence-map-caption"><strong>Geofence territory</strong><span id="attendance-geofence-map-caption">Center: {{ attendance_cafe_lat }}, {{ attendance_cafe_lng }} · Radius: {{ attendance_radius_m|round(0) }} m</span></div>
   </div>
   <div class="grid grid-2" style="margin-top:0.75rem;">
     <div class="flash success">
@@ -107,28 +107,76 @@
   </div>
 </section>
 
-<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIINfQ3wzZ3uQ6eZ0e3fS0a3mS0nXKx2Q8=" crossorigin="" />
-<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css" />
+<script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"></script>
 <script>
   (() => {
     const element = document.getElementById("attendance-geofence-map");
     if (!element || typeof L === "undefined") return;
+    const latitudeInput = document.querySelector('[name="attendance_cafe_lat"]');
+    const longitudeInput = document.querySelector('[name="attendance_cafe_lng"]');
+    const caption = document.getElementById("attendance-geofence-map-caption");
     const center = [{{ attendance_cafe_lat|tojson }}, {{ attendance_cafe_lng|tojson }}];
     const radius = {{ attendance_radius_m|tojson }};
-    const map = L.map(element, { scrollWheelZoom: false, zoomControl: true }).setView(center, 18);
-    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+    const map = L.map(element, {
+      scrollWheelZoom: false,
+      zoomControl: true,
+      preferCanvas: true,
+      fadeAnimation: false,
+      zoomAnimation: false
+    }).setView(center, 17);
+    L.tileLayer("https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png", {
+      subdomains: "abcd",
       maxZoom: 19,
-      attribution: "© OpenStreetMap contributors"
+      maxNativeZoom: 18,
+      updateWhenIdle: true,
+      keepBuffer: 2,
+      attribution: "© OpenStreetMap contributors © CARTO"
     }).addTo(map);
-    L.marker(center).addTo(map).bindPopup("Brownberries Café").openPopup();
-    L.circle(center, {
+    const marker = L.marker(center, { draggable: true })
+      .addTo(map)
+      .bindPopup("Drag this pin to the cafe center")
+      .openPopup();
+    const geofence = L.circle(center, {
       radius,
       color: "#6b3f28",
       fillColor: "#c9955b",
       fillOpacity: 0.22,
       weight: 2
     }).addTo(map);
-    map.fitBounds(L.circle(center, { radius }).getBounds(), { padding: [24, 24] });
+
+    const validCoordinate = (latitude, longitude) => (
+      Number.isFinite(latitude) && Number.isFinite(longitude)
+      && latitude >= -90 && latitude <= 90
+      && longitude >= -180 && longitude <= 180
+    );
+
+    const updateCenter = (latitude, longitude, panTo = true) => {
+      if (!validCoordinate(latitude, longitude)) return false;
+      const point = [Number(latitude.toFixed(7)), Number(longitude.toFixed(7))];
+      latitudeInput.value = point[0];
+      longitudeInput.value = point[1];
+      marker.setLatLng(point);
+      geofence.setLatLng(point);
+      if (caption) caption.textContent = `Center: ${point[0]}, ${point[1]} · Radius: ${Math.round(radius)} m`;
+      if (panTo) map.panTo(point);
+      return true;
+    };
+
+    marker.on("dragend", () => {
+      const point = marker.getLatLng();
+      updateCenter(point.lat, point.lng);
+    });
+
+    const syncInputsToMap = () => {
+      const latitude = Number(latitudeInput.value);
+      const longitude = Number(longitudeInput.value);
+      updateCenter(latitude, longitude);
+    };
+    latitudeInput.addEventListener("change", syncInputsToMap);
+    longitudeInput.addEventListener("change", syncInputsToMap);
+
+    map.fitBounds(geofence.getBounds(), { padding: [24, 24] });
   })();
 </script>
 

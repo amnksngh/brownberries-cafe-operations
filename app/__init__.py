@@ -209,6 +209,13 @@ def _ensure_sqlite_schema_columns():
         "inventory_expense_log": {
             "vendor_id": "INTEGER",
             "transaction_mode": "TEXT",
+            "workstation_slug": "TEXT",
+        },
+        "inventory_to_purchase": {
+            "inventory_item_id": "INTEGER",
+            "workstation_slug": "TEXT",
+            "quantity_amount": "FLOAT",
+            "quantity_unit": "TEXT",
         },
         "job_opening": {
             "salary_display": "TEXT",
@@ -356,7 +363,22 @@ def _ensure_sqlite_schema_columns():
         text("CREATE INDEX IF NOT EXISTS idx_inventory_daily_closing_item_date ON inventory_daily_closing (item_id, closing_date)")
     )
     db.session.execute(
+        text("CREATE INDEX IF NOT EXISTS idx_inventory_movement_item_created ON inventory_movement (item_id, created_at)")
+    )
+    db.session.execute(
+        text("CREATE INDEX IF NOT EXISTS idx_inventory_movement_workstation_created ON inventory_movement (workstation_slug, created_at)")
+    )
+    db.session.execute(
+        text("CREATE INDEX IF NOT EXISTS idx_inventory_movement_reference ON inventory_movement (reference_type, reference_id)")
+    )
+    db.session.execute(
         text("CREATE INDEX IF NOT EXISTS idx_inventory_expense_log_date_category ON inventory_expense_log (entry_date, category_id)")
+    )
+    db.session.execute(
+        text("CREATE INDEX IF NOT EXISTS idx_inventory_expense_log_workstation_date ON inventory_expense_log (workstation_slug, entry_date)")
+    )
+    db.session.execute(
+        text("CREATE INDEX IF NOT EXISTS idx_inventory_to_purchase_active_workstation_item ON inventory_to_purchase (active, workstation_slug, inventory_item_id, status)")
     )
     db.session.execute(
         text("CREATE INDEX IF NOT EXISTS idx_job_opening_status_published ON job_opening (status, published_at)")

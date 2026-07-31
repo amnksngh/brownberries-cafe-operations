@@ -270,7 +270,7 @@
             <div class="cal-cell empty"></div>
             {% else %}
             {% set st = selected_attendance_map.get(day) %}
-            <div class="cal-cell"><span class="day-dot {% if st in ['present','present_all_day'] %}st-present{% elif st in ['half-day','first_half','second_half','half_day_leave','half_day_earned_leave','half_day_urgent_leave'] %}st-half{% elif st in ['short_attendance','absent','urgent_leave'] %}st-absent{% elif st in ['on-leave','on_leave','earned_leave'] %}st-leave{% elif st in ['company_holiday'] %}st-holiday{% elif st in ['weekly_off'] %}st-weekly-off{% elif st in ['pending_correction', 'missed_checkout'] %}st-leave{% endif %}" title="{{ st or 'No attendance record' }}">{{ day }}</span></div>
+            <div class="cal-cell"><span class="day-dot {% if st in ['present','present_all_day','pending_correction','missed_checkout'] %}st-present{% elif st in ['half-day','first_half','second_half','half_day_leave','half_day_earned_leave','half_day_urgent_leave'] %}st-half{% elif st in ['short_attendance','absent','urgent_leave'] %}st-absent{% elif st in ['on-leave','on_leave','earned_leave'] %}st-leave{% elif st in ['company_holiday'] %}st-holiday{% elif st in ['weekly_off'] %}st-weekly-off{% endif %}" title="{{ st or 'No attendance record' }}">{{ day }}</span></div>
             {% endif %}
           {% endfor %}
         {% endfor %}
@@ -338,7 +338,9 @@
             <span class="timeline-shift" style="left: {{ staff.shift_left }}%; width: {{ staff.shift_width }}%;"></span>
             <span class="timeline-marker" style="left: {{ staff.shift_left }}%;"></span>
             <span class="timeline-marker" style="left: {{ staff.shift_left + staff.shift_width }}%;"></span>
-            <span class="timeline-bar" style="left: {{ staff.bar_left }}%; width: {{ staff.bar_width }}%; background: {{ staff.bar_color }};"></span>
+            {% for bar in staff.bars %}
+            <span class="timeline-bar" style="left: {{ bar.left }}%; width: {{ bar.width }}%; background: {{ bar.color }};"></span>
+            {% endfor %}
           </div>
         </div>
         {% else %}<p class="muted">No active staff members found.</p>{% endfor %}

@@ -3218,6 +3218,14 @@ th {
   background: #e8ded4;
 }
 
+.attendance-geofence-map .leaflet-marker-icon {
+  cursor: grab;
+}
+
+.attendance-geofence-map .leaflet-marker-icon:active {
+  cursor: grabbing;
+}
+
 .attendance-geofence-map-caption {
   display: flex;
   align-items: center;
@@ -4357,6 +4365,16 @@ body.cashier-shell.cashier-tablet-portrait .cashier-selected-sections {
   gap: 0.8rem;
 }
 
+.table-scroll {
+  max-width: 100%;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.table-scroll table {
+  min-width: 620px;
+}
+
 .inventory-two-col {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -4458,6 +4476,28 @@ body.cashier-shell.cashier-tablet-portrait .cashier-selected-sections {
 
 .inventory-form-grid {
   grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+}
+
+.inventory-readonly-value {
+  min-height: 2.15rem;
+  display: flex;
+  align-items: center;
+  padding: 0.5rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #f5f0ea;
+  color: var(--text);
+  font-weight: 600;
+}
+
+.inventory-positive {
+  color: #2f7a58;
+  font-weight: 700;
+}
+
+.inventory-negative {
+  color: #a44a42;
+  font-weight: 700;
 }
 
 .inventory-filter-bar {
@@ -4960,5 +5000,20 @@ body.cashier-shell.cashier-tablet-portrait .cashier-selected-sections {
 
   .cash-denomination-list {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .purchase-row {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) !important;
+  }
+
+  .purchase-row select,
+  .purchase-row input,
+  .purchase-row button {
+    min-width: 0;
+  }
+
+  .purchase-row .purchase-add-btn,
+  .purchase-row .purchase-remove-btn {
+    width: 100%;
   }
 }

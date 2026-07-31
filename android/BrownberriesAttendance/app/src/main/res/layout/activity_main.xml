@@ -157,6 +157,20 @@
         android:textColor="#FFFFFFFF"
         android:visibility="gone" />
 
+    <Button
+        android:id="@+id/availabilitySaveBar"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="12dp"
+        android:layout_marginEnd="12dp"
+        android:layout_marginBottom="6dp"
+        android:backgroundTint="#6F4A35"
+        android:minHeight="52dp"
+        android:text="Save Availability"
+        android:textAllCaps="false"
+        android:textColor="#FFFFFFFF"
+        android:visibility="gone" />
+
     <LinearLayout
         android:id="@+id/workspaceNav"
         android:layout_width="match_parent"
