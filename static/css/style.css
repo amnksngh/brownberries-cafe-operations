@@ -1248,9 +1248,9 @@ body.cart-sheet-open {
   z-index: 1400;
   display: flex;
   align-items: center;
-  gap: 0.7rem;
+  gap: 0.8rem;
   min-width: min(88vw, 320px);
-  max-width: min(92vw, 360px);
+  max-width: min(92vw, 390px);
   padding: 0.85rem 1rem;
   border-radius: 14px;
   background: rgba(35, 28, 22, 0.96);
@@ -1266,21 +1266,71 @@ body.cart-sheet-open {
   transform: translate(-50%, 0) scale(1);
 }
 
-.celebration-burst {
-  width: 42px;
-  height: 42px;
-  border-radius: 999px;
-  display: grid;
-  place-items: center;
-  background: radial-gradient(circle at 30% 30%, #ffe4a8, #b8862d);
-  box-shadow: 0 0 0 8px rgba(255, 214, 122, 0.12);
-  animation: celebratePop 0.9s ease;
+.phone-down-animation {
+  position: relative;
+  width: 56px;
+  height: 54px;
   flex: 0 0 auto;
+  overflow: hidden;
+}
+
+.phone-down-device {
+  position: absolute;
+  left: 12px;
+  top: 2px;
+  width: 25px;
+  height: 43px;
+  border: 2px solid #f5ead8;
+  border-radius: 5px;
+  background: #69442f;
+  box-shadow: 0 0 0 3px rgba(255, 214, 122, 0.12);
+  transform-origin: 50% 100%;
+  animation: phoneSetDown 3.6s ease-in-out infinite;
+}
+
+.phone-down-device::before {
+  content: "";
+  position: absolute;
+  left: 8px;
+  top: 3px;
+  width: 7px;
+  height: 2px;
+  border-radius: 999px;
+  background: #f5ead8;
+  opacity: 0.8;
+}
+
+.phone-down-device span {
+  position: absolute;
+  inset: 8px 4px 5px;
+  border-radius: 2px;
+  background: #c59756;
+  opacity: 0.72;
+}
+
+.phone-down-table {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 5px;
+  height: 5px;
+  border-radius: 999px;
+  background: #c59756;
+  box-shadow: 0 5px 0 rgba(197, 151, 86, 0.24);
 }
 
 .celebration-copy {
   display: grid;
-  gap: 0.14rem;
+  gap: 0.16rem;
+  min-width: 0;
+}
+
+.celebration-kicker {
+  color: #e8c98f;
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
 }
 
 .celebration-copy strong {
@@ -1292,15 +1342,27 @@ body.cart-sheet-open {
   color: #f5ead8;
 }
 
-@keyframes celebratePop {
-  0% {
-    transform: scale(0.78) rotate(-10deg);
+.celebration-book-note {
+  color: #e8c98f !important;
+  font-size: 0.78rem !important;
+}
+
+@keyframes phoneSetDown {
+  0%, 12% {
+    transform: translateY(-3px) rotate(-8deg);
   }
-  55% {
-    transform: scale(1.08) rotate(6deg);
+  42%, 72% {
+    transform: translateY(8px) rotate(78deg);
   }
-  100% {
-    transform: scale(1) rotate(0);
+  88%, 100% {
+    transform: translateY(-3px) rotate(-8deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .phone-down-device {
+    animation: none;
+    transform: translateY(8px) rotate(78deg);
   }
 }
 

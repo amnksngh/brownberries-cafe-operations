@@ -647,10 +647,15 @@
 </div>
 <div id="cart-toast" class="cart-toast hidden"></div>
 <div id="celebration-toast" class="celebration-toast hidden" aria-live="polite">
-  <div class="celebration-burst" aria-hidden="true">✨</div>
+  <div class="phone-down-animation" aria-hidden="true">
+    <div class="phone-down-device"><span></span></div>
+    <div class="phone-down-table"></div>
+  </div>
   <div class="celebration-copy">
-    <strong>Order Placed</strong>
-    <span id="celebration-message">Your order is on its way for approval.</span>
+    <span class="celebration-kicker">Order received</span>
+    <strong>Phone down. Cafe time.</strong>
+    <span id="celebration-message">Pick up your phone when you are ready to order again.</span>
+    <span class="celebration-book-note">Meanwhile, pick a book instead.</span>
   </div>
 </div>
 
@@ -987,14 +992,14 @@
 
   function showCelebrationToast(message) {
     if (!celebrationToast || !celebrationMessage) return;
-    celebrationMessage.textContent = message || "Your order is on its way for approval.";
+    celebrationMessage.textContent = message || "Pick up your phone when you are ready to order again.";
     celebrationToast.classList.remove("hidden");
     celebrationToast.classList.add("show");
     if (celebrationTimer) window.clearTimeout(celebrationTimer);
     celebrationTimer = window.setTimeout(() => {
       celebrationToast.classList.remove("show");
       window.setTimeout(() => celebrationToast.classList.add("hidden"), 260);
-    }, 2200);
+    }, 5000);
   }
 
   function updateMobileFixedBottomOffset() {

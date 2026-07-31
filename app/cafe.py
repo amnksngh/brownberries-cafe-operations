@@ -4011,7 +4011,7 @@ def table_order():
     if not order:
         flash("Please add at least one menu item in cart.", "error")
         return redirect(url_for("main.table_qr_page", slug=slug))
-    session["qr_success_toast"] = "Order placed successfully"
+    session["qr_success_toast"] = "Pick up your phone when you are ready to order again."
     return redirect(url_for("main.table_qr_page", slug=slug))
 
 
