@@ -7752,18 +7752,23 @@ def staff():
         shift_end_min = max(shift_start_min + 30, _clock_minutes(shift_end))
         timeline_bars = []
         if row and row.check_in_at:
+            # ``row`` is the daily aggregate, while each ``session`` is one
+            # geofence interval.  A staff member can have several short
+            # intervals that add up to a full day.  Colouring from
+            # ``session.status`` made those intervals appear absent even
+            # though the aggregate correctly said Present All Day.
+            if row.status in {"first_half", "second_half", "short_attendance"}:
+                bar_color = "#f4c95d"
+            elif row.status in {"absent", "urgent_leave"}:
+                bar_color = "#e98b8b"
+            else:
+                bar_color = "#62b879"
             for session in getattr(row, "session_rows", [row]):
                 if not session.check_in_at:
                     continue
                 bar_start_min = _clock_minutes(session.check_in_at.time())
                 bar_end_dt = session.check_out_at or (now_ist_naive if timeline_date == today_ist else session.check_in_at)
                 bar_end_min = max(bar_start_min + 1, _clock_minutes(bar_end_dt.time()))
-                if session.status in {"first_half", "second_half", "short_attendance"}:
-                    bar_color = "#f4c95d"
-                elif session.status in {"absent", "urgent_leave"}:
-                    bar_color = "#e98b8b"
-                else:
-                    bar_color = "#62b879"
                 timeline_bars.append({
                     "left": _timeline_percent(bar_start_min),
                     "width": max(0.5, _timeline_percent(bar_end_min) - _timeline_percent(bar_start_min)),
