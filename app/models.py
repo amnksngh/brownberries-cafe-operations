@@ -153,6 +153,9 @@ class CafeOrder(TimestampMixin, db.Model):
     payment_type = db.Column(db.String(40), nullable=True)
     payment_reference = db.Column(db.String(120), nullable=True)
     payment_breakdown_json = db.Column(db.Text, nullable=True)
+    # Shared by every order settled in one cashier transaction.  This keeps
+    # settlement grouping reliable even when timestamps or payment text differ.
+    settlement_group_id = db.Column(db.String(80), nullable=True, index=True)
     is_delivery = db.Column(db.Boolean, default=False, nullable=False)
     delivery_customer_name = db.Column(db.String(120), nullable=True)
     delivery_customer_mobile = db.Column(db.String(20), nullable=True)
@@ -184,9 +187,41 @@ class CashCounterEntry(TimestampMixin, db.Model):
     created_by_user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=True)
     occurred_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
     note = db.Column(db.String(500), nullable=True)
+    is_deleted = db.Column(db.Boolean, default=False, nullable=False)
+    deleted_at = db.Column(db.DateTime, nullable=True)
+    deleted_by_user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=True)
+    deletion_reason = db.Column(db.String(500), nullable=True)
     source_order = db.relationship("CafeOrder", backref="cash_counter_entries")
     table = db.relationship("CafeTable", backref="cash_counter_entries")
     created_by = db.relationship("User", foreign_keys=[created_by_user_id], backref="cash_counter_entries")
+
+
+class CashCounterDeletionLog(db.Model):
+    """Immutable audit record for a cash-counter correction.
+
+    The original movement remains in the database but is marked deleted. This
+    preserves an auditable trail while allowing the live denomination balance
+    to be recalculated without the mistaken movement.
+    """
+
+    id = db.Column(db.Integer, primary_key=True)
+    cash_counter_entry_id = db.Column(
+        db.Integer, db.ForeignKey("cash_counter_entry.id"), nullable=False
+    )
+    original_entry_type = db.Column(db.String(30), nullable=False)
+    original_amount = db.Column(db.Float, nullable=False, default=0)
+    original_reason = db.Column(db.String(255), nullable=False)
+    original_note = db.Column(db.String(500), nullable=True)
+    original_denominations_json = db.Column(db.Text, nullable=True)
+    original_occurred_at = db.Column(db.DateTime, nullable=False)
+    deleted_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+    deleted_by_user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=True)
+    deleted_by_name = db.Column(db.String(120), nullable=False)
+    deleted_by_email = db.Column(db.String(120), nullable=False)
+    kiosk_mode = db.Column(db.Boolean, nullable=False, default=False)
+    deletion_reason = db.Column(db.String(500), nullable=True)
+    cash_counter_entry = db.relationship("CashCounterEntry", backref="deletion_logs")
+    deleted_by_user = db.relationship("User", backref="cash_counter_deletion_logs")
 
 
 class CafeOrderItem(TimestampMixin, db.Model):

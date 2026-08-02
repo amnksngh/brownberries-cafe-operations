@@ -150,6 +150,7 @@ def _ensure_sqlite_schema_columns():
             "display_code": "TEXT",
             "paid_at": "DATETIME",
             "payment_breakdown_json": "TEXT",
+            "settlement_group_id": "TEXT",
         },
         "customer": {
             "default_map_url": "TEXT",
@@ -165,6 +166,12 @@ def _ensure_sqlite_schema_columns():
             "approval_status": "TEXT NOT NULL DEFAULT 'pending'",
             "is_parcel": "BOOLEAN NOT NULL DEFAULT 0",
             "prep_status": "TEXT NOT NULL DEFAULT 'pending'",
+        },
+        "cash_counter_entry": {
+            "is_deleted": "BOOLEAN NOT NULL DEFAULT 0",
+            "deleted_at": "DATETIME",
+            "deleted_by_user_id": "INTEGER",
+            "deletion_reason": "TEXT",
         },
         "cafe_feedback": {
             "order_ids_json": "TEXT",
@@ -303,6 +310,9 @@ def _ensure_sqlite_schema_columns():
         text("CREATE INDEX IF NOT EXISTS idx_cafe_order_created ON cafe_order (created_at)")
     )
     db.session.execute(
+        text("CREATE INDEX IF NOT EXISTS idx_cafe_order_settlement_group ON cafe_order (settlement_group_id)")
+    )
+    db.session.execute(
         text("CREATE INDEX IF NOT EXISTS idx_cafe_order_delivery_created ON cafe_order (is_delivery, created_at)")
     )
     db.session.execute(
@@ -328,6 +338,12 @@ def _ensure_sqlite_schema_columns():
     )
     db.session.execute(
         text("CREATE INDEX IF NOT EXISTS idx_cash_counter_entry_type_occurred ON cash_counter_entry (entry_type, occurred_at)")
+    )
+    db.session.execute(
+        text("CREATE INDEX IF NOT EXISTS idx_cash_counter_entry_active_occurred ON cash_counter_entry (is_deleted, occurred_at)")
+    )
+    db.session.execute(
+        text("CREATE INDEX IF NOT EXISTS idx_cash_counter_deletion_log_deleted_at ON cash_counter_deletion_log (deleted_at)")
     )
     db.session.execute(
         text("CREATE INDEX IF NOT EXISTS idx_cafe_feedback_primary_order ON cafe_feedback (primary_order_id)")

@@ -390,21 +390,62 @@
     </label>
     <button type="submit">Load Orders</button>
   </form>
-  <table>
-    <tr><th>Order</th><th>Table</th><th>Status</th><th>Total</th><th>Created</th><th>Action</th></tr>
-    {% for o in all_orders %}
-    <tr>
-      <td>#{{ o.daily_sequence or o.id }}<br /><small>{{ o.display_code or o.id }}</small></td>
-      <td>{{ o.table.name if o.table else "-" }}</td>
-      <td>{{ o.status }}</td>
-      <td>₹{{ "%.2f"|format(o.total_amount) }}</td>
-      <td>{{ o.created_at.strftime("%I:%M:%S %p") }}</td>
-      <td><button type="button" class="open-order-modal" data-order-id="{{ o.id }}">View</button></td>
-    </tr>
+  <div class="all-orders-groups">
+    {% for group in all_order_groups %}
+    {% set group_dom_id = "all-orders-group-" ~ loop.index %}
+    <article class="all-orders-group">
+      <header class="all-orders-group-head">
+        <div class="all-orders-group-summary">
+          <span class="all-orders-group-eyebrow">Table settlement</span>
+          <h4>{{ group.table_name }} <span class="muted">· {{ group.orders|length }} order(s)</span></h4>
+          <p><strong>Orders:</strong> {{ group.order_ids }}</p>
+          <p><strong>Internal refs:</strong> {{ group.internal_refs }}</p>
+        </div>
+        <div class="all-orders-group-total">
+          <span class="cashier-inline-state">{{ group.status }}</span>
+          <strong>₹{{ "%.2f"|format(group.total) }}</strong>
+          {% if group.is_settled %}
+          <a class="all-orders-print-link" href="{{ url_for('cafe.public_receipt', order_id=group.primary_order_id) }}" target="_blank" rel="noopener">Print Receipt</a>
+          {% else %}
+          <span class="muted">Receipt after settlement</span>
+          {% endif %}
+          <button type="button" class="all-orders-group-toggle" data-target="{{ group_dom_id }}" aria-controls="{{ group_dom_id }}" aria-expanded="false" aria-label="Show orders in this table settlement">}</button>
+        </div>
+      </header>
+      <div id="{{ group_dom_id }}" class="all-orders-group-body hidden">
+        <div class="all-orders-group-meta">
+          <span>Settled: {{ group.settled_at_display }}</span>
+          <span>Each order remains separately traceable below.</span>
+        </div>
+        <div class="all-orders-table-wrap">
+          <table class="all-orders-table">
+            <thead>
+              <tr><th>Order</th><th>Created</th><th>Status</th><th>Items</th><th>Total</th><th>Action</th></tr>
+            </thead>
+            <tbody>
+              {% for o in group.orders %}
+              <tr>
+                <td>#{{ o.daily_sequence or o.id }}<br /><small>{{ o.display_code or o.id }}</small></td>
+                <td>{{ all_order_time_map.get(o.id, "-") }}</td>
+                <td>{{ o.status|replace("_", " ")|title }}</td>
+                <td>
+                  {% for oi in o.order_items %}
+                  <div>{{ oi.menu_item.name if oi.menu_item else "Item" }}{% if oi.size_label %} ({{ oi.size_label }}){% endif %}{% if oi.is_parcel %} (Parcel){% endif %} × {{ oi.quantity }}</div>
+                  {% else %}<span class="muted">-</span>{% endfor %}
+                </td>
+                <td>₹{{ "%.2f"|format(o.total_amount) }}</td>
+                <td><button type="button" class="open-order-modal" data-order-id="{{ o.id }}">View</button></td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </article>
     {% else %}
-    <tr><td colspan="6">No orders for selected date.</td></tr>
+    <div class="all-orders-empty">No orders for selected date.</div>
     {% endfor %}
-  </table>
+  </div>
 </section>
 {% endif %}
 <div id="order-detail-modal" class="desc-modal hidden">
@@ -516,6 +557,20 @@
     });
   }
 
+  function bindSettlementGroupToggles(root = document) {
+    root.querySelectorAll(".all-orders-group-toggle").forEach((button) => {
+      if (button.dataset.bound === "1") return;
+      button.dataset.bound = "1";
+      button.addEventListener("click", () => {
+        const body = document.getElementById(button.dataset.target || "");
+        if (!body) return;
+        const expanded = body.classList.toggle("hidden") === false;
+        button.setAttribute("aria-expanded", expanded ? "true" : "false");
+        button.setAttribute("aria-label", expanded ? "Hide orders in this table settlement" : "Show orders in this table settlement");
+      });
+    });
+  }
+
   function bindDecisionForms(root = document) {
     root.querySelectorAll("form[action*='/orders/'][action$='/approve']").forEach((form) => {
       const checkboxes = [...form.querySelectorAll(".pending-item-checkbox")];
@@ -531,6 +586,7 @@
 
   function bindCashierDynamicHandlers(root = document) {
     bindOrderModalButtons(root);
+    bindSettlementGroupToggles(root);
     bindDecisionForms(root);
     initSettlementBuilder(root);
     applyCashierDeviceMode();

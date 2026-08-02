@@ -50,6 +50,7 @@ from .models import (
     CafeOrderItem,
     CafeTable,
     CashCounterEntry,
+    CashCounterDeletionLog,
     InventoryCategory,
     InventoryExpenseLog,
     InventoryItem,
@@ -514,17 +515,78 @@ def _receipt_orders_for_settlement(order: CafeOrder) -> list[CafeOrder]:
     query = CafeOrder.query.options(
         joinedload(CafeOrder.table),
         joinedload(CafeOrder.order_items).joinedload(CafeOrderItem.menu_item),
-    ).filter(
-        CafeOrder.status == "paid",
-        CafeOrder.paid_at == order.paid_at,
-        CafeOrder.table_id == order.table_id,
-    )
-    if order.payment_breakdown_json:
-        query = query.filter(CafeOrder.payment_breakdown_json == order.payment_breakdown_json)
+    ).filter(CafeOrder.status == "paid")
+    if order.settlement_group_id:
+        query = query.filter(CafeOrder.settlement_group_id == order.settlement_group_id)
     else:
-        query = query.filter(CafeOrder.id == order.id)
+        query = query.filter(
+            CafeOrder.paid_at == order.paid_at,
+            CafeOrder.table_id == order.table_id,
+        )
+        if order.payment_breakdown_json:
+            query = query.filter(CafeOrder.payment_breakdown_json == order.payment_breakdown_json)
+        else:
+            query = query.filter(CafeOrder.id == order.id)
     related = query.order_by(CafeOrder.created_at.asc(), CafeOrder.id.asc()).all()
     return related or [order]
+
+
+def _all_order_settlement_groups(orders: list[CafeOrder]) -> list[dict]:
+    """Build cashier All Orders groups without merging separate settlements.
+
+    New settlements use an explicit batch id. Older paid orders predate that
+    field, so the legacy paid timestamp/payment-breakdown combination remains
+    a conservative fallback for those records.
+    """
+    grouped: dict[str, dict] = {}
+    for order in orders:
+        if order.status == "paid" and order.settlement_group_id:
+            key = f"settlement:{order.settlement_group_id}"
+        elif order.status == "paid" and order.paid_at and order.payment_breakdown_json:
+            key = "legacy:{}:{}:{}".format(
+                order.table_id,
+                order.paid_at.isoformat(),
+                order.payment_breakdown_json,
+            )
+        else:
+            key = f"order:{order.id}"
+        group = grouped.setdefault(
+            key,
+            {
+                "key": key,
+                "orders": [],
+                "table_name": order.table.name if order.table else "-",
+                "first_created_at": order.created_at,
+            },
+        )
+        group["orders"].append(order)
+
+    groups = list(grouped.values())
+    for group in groups:
+        group_orders = group["orders"]
+        group_orders.sort(key=lambda item: (item.created_at, item.id))
+        first = group_orders[0]
+        group["primary_order_id"] = first.id
+        group["order_ids"] = ", ".join(f"#{_format_pickup_number(item)}" for item in group_orders)
+        group["internal_refs"] = ", ".join(
+            item.display_code or _format_internal_order_code(item) for item in group_orders
+        )
+        group["total"] = round(sum(float(item.total_amount or 0) for item in group_orders), 2)
+        group["status"] = (
+            "Paid"
+            if all(item.status == "paid" for item in group_orders)
+            else (group_orders[0].status or "open").replace("_", " ").title()
+        )
+        paid_times = [item.paid_at for item in group_orders if item.paid_at]
+        group["settled_at"] = max(paid_times) if paid_times else None
+        group["settled_at_display"] = (
+            _format_ist(group["settled_at"], "%I:%M:%S %p")
+            if group["settled_at"]
+            else "-"
+        )
+        group["is_settled"] = bool(paid_times) and all(item.status == "paid" for item in group_orders)
+    groups.sort(key=lambda group: group["first_created_at"], reverse=True)
+    return groups
 
 
 def _feedback_line_items_for_orders(receipt_orders: list[CafeOrder]) -> list[dict]:
@@ -1844,7 +1906,9 @@ def _greedy_cash_denominations(amount: float, available: dict[str, int] | None =
 def _cash_counter_snapshot() -> dict:
     counts = {key: 0 for key in CASH_DENOMINATION_KEYS}
     total = 0.0
-    for entry in CashCounterEntry.query.order_by(CashCounterEntry.occurred_at.asc(), CashCounterEntry.id.asc()).all():
+    for entry in CashCounterEntry.query.filter(
+        CashCounterEntry.is_deleted.is_(False)
+    ).order_by(CashCounterEntry.occurred_at.asc(), CashCounterEntry.id.asc()).all():
         sign = 1 if entry.entry_type == "deposit" else -1
         total += sign * float(entry.amount or 0)
         try:
@@ -1897,6 +1961,7 @@ def _cash_counter_entries_between(start: date, end: date) -> list[CashCounterEnt
         joinedload(CashCounterEntry.source_order),
         joinedload(CashCounterEntry.table),
     ).filter(
+        CashCounterEntry.is_deleted.is_(False),
         CashCounterEntry.occurred_at >= start_utc,
         CashCounterEntry.occurred_at < end_utc,
     ).order_by(CashCounterEntry.occurred_at.desc(), CashCounterEntry.id.desc()).all()
@@ -3215,6 +3280,7 @@ def _clear_table_orders_impl(table_id: int, next_url: str = ""):
         [f'{row["method"]}: ₹{row["amount"]:.2f}' + (f' ({row["reference"]})' if row["reference"] else "") for row in split_rows]
     )[:120] or None
     payment_breakdown_json = json.dumps(split_rows)
+    settlement_group_id = uuid4().hex
     for order, breakdown in zip(payable_orders, settlement_breakdowns):
         order.service_tax_amount = breakdown["service_tax_amount"]
         order.gst_amount = breakdown["gst_amount"]
@@ -3225,6 +3291,7 @@ def _clear_table_orders_impl(table_id: int, next_url: str = ""):
         order.payment_type = summary_label
         order.payment_reference = summary_ref or order.payment_reference
         order.payment_breakdown_json = payment_breakdown_json
+        order.settlement_group_id = settlement_group_id
         payload = _serialize_order(order)
         socketio.emit("order_updated", payload, namespace="/kitchen")
         socketio.emit("order_updated", payload, namespace="/table")
@@ -3371,6 +3438,178 @@ def cash_counter():
     return _render_cash_counter_page()
 
 
+def _can_manage_cash_counter(user: User | None) -> bool:
+    return bool(
+        user
+        and user.active
+        and (
+            user_has_any_role(user, "admin", "manager", "cashier")
+            or user_has_permission(user, "can_manage_cashier")
+        )
+    )
+
+
+def _cash_counter_authorized_users() -> list[User]:
+    users = User.query.filter_by(active=True).order_by(User.full_name.asc(), User.email.asc()).all()
+    return [user for user in users if _can_manage_cash_counter(user)]
+
+
+def _cash_counter_return_url(kiosk_mode: bool, access_key: str = "") -> str:
+    endpoint = (
+        "cafe.reception_kiosk_cash_counter"
+        if kiosk_mode
+        else "cafe.cash_counter"
+    )
+    kwargs = {}
+    if kiosk_mode:
+        kwargs["access_key"] = access_key
+    for key in ("period", "start", "end"):
+        value = (request.form.get(key) or "").strip()
+        if value:
+            kwargs[key] = value
+    return url_for(endpoint, **kwargs)
+
+
+def _delete_cash_counter_entry(entry_id: int, kiosk_mode: bool = False, access_key: str = ""):
+    actor = g.current_user if not kiosk_mode else None
+    if kiosk_mode:
+        email = (request.form.get("cashier_email") or "").strip().lower()
+        password = request.form.get("cashier_password") or ""
+        actor = User.query.filter(db.func.lower(User.email) == email).first()
+        if not actor or not check_password_hash(actor.password_hash, password):
+            flash("Cash record was not deleted: cashier email or password is invalid.", "error")
+            return redirect(_cash_counter_return_url(True, access_key))
+    if not _can_manage_cash_counter(actor):
+        flash("Only an active staff member with Cashier access can delete a cash record.", "error")
+        return redirect(_cash_counter_return_url(kiosk_mode, access_key))
+
+    entry = CashCounterEntry.query.filter(
+        CashCounterEntry.id == entry_id,
+        CashCounterEntry.is_deleted.is_(False),
+    ).first()
+    if not entry:
+        flash("That cash record is no longer available for deletion.", "error")
+        return redirect(_cash_counter_return_url(kiosk_mode, access_key))
+
+    deletion_reason = (request.form.get("deletion_reason") or "Wrong cash-counter entry").strip()
+    if len(deletion_reason) > 500:
+        deletion_reason = deletion_reason[:500]
+    db.session.add(
+        CashCounterDeletionLog(
+            cash_counter_entry_id=entry.id,
+            original_entry_type=entry.entry_type,
+            original_amount=float(entry.amount or 0),
+            original_reason=entry.reason,
+            original_note=entry.note,
+            original_denominations_json=entry.denominations_json,
+            original_occurred_at=entry.occurred_at,
+            deleted_by_user_id=actor.id,
+            deleted_by_name=actor.full_name,
+            deleted_by_email=actor.email,
+            kiosk_mode=kiosk_mode,
+            deletion_reason=deletion_reason or "Wrong cash-counter entry",
+        )
+    )
+    entry.is_deleted = True
+    entry.deleted_at = datetime.utcnow()
+    entry.deleted_by_user_id = actor.id
+    entry.deletion_reason = deletion_reason or "Wrong cash-counter entry"
+    db.session.commit()
+    flash(
+        f"Cash record #{entry.id} deleted. Its ₹{float(entry.amount or 0):.2f} and denominations were restored to the live balance.",
+        "success",
+    )
+    return redirect(_cash_counter_return_url(kiosk_mode, access_key))
+
+
+@bp.route("/cash-counter/<int:entry_id>/delete", methods=["POST"])
+@roles_required("admin", "manager", "cashier")
+def delete_cash_counter_entry(entry_id):
+    return _delete_cash_counter_entry(entry_id)
+
+
+@bp.route("/reception/<string:access_key>/cash-counter/<int:entry_id>/delete", methods=["POST"])
+def reception_kiosk_delete_cash_counter_entry(access_key, entry_id):
+    if not _has_valid_reception_kiosk_access(access_key):
+        return Response("Invalid reception kiosk access key.", status=403)
+    return _delete_cash_counter_entry(entry_id, kiosk_mode=True, access_key=access_key)
+
+
+def _cash_counter_deletion_rows():
+    rows = []
+    logs = CashCounterDeletionLog.query.order_by(
+        CashCounterDeletionLog.deleted_at.desc(), CashCounterDeletionLog.id.desc()
+    ).all()
+    for log in logs:
+        try:
+            counts = json.loads(log.original_denominations_json or "{}")
+        except (TypeError, ValueError, json.JSONDecodeError):
+            counts = {}
+        rows.append({
+            "log": log,
+            "denominations": _cash_denominations_label(counts),
+            "deleted_label": _format_ist(log.deleted_at, "%d %b %Y, %I:%M:%S %p"),
+            "original_time_label": _format_ist(log.original_occurred_at, "%d %b %Y, %I:%M:%S %p"),
+        })
+    return rows
+
+
+@bp.route("/cash-counter/deletion-log")
+@roles_required("admin")
+def cash_counter_deletion_log():
+    return render_template(
+        "cafe/cash_counter_deletion_log.html",
+        cash_deletion_rows=_cash_counter_deletion_rows(),
+    )
+
+
+@bp.route("/cash-counter/deletion-log/export.xlsx")
+@roles_required("admin")
+def cash_counter_deletion_log_export():
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "Cash Deletion Audit"
+    sheet.append([
+        "Deleted At (IST)",
+        "Original Entry ID",
+        "Movement",
+        "Amount",
+        "Original Time (IST)",
+        "Reason",
+        "Note",
+        "Denominations",
+        "Deleted By",
+        "Email",
+        "Kiosk Authenticated",
+        "Correction Reason",
+    ])
+    for row in _cash_counter_deletion_rows():
+        log = row["log"]
+        sheet.append([
+            row["deleted_label"],
+            log.cash_counter_entry_id,
+            "Deposit" if log.original_entry_type == "deposit" else "Withdrawal",
+            round(float(log.original_amount or 0), 2),
+            row["original_time_label"],
+            log.original_reason,
+            log.original_note or "",
+            row["denominations"] or "Amount only",
+            log.deleted_by_name,
+            log.deleted_by_email,
+            "Yes" if log.kiosk_mode else "No",
+            log.deletion_reason or "",
+        ])
+
+    output = BytesIO()
+    workbook.save(output)
+    output.seek(0)
+    return Response(
+        output.getvalue(),
+        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": 'attachment; filename="cash-counter-deletion-audit.xlsx"'},
+    )
+
+
 def _render_cash_counter_page(kiosk_mode: bool = False, access_key: str = ""):
     if request.method == "POST":
         entry_type = (request.form.get("entry_type") or "deposit").strip().lower()
@@ -3441,6 +3680,7 @@ def _render_cash_counter_page(kiosk_mode: bool = False, access_key: str = ""):
                 created_by_user_id=g.current_user.id if g.current_user else None,
                 occurred_at=occurred_at,
                 note=note,
+                is_deleted=False,
             )
         )
         db.session.commit()
@@ -3495,6 +3735,12 @@ def _render_cash_counter_page(kiosk_mode: bool = False, access_key: str = ""):
         ),
         cash_counter_kiosk_mode=kiosk_mode,
         cash_counter_access_key=access_key,
+        cashier_auth_users=_cash_counter_authorized_users() if kiosk_mode else [],
+        cash_counter_deletion_log_url=(
+            url_for("cafe.cash_counter_deletion_log")
+            if g.current_user and user_has_any_role(g.current_user, "admin")
+            else ""
+        ),
         hide_staff_nav=kiosk_mode,
         topbar_home_url=(
             url_for("cafe.reception_kiosk", access_key=access_key)
@@ -3647,6 +3893,11 @@ def _render_cashier_view(kiosk_mode: bool = False, access_key: str = ""):
         .order_by(CafeOrder.created_at.desc())
         .all()
     )
+    all_order_groups = _all_order_settlement_groups(all_orders)
+    all_order_time_map = {
+        order.id: _format_ist(order.created_at, "%I:%M:%S %p")
+        for order in all_orders
+    }
     all_orders_payload = []
     public_base = (current_app.config.get("PUBLIC_BASE_URL") or request.host_url.rstrip("/")).rstrip("/")
     for o in all_orders:
@@ -3717,6 +3968,8 @@ def _render_cashier_view(kiosk_mode: bool = False, access_key: str = ""):
         cash_counter_snapshot=_cash_counter_snapshot(),
         total_sale_today=round(float(total_sale_today), 2),
         all_orders=all_orders,
+        all_order_groups=all_order_groups,
+        all_order_time_map=all_order_time_map,
         all_orders_payload=all_orders_payload,
         selected_date=selected_date,
         sel_year=sel_year,

@@ -1,0 +1,56 @@
+{% extends "base.html" %}
+{% block body_class %}cash-counter-page cash-counter-audit-page{% endblock %}
+{% block main_class %}container-wide{% endblock %}
+{% block content %}
+<section class="page-heading cash-counter-heading">
+  <div>
+    <p class="eyebrow">Admin audit</p>
+    <h2>Cash Counter Deletion Audit</h2>
+    <p class="muted">Every deleted cash movement remains traceable here. The live cash balance excludes the deleted movement and restores its denominations.</p>
+  </div>
+  <div class="cash-counter-heading-actions">
+    <a class="button-link ghost" href="{{ url_for('cafe.cash_counter') }}">Back to Cash Counter</a>
+    <a class="button-link" href="{{ url_for('cafe.cash_counter_deletion_log_export') }}">Download Excel</a>
+  </div>
+</section>
+
+<section class="panel">
+  <div class="cash-counter-history-wrap">
+    <table class="cash-counter-history cash-deletion-history">
+      <thead>
+        <tr>
+          <th>Deleted At (IST)</th>
+          <th>Original Entry</th>
+          <th>Movement</th>
+          <th>Amount</th>
+          <th>Original Time</th>
+          <th>Reason</th>
+          <th>Denominations</th>
+          <th>Deleted By</th>
+          <th>Access</th>
+          <th>Correction Note</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in cash_deletion_rows %}
+        {% set log = row.log %}
+        <tr>
+          <td>{{ row.deleted_label }}</td>
+          <td>#{{ log.cash_counter_entry_id }}</td>
+          <td>{{ "Deposit" if log.original_entry_type == "deposit" else "Withdrawal" }}</td>
+          <td><strong>₹{{ "%.2f"|format(log.original_amount) }}</strong></td>
+          <td>{{ row.original_time_label }}</td>
+          <td>{{ log.original_reason }}{% if log.original_note %}<br><small>{{ log.original_note }}</small>{% endif %}</td>
+          <td>{{ row.denominations or "Amount only" }}</td>
+          <td>{{ log.deleted_by_name }}<br><small>{{ log.deleted_by_email }}</small></td>
+          <td>{{ "Reception kiosk" if log.kiosk_mode else "Staff session" }}</td>
+          <td>{{ log.deletion_reason or "-" }}</td>
+        </tr>
+        {% else %}
+        <tr><td colspan="10" class="muted">No cash movement deletions have been recorded.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endblock %}

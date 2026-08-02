@@ -8,7 +8,12 @@
     <h2>Cash Counter</h2>
     <p class="muted">Track notes, coins, cash sales, change, expenses, and owner handovers in one auditable ledger.</p>
   </div>
-  <a class="button-link" href="{{ cash_counter_back_url }}">Back to Cashier</a>
+  <div class="cash-counter-heading-actions">
+    {% if cash_counter_deletion_log_url %}
+    <a class="button-link ghost" href="{{ cash_counter_deletion_log_url }}">Deletion audit</a>
+    {% endif %}
+    <a class="button-link" href="{{ cash_counter_back_url }}">Back to Cashier</a>
+  </div>
 </section>
 
 <section class="cash-counter-summary-grid">
@@ -145,7 +150,7 @@
     </div>
     <div class="cash-counter-history-wrap">
       <table class="cash-counter-history">
-        <thead><tr><th>Time</th><th>Movement</th><th>Amount</th><th>Reason</th><th>Denominations</th><th>Logged by</th></tr></thead>
+        <thead><tr><th>Time</th><th>Movement</th><th>Amount</th><th>Reason</th><th>Denominations</th><th>Logged by</th><th>Action</th></tr></thead>
         <tbody>
           {% for row in cash_entry_rows %}
           {% set entry = row.entry %}
@@ -156,15 +161,63 @@
             <td>{{ entry.reason }}{% if entry.note %}<br><small>{{ entry.note }}</small>{% endif %}</td>
             <td>{{ row.denominations or "Amount only" }}</td>
             <td>{{ entry.created_by.full_name if entry.created_by else "System" }}</td>
+            <td>
+              {% if cash_counter_kiosk_mode %}
+              <button
+                type="button"
+                class="cash-delete-button cash-delete-kiosk-button"
+                data-delete-url="{{ url_for('cafe.reception_kiosk_delete_cash_counter_entry', access_key=cash_counter_access_key, entry_id=entry.id) }}"
+              >Delete</button>
+              {% else %}
+              <form method="post" action="{{ url_for('cafe.delete_cash_counter_entry', entry_id=entry.id) }}" onsubmit="return confirm('Delete this cash record? Its denominations will be restored and the deletion will be audited.');">
+                <input type="hidden" name="period" value="{{ cash_period }}" />
+                <input type="hidden" name="start" value="{{ cash_period_start.isoformat() }}" />
+                <input type="hidden" name="end" value="{{ cash_period_end.isoformat() }}" />
+                <button type="submit" class="cash-delete-button">Delete</button>
+              </form>
+              {% endif %}
+            </td>
           </tr>
           {% else %}
-          <tr><td colspan="6" class="muted">No cash movements in this period.</td></tr>
+          <tr><td colspan="7" class="muted">No cash movements in this period.</td></tr>
           {% endfor %}
         </tbody>
       </table>
     </div>
   </section>
 </div>
+
+{% if cash_counter_kiosk_mode %}
+<dialog id="cash-delete-dialog" class="cash-delete-dialog">
+  <form method="post" id="cash-delete-dialog-form">
+    <button type="button" class="cash-dialog-close" id="cash-delete-dialog-close" aria-label="Close">×</button>
+    <p class="eyebrow">Kiosk authorization</p>
+    <h3>Delete cash record</h3>
+    <p class="muted">Select an active cashier-authorized staff account and enter its password. The correction will be recorded in the admin audit.</p>
+    <input type="hidden" name="period" value="{{ cash_period }}" />
+    <input type="hidden" name="start" value="{{ cash_period_start.isoformat() }}" />
+    <input type="hidden" name="end" value="{{ cash_period_end.isoformat() }}" />
+    <label>Authorized staff email
+      <select name="cashier_email" required>
+        <option value="">Select staff email</option>
+        {% for user in cashier_auth_users %}
+        <option value="{{ user.email }}">{{ user.full_name }} ({{ user.email }})</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>Password
+      <input type="password" name="cashier_password" autocomplete="current-password" required />
+    </label>
+    <label>Correction note
+      <input name="deletion_reason" value="Wrong cash-counter entry" maxlength="500" />
+    </label>
+    <div class="cash-delete-dialog-actions">
+      <button type="button" class="button-link ghost" id="cash-delete-dialog-cancel">Cancel</button>
+      <button type="submit" class="cash-delete-button">Confirm delete</button>
+    </div>
+  </form>
+</dialog>
+{% endif %}
 
 <script>
   (() => {
@@ -216,6 +269,28 @@
     const syncDates = () => dates.forEach((input) => input.toggleAttribute("required", period?.value === "custom"));
     period?.addEventListener("change", syncDates);
     syncDates();
+
+    const deleteDialog = document.getElementById("cash-delete-dialog");
+    const deleteDialogForm = document.getElementById("cash-delete-dialog-form");
+    const closeDeleteDialog = () => {
+      if (deleteDialog?.open) deleteDialog.close();
+      deleteDialogForm?.reset();
+    };
+    document.querySelectorAll(".cash-delete-kiosk-button").forEach((button) => {
+      button.addEventListener("click", () => {
+        if (!deleteDialog || !deleteDialogForm) return;
+        deleteDialogForm.action = button.dataset.deleteUrl || "";
+        deleteDialog.showModal();
+        deleteDialogForm.querySelector("select")?.focus();
+      });
+    });
+    document.getElementById("cash-delete-dialog-close")?.addEventListener("click", closeDeleteDialog);
+    document.getElementById("cash-delete-dialog-cancel")?.addEventListener("click", closeDeleteDialog);
+    deleteDialogForm?.addEventListener("submit", (event) => {
+      if (!confirm("Delete this cash record? Its denominations will be restored and the deletion will be audited.")) {
+        event.preventDefault();
+      }
+    });
   })();
 </script>
 {% endblock %}

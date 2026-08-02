@@ -4886,6 +4886,71 @@ body.cashier-shell.cashier-tablet-portrait .cashier-selected-sections {
   min-width: 720px;
 }
 
+.cash-counter-heading-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  flex-wrap: wrap;
+}
+
+.cash-delete-button {
+  border: 1px solid #b34d3b;
+  border-radius: 0.55rem;
+  background: #fff3f0;
+  color: #9f3528;
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.85rem;
+  font-weight: 700;
+  padding: 0.45rem 0.65rem;
+  white-space: nowrap;
+}
+
+.cash-delete-button:hover,
+.cash-delete-button:focus-visible {
+  background: #9f3528;
+  color: #fff;
+}
+
+.cash-delete-dialog {
+  border: 0;
+  border-radius: 0.9rem;
+  box-shadow: 0 1.5rem 4rem rgba(42, 25, 16, 0.3);
+  max-width: min(34rem, calc(100vw - 2rem));
+  padding: 1.35rem;
+  width: 100%;
+}
+
+.cash-delete-dialog::backdrop {
+  background: rgba(30, 18, 12, 0.45);
+}
+
+.cash-delete-dialog form {
+  display: grid;
+  gap: 0.85rem;
+}
+
+.cash-delete-dialog h3 {
+  margin: 0;
+}
+
+.cash-dialog-close {
+  align-self: end;
+  background: transparent;
+  border: 0;
+  color: #65432f;
+  cursor: pointer;
+  font-size: 1.5rem;
+  line-height: 1;
+}
+
+.cash-delete-dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.65rem;
+  margin-top: 0.25rem;
+}
+
 .cash-movement-chip {
   display: inline-flex;
   padding: 0.22rem 0.5rem;
@@ -5077,5 +5142,136 @@ body.cashier-shell.cashier-tablet-portrait .cashier-selected-sections {
   .purchase-row .purchase-add-btn,
   .purchase-row .purchase-remove-btn {
     width: 100%;
+  }
+}
+/* All Orders is grouped by the cashier's settlement transaction. */
+.all-orders-groups {
+  display: grid;
+  gap: 14px;
+  margin-top: 18px;
+}
+.all-orders-group {
+  overflow: hidden;
+  border: 1px solid #e2d5ca;
+  border-radius: 14px;
+  background: #fffdf9;
+  box-shadow: 0 8px 22px rgba(67, 42, 27, 0.05);
+}
+.all-orders-group-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 16px 18px;
+}
+.all-orders-group-summary h4 {
+  margin: 3px 0 7px;
+  font-size: 18px;
+}
+.all-orders-group-summary p {
+  margin: 3px 0;
+  color: #6d5b4f;
+  font-size: 13px;
+}
+.all-orders-group-eyebrow {
+  color: #8b6449;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+.all-orders-group-total {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  min-width: 250px;
+  color: #4d2f20;
+}
+.all-orders-group-total > strong {
+  white-space: nowrap;
+  font-size: 18px;
+}
+.all-orders-group-total .muted {
+  font-size: 12px;
+  text-align: right;
+}
+.all-orders-print-link {
+  display: inline-flex;
+  align-items: center;
+  min-height: 36px;
+  padding: 7px 11px;
+  border-radius: 9px;
+  background: #6f432d;
+  color: #fff;
+  font-size: 13px;
+  font-weight: 700;
+  text-decoration: none;
+  white-space: nowrap;
+}
+.all-orders-group-toggle {
+  display: inline-grid;
+  width: 34px;
+  height: 44px;
+  flex: 0 0 34px;
+  place-items: center;
+  border: 0;
+  border-left: 1px solid #eadfd5;
+  border-radius: 0;
+  background: transparent;
+  color: #6f432d;
+  font-size: 32px;
+  line-height: 1;
+  cursor: pointer;
+}
+.all-orders-group-body {
+  padding: 0 18px 16px;
+  border-top: 1px solid #eee5dc;
+  background: #fff;
+}
+.all-orders-group-meta {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 0 4px;
+  color: #806c5e;
+  font-size: 12px;
+}
+.all-orders-table-wrap {
+  overflow-x: auto;
+}
+.all-orders-table {
+  min-width: 760px;
+  margin: 0;
+}
+.all-orders-table td,
+.all-orders-table th {
+  vertical-align: top;
+}
+.all-orders-table td > div + div {
+  margin-top: 4px;
+}
+.all-orders-empty {
+  padding: 28px 12px;
+  color: #806c5e;
+  text-align: center;
+}
+@media (max-width: 720px) {
+  .all-orders-group-head {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 12px;
+  }
+  .all-orders-group-total {
+    width: 100%;
+    min-width: 0;
+    justify-content: flex-start;
+  }
+  .all-orders-group-toggle {
+    margin-left: auto;
+  }
+  .all-orders-group-meta {
+    flex-direction: column;
+    gap: 4px;
   }
 }
