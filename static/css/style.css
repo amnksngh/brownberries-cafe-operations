@@ -2653,6 +2653,22 @@ th {
   border-color: rgba(40, 123, 77, 0.18);
 }
 
+/* The first three active tickets are ranked independently per workstation. */
+.kds-item-shell.priority-1 .kds-item-row {
+  background: #e9f7ed;
+  border-color: rgba(45, 137, 78, 0.34);
+}
+
+.kds-item-shell.priority-2 .kds-item-row {
+  background: #fff0f4;
+  border-color: rgba(187, 87, 113, 0.28);
+}
+
+.kds-item-shell.priority-3 .kds-item-row {
+  background: #fff8df;
+  border-color: rgba(187, 145, 35, 0.34);
+}
+
 .kds-item-shell.active .kds-item-row {
   border-color: #6f4a35;
   box-shadow: 0 0 0 3px rgba(111, 74, 53, 0.12);
@@ -2716,6 +2732,64 @@ th {
 .kds-mini-badge {
   background: #fff0df;
   color: #9a5500;
+}
+
+.kds-station-badge,
+.kds-priority-badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 1.35rem;
+  padding: 0.18rem 0.42rem;
+  border-radius: 999px;
+  font-size: 0.7rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.kds-priority-legend {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.28rem;
+  margin-right: 0.55rem;
+}
+
+.kds-priority-chip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 2.15rem;
+  min-height: 1.45rem;
+  padding: 0.14rem 0.38rem;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  color: #5b4030;
+  font-size: 0.7rem;
+  font-weight: 800;
+}
+
+.kds-priority-chip.priority-1 {
+  background: #e9f7ed;
+  border-color: rgba(45, 137, 78, 0.34);
+}
+
+.kds-priority-chip.priority-2 {
+  background: #fff0f4;
+  border-color: rgba(187, 87, 113, 0.28);
+}
+
+.kds-priority-chip.priority-3 {
+  background: #fff8df;
+  border-color: rgba(187, 145, 35, 0.34);
+}
+
+.kds-station-badge {
+  background: rgba(111, 74, 53, 0.1);
+  color: #68442f;
+}
+
+.kds-priority-badge {
+  background: rgba(255, 255, 255, 0.74);
+  color: #6f4a35;
 }
 
 .kds-sop-quick {

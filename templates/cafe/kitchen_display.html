@@ -60,6 +60,11 @@
         <p class="muted">Tap an item to open its SOP without leaving the queue.</p>
       </div>
       <div class="kds-board-state">
+        <div class="kds-priority-legend" aria-label="Preparation priority legend">
+          <span class="kds-priority-chip priority-1">1st</span>
+          <span class="kds-priority-chip priority-2">2nd</span>
+          <span class="kds-priority-chip priority-3">3rd</span>
+        </div>
         <span class="kds-live-dot"></span>
         <span id="socket-state">Connecting...</span>
       </div>
@@ -142,6 +147,7 @@
   });
   const station = "{{ station }}";
   const stationName = {{ station_name|tojson }};
+  const groupedDisplay = {{ 'true' if display_group_slug else 'false' }};
   const displayLabel = {{ station_action_label|tojson }};
   const currentPageUrl = {{ current_page_url|tojson }};
   const statusUpdateUrlTemplate = {{ status_update_url_template|tojson }};
@@ -410,7 +416,7 @@
         const sopKey = buildSopKey(card.id, item.id, item.size_label || "");
         const awaitingApproval = item.approval_status === "pending";
         return `
-          <div class="kds-item-shell ${selectedSopKey === sopKey ? "active" : ""} ${awaitingApproval ? "approval-pending" : "approval-approved"} ${item.prep_status === "served" ? "item-served" : ""}">
+          <div class="kds-item-shell ${selectedSopKey === sopKey ? "active" : ""} ${awaitingApproval ? "approval-pending" : "approval-approved"} ${item.prep_status === "served" ? "item-served" : ""} ${escapeHtml(item.priority_class || "")} ">
             <button type="button" class="kds-item-row" data-order-id="${card.id}" data-item-id="${item.id}">
               <div class="kds-item-main">
                 <strong>${escapeHtml(item.name)}</strong>
@@ -418,6 +424,8 @@
                 <small>Order #${escapeHtml(item.order_pickup_no || "-")} • ${escapeHtml(item.ordered_at || "-")}</small>
               </div>
               <div class="kds-item-side">
+                ${groupedDisplay ? `<span class="kds-station-badge">${escapeHtml(item.prep_station_name || "Workstation")}</span>` : ""}
+                ${item.priority_rank ? `<span class="kds-priority-badge">P${Number(item.priority_rank)}</span>` : ""}
                 ${item.is_parcel ? '<span class="kds-mini-badge">Parcel</span>' : ""}
                 <span class="kds-status-badge ${statusClass(item.approval_status === "pending" ? "pending_approval" : "ready")}">${itemApprovalLabel(item.approval_status)}</span>
                 <span class="kds-status-badge ${statusClass(item.prep_status)}">${itemStatusLabel(item.prep_status)}</span>

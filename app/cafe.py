@@ -4812,6 +4812,12 @@ def _render_kitchen_display(
                     "id": oi.id,
                     "name": oi.menu_item.name,
                     "qty": int(oi.quantity or 0),
+                    "prep_station": (oi.menu_item.prep_station or "").strip().lower(),
+                    "prep_station_name": station_lookup.get(
+                        (oi.menu_item.prep_station or "").strip().lower()
+                    ).name
+                    if station_lookup.get((oi.menu_item.prep_station or "").strip().lower())
+                    else _workstation_display_name((oi.menu_item.prep_station or "").strip().lower()),
                     "size_label": oi.size_label or "",
                     "is_parcel": bool(oi.is_parcel),
                     "approval_status": oi.approval_status or "pending",
@@ -4819,6 +4825,7 @@ def _render_kitchen_display(
                     "order_pickup_no": _format_pickup_number(order),
                     "order_display_code": order.display_code or _format_internal_order_code(order),
                     "ordered_at": _format_ist(order.created_at, "%I:%M:%S %p"),
+                    "priority_sort": created_local.isoformat() if created_local else "",
                     "sop": sop,
                 }
             )
@@ -4833,6 +4840,33 @@ def _render_kitchen_display(
             card["status"] = "pending_approval"
     if status_changed:
         db.session.commit()
+
+    # Priority is calculated independently for every workstation. This is
+    # deliberately done after table cards are assembled so a grouped kiosk
+    # can show the first three items for each member workstation, rather than
+    # letting one busy station consume the entire group's priority queue.
+    items_by_station = {}
+    for card in table_cards_map.values():
+        for item in card["items"]:
+            station_slug = item.get("prep_station") or "unassigned"
+            items_by_station.setdefault(station_slug, []).append(item)
+    for station_items in items_by_station.values():
+        station_items.sort(
+            key=lambda row: (
+                row.get("prep_status") == "served",
+                row.get("priority_sort") or "",
+                int(row.get("id") or 0),
+            )
+        )
+        active_items = [row for row in station_items if row.get("prep_status") != "served"]
+        for rank, item in enumerate(active_items[:3], start=1):
+            item["priority_rank"] = rank
+            item["priority_class"] = f"priority-{rank}"
+        for item in station_items[3:]:
+            if not item.get("priority_rank"):
+                item["priority_rank"] = 0
+                item["priority_class"] = ""
+
     order_cards = []
     for card in table_cards_map.values():
         if not card["items"]:
@@ -4840,10 +4874,10 @@ def _render_kitchen_display(
         card["items"] = sorted(
             card["items"],
             key=lambda row: (
-                row["approval_status"] != "pending",
-                row["prep_status"] == "served",
-                row["ordered_at"],
-                row["id"],
+                row.get("priority_rank") or 99,
+                row.get("prep_status") == "served",
+                row.get("priority_sort") or "",
+                int(row.get("id") or 0),
             ),
         )
         pending_approval = any((item.get("approval_status") or "pending") == "pending" for item in card["items"])
