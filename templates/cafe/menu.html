@@ -159,8 +159,18 @@
 
     {% if active_menu_section == 'items' %}
     <section class="panel">
-      <h3>Menu Items</h3>
+      <div class="menu-items-toolbar">
+        <div>
+          <h3>Menu Items</h3>
+          <p class="muted">Open and edit as many items as needed, then save all changed items together.</p>
+        </div>
+        <div class="menu-items-save-all">
+          <span id="menu-items-dirty-status" class="muted">No unsaved item changes</span>
+          <button type="button" id="menu-items-save-all" disabled>Save All</button>
+        </div>
+      </div>
       <label>Search Item <input id="menu-item-search" placeholder="Search by name/category/type..." /></label>
+      <form id="bulk-menu-items-form" method="post" action="{{ url_for('cafe.bulk_update_menu_items') }}" enctype="multipart/form-data"></form>
       <table id="menu-items-table">
         <tr><th>Category</th><th>Item</th><th>Type</th><th>Workstation</th><th>Responsible Staff</th><th>Price</th><th>Image</th><th>Actions</th></tr>
         {% for item in items %}
@@ -185,7 +195,7 @@
             >Preview</button>
             <details style="margin-top:0.35rem;">
               <summary>Edit</summary>
-              <form method="post" action="{{ url_for('cafe.update_menu_item', item_id=item.id) }}" class="grid grid-4" enctype="multipart/form-data">
+              <form method="post" action="{{ url_for('cafe.update_menu_item', item_id=item.id) }}" class="grid grid-4 menu-item-edit-form" data-item-id="{{ item.id }}" enctype="multipart/form-data">
                 <fieldset class="full">
                   <legend>Categories (Select one or more)</legend>
                   <div class="grid grid-4">
@@ -349,6 +359,61 @@
     hasSizes.addEventListener("change", sync);
     sync();
   });
+  const bulkMenuForm = document.getElementById("bulk-menu-items-form");
+  const saveAllMenuItemsButton = document.getElementById("menu-items-save-all");
+  const dirtyMenuItemsStatus = document.getElementById("menu-items-dirty-status");
+  const menuItemEditors = Array.from(document.querySelectorAll(".menu-item-edit-form"));
+  const syncBulkMenuState = () => {
+    const dirtyCount = menuItemEditors.filter((form) => form.dataset.dirty === "1").length;
+    if (saveAllMenuItemsButton) {
+      saveAllMenuItemsButton.disabled = dirtyCount === 0;
+      saveAllMenuItemsButton.textContent = dirtyCount ? `Save All (${dirtyCount})` : "Save All";
+    }
+    if (dirtyMenuItemsStatus) {
+      dirtyMenuItemsStatus.textContent = dirtyCount
+        ? `${dirtyCount} item${dirtyCount === 1 ? "" : "s"} ready to save`
+        : "No unsaved item changes";
+    }
+  };
+  menuItemEditors.forEach((form) => {
+    const markDirty = () => {
+      form.dataset.dirty = "1";
+      form.classList.add("is-dirty");
+      syncBulkMenuState();
+    };
+    form.addEventListener("input", markDirty);
+    form.addEventListener("change", markDirty);
+  });
+  saveAllMenuItemsButton?.addEventListener("click", async () => {
+    const dirtyForms = menuItemEditors.filter((form) => form.dataset.dirty === "1");
+    if (!dirtyForms.length || !bulkMenuForm) return;
+    saveAllMenuItemsButton.disabled = true;
+    saveAllMenuItemsButton.textContent = "Saving...";
+    const payload = new FormData();
+    dirtyForms.forEach((form) => {
+      const itemId = form.dataset.itemId;
+      payload.append("item_ids", itemId);
+      for (const [name, value] of new FormData(form).entries()) {
+        if (value instanceof File && !value.name) continue;
+        payload.append(`${itemId}__${name}`, value);
+      }
+    });
+    try {
+      const response = await fetch(bulkMenuForm.action, {
+        method: "POST",
+        body: payload,
+        credentials: "same-origin",
+        headers: { "X-Requested-With": "XMLHttpRequest" },
+      });
+      if (!response.ok) throw new Error(`Save failed (${response.status})`);
+      window.location.assign(response.url);
+    } catch (error) {
+      saveAllMenuItemsButton.disabled = false;
+      saveAllMenuItemsButton.textContent = `Save All (${dirtyForms.length})`;
+      window.alert(error.message || "Could not save menu items.");
+    }
+  });
+  syncBulkMenuState();
   const menuSearch = document.getElementById("menu-item-search");
   menuSearch?.addEventListener("input", () => {
     const q = menuSearch.value.trim().toLowerCase();

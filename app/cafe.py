@@ -1514,6 +1514,129 @@ def _parse_size_pricing_from_form():
     return pairs
 
 
+def _menu_form_value(form, field: str, prefix: str = "") -> str:
+    return (form.get(f"{prefix}{field}") or "").strip()
+
+
+def _menu_form_has(form, field: str, prefix: str = "") -> bool:
+    return f"{prefix}{field}" in form
+
+
+def _menu_form_list(form, field: str, prefix: str = "") -> list[str]:
+    return form.getlist(f"{prefix}{field}")
+
+
+def _parse_size_pricing_from_values(form, prefix: str = ""):
+    pairs = []
+    indexes = []
+    marker = f"{prefix}size_name_"
+    for key in form.keys():
+        if key.startswith(marker):
+            suffix = key.removeprefix(marker)
+            if suffix.isdigit():
+                indexes.append(int(suffix))
+    if not indexes:
+        indexes = [1, 2]
+    for index in sorted(set(indexes)):
+        name = _menu_form_value(form, f"size_name_{index}", prefix)
+        price_raw = _menu_form_value(form, f"size_price_{index}", prefix)
+        if not name:
+            continue
+        try:
+            price = float(price_raw)
+        except (TypeError, ValueError):
+            continue
+        if price < 0:
+            continue
+        pairs.append({"size": name, "price": round(price, 2)})
+    return pairs
+
+
+def _apply_menu_item_form_values(item: MenuItem, form, files, prefix: str = "") -> str | None:
+    """Apply one menu editor's values and return a validation error, if any."""
+    menu_type_id = _menu_form_value(form, "menu_type_id", prefix)
+    if menu_type_id:
+        if not menu_type_id.isdigit():
+            return "Please select a valid type."
+        menu_type = MenuType.query.get(int(menu_type_id))
+        if not menu_type:
+            return "Please select a valid type."
+        item.item_type = menu_type.name
+
+    category_ids = []
+    for value in _menu_form_list(form, "category_ids", prefix):
+        try:
+            category_id = int(value)
+        except (TypeError, ValueError):
+            continue
+        if category_id not in category_ids:
+            category_ids.append(category_id)
+    if category_ids:
+        item.category_id = category_ids[0]
+        item.category_ids_json = json.dumps(category_ids)
+    item.subcategory_id = None
+
+    item_name = _menu_form_value(form, "name", prefix)
+    if item_name:
+        item.name = item_name
+
+    uploaded_image = _save_menu_image(files.get(f"{prefix}image_file"))
+    if uploaded_image:
+        item.image_url = uploaded_image
+    else:
+        image_url = _menu_form_value(form, "image_url", prefix)
+        if image_url:
+            item.image_url = image_url
+
+    description = _menu_form_value(form, "description", prefix)
+    if description:
+        item.description = description
+    short_description = _menu_form_value(form, "short_description", prefix)
+    if short_description:
+        item.short_description = short_description
+
+    calories_raw = _menu_form_value(form, "calories", prefix)
+    if calories_raw:
+        try:
+            item.calories = int(calories_raw)
+        except ValueError:
+            return f"Calories must be a whole number for {item.name}."
+
+    price_raw = _menu_form_value(form, "price", prefix)
+    if price_raw:
+        try:
+            item.price = float(price_raw)
+        except ValueError:
+            return f"Please enter a valid price for {item.name}."
+
+    if _menu_form_has(form, "has_size_variants", prefix):
+        item.has_size_variants = True
+        size_pairs = _parse_size_pricing_from_values(form, prefix)
+        if size_pairs:
+            item.size_pricing_json = json.dumps(size_pairs)
+    else:
+        item.has_size_variants = False
+        item.size_pricing_json = None
+
+    if _menu_form_has(form, "prep_station", prefix):
+        item.prep_station = _normalize_prep_station(_menu_form_value(form, "prep_station", prefix))
+    if _menu_form_has(form, "chef_user_id", prefix):
+        chef_user_id_raw = _menu_form_value(form, "chef_user_id", prefix)
+        if not chef_user_id_raw:
+            item.chef_user_id = None
+        elif chef_user_id_raw.isdigit():
+            chef_user = User.query.get(int(chef_user_id_raw))
+            if chef_user and chef_user.active and _is_preparation_responsibility_user(chef_user):
+                item.chef_user_id = chef_user.id
+            else:
+                return f"Please select a valid preparation responsibility for {item.name}."
+        else:
+            return f"Please select a valid preparation responsibility for {item.name}."
+
+    item.available = _menu_form_has(form, "available", prefix)
+    return None
+
+
 def _apply_category_filter(query, category_id: int | None):
     if not category_id:
         return query
@@ -2891,78 +3014,51 @@ def toggle_item(item_id):
 @roles_required("admin", "manager")
 def update_menu_item(item_id):
     item = MenuItem.query.get_or_404(item_id)
-    menu_type_id = request.form.get("menu_type_id", "").strip()
-    if menu_type_id:
-        menu_type = MenuType.query.get(int(menu_type_id))
-        if not menu_type:
-            flash("Please select a valid type.", "error")
-            return redirect(url_for("cafe.menu", section="items"))
-        item.item_type = menu_type.name
-
-    category_ids = _parse_category_ids_from_form()
-    if category_ids:
-        item.category_id = category_ids[0]
-        item.category_ids_json = json.dumps(category_ids)
-    item.subcategory_id = None
-    item_name = request.form.get("name", "").strip()
-    if item_name:
-        item.name = item_name
-
-    uploaded_image = _save_menu_image(request.files.get("image_file"))
-    if uploaded_image:
-        item.image_url = uploaded_image
-    else:
-        image_url = request.form.get("image_url", "").strip()
-        if image_url:
-            item.image_url = image_url
-
-    if "description" in request.form:
-        description = request.form.get("description", "").strip()
-        if description:
-            item.description = description
-    if "short_description" in request.form:
-        short_description = request.form.get("short_description", "").strip()
-        if short_description:
-            item.short_description = short_description
-
-    calories_raw = request.form.get("calories", "").strip()
-    if calories_raw:
-        item.calories = int(calories_raw)
-
-    price_raw = request.form.get("price", "").strip()
-    if price_raw:
-        item.price = float(price_raw)
-
-    has_size_variants = True if request.form.get("has_size_variants") else False
-    if has_size_variants:
-        item.has_size_variants = True
-        size_pairs = _parse_size_pricing_from_form()
-        if size_pairs:
-            item.size_pricing_json = json.dumps(size_pairs)
-    else:
-        item.has_size_variants = False
-        item.size_pricing_json = None
-
-    if "prep_station" in request.form:
-        item.prep_station = _normalize_prep_station(request.form.get("prep_station"))
-    if "chef_user_id" in request.form:
-        chef_user_id_raw = request.form.get("chef_user_id", "").strip()
-        if not chef_user_id_raw:
-            item.chef_user_id = None
-        elif chef_user_id_raw.isdigit():
-            chef_user = User.query.get(int(chef_user_id_raw))
-            if chef_user and chef_user.active and _is_preparation_responsibility_user(chef_user):
-                item.chef_user_id = chef_user.id
-            else:
-                flash("Please select a valid preparation responsibility.", "error")
-                return redirect(url_for("cafe.menu", section="items"))
-        else:
-            flash("Please select a valid preparation responsibility.", "error")
-            return redirect(url_for("cafe.menu", section="items"))
-
-    item.available = True if request.form.get("available") else False
+    error = _apply_menu_item_form_values(item, request.form, request.files)
+    if error:
+        db.session.rollback()
+        flash(error, "error")
+        return redirect(url_for("cafe.menu", section="items"))
     db.session.commit()
     flash("Menu item updated.", "success")
+    return redirect(url_for("cafe.menu", section="items"))
+
+
+@bp.route("/menu/items/bulk-update", methods=["POST"])
+@roles_required("admin", "manager")
+def bulk_update_menu_items():
+    item_ids = []
+    for value in request.form.getlist("item_ids"):
+        try:
+            item_id = int(value)
+        except (TypeError, ValueError):
+            continue
+        if item_id not in item_ids:
+            item_ids.append(item_id)
+    if not item_ids:
+        flash("Open an item and change at least one field before using Save All.", "error")
+        return redirect(url_for("cafe.menu", section="items"))
+
+    items = {item.id: item for item in MenuItem.query.filter(MenuItem.id.in_(item_ids)).all()}
+    if len(items) != len(item_ids):
+        db.session.rollback()
+        flash("One or more menu items could not be found. Nothing was saved.", "error")
+        return redirect(url_for("cafe.menu", section="items"))
+
+    for item_id in item_ids:
+        error = _apply_menu_item_form_values(
+            items[item_id],
+            request.form,
+            request.files,
+            prefix=f"{item_id}__",
+        )
+        if error:
+            db.session.rollback()
+            flash(f"Nothing was saved. {error}", "error")
+            return redirect(url_for("cafe.menu", section="items"))
+
+    db.session.commit()
+    flash(f"Saved {len(item_ids)} menu item(s).", "success")
     return redirect(url_for("cafe.menu", section="items"))
 
 
