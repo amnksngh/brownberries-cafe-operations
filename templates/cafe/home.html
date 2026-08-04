@@ -182,7 +182,7 @@
 
 <section class="panel">
   <h3>Prep Display Kiosk URL</h3>
-  <p class="muted">Use this for workstation kiosks so each screen opens without staff login and only shows its own prep queue.</p>
+  <p class="muted">Use these passwordless links for individual workstation kiosks or grouped displays. A grouped display combines the live queues of its selected workstations while keeping item-level status controls.</p>
   <form method="post" action="{{ url_for('cafe.update_kiosk_settings') }}" class="grid grid-4">
     <label class="full">Kiosk Access Key
       <input name="kiosk_token" value="{{ kiosk_token or '' }}" placeholder="Leave blank to auto-generate a secure key" />
@@ -198,6 +198,18 @@
     </div>
     {% endfor %}
   </div>
+  {% if workstation_group_kiosk_urls %}
+  <h4 style="margin:1rem 0 0.5rem;">Grouped Display Kiosk URLs</h4>
+  <div class="grid grid-2">
+    {% for group in workstation_group_kiosk_urls %}
+    <div class="flash success">
+      <strong>{{ group.name }} Group</strong><br />
+      <span class="muted">Shows: {{ group.stations or 'No active workstations' }}</span><br />
+      <a href="{{ group.url }}" target="_blank" rel="noopener">{{ group.url }}</a>
+    </div>
+    {% endfor %}
+  </div>
+  {% endif %}
   {% endif %}
 </section>
 

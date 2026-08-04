@@ -12,6 +12,9 @@
         {% for option in workstation_options %}
         <a class="button-link {% if station == option.slug %}active{% endif %}" href="{% if kiosk_mode and kiosk_access_key %}{{ url_for('cafe.kiosk_display', access_key=kiosk_access_key, station=option.slug) }}{% else %}{{ url_for('cafe.kitchen_display', station=option.slug) }}{% endif %}">{{ option.name }}</a>
         {% endfor %}
+        {% for group in workstation_group_options %}
+        <a class="button-link {% if display_group_slug == group.slug %}active{% endif %}" href="{% if kiosk_mode and kiosk_access_key %}{{ url_for('cafe.kiosk_group_display', access_key=kiosk_access_key, group_slug=group.slug) }}{% else %}{{ url_for('cafe.kitchen_display', group=group.slug) }}{% endif %}">{{ group.name }} (Group)</a>
+        {% endfor %}
       </div>
       <label class="sound-volume-control">Alert Volume
         <input type="range" id="sound-volume" min="0" max="100" step="5" value="85" />

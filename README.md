@@ -186,3 +186,18 @@ Invoke-WebRequest https://brownberriescafe.com/healthz
 `update_live_server.ps1` checks for uncommitted tracked source, stops `BrownberriesApp`, backs up `instance` and `static\uploads` into `instance_windows_backup\<timestamp>`, pulls the selected branch, installs dependencies, restarts the app, and refuses to finish unless the local health endpoint returns HTTP 200. It does not stop or replace the Cloudflare Tunnel service.
 
 If the update fails, inspect `logs\windows-app-service.log` and restore only after checking the backup. Do not delete the Windows `instance` directory during a code deployment.
+
+## 10) Breakfast Menu Timing
+
+- `Breakfast` is created automatically as a protected menu category alongside `Other` and `Utility`.
+- Admins and managers can set the customer-visible window in **Cafe → Menu Management → Catalog → Breakfast Menu Timing**. Times are interpreted as IST, and an overnight window such as `18:00` to `02:00` is supported.
+- A Breakfast-only item is hidden outside the window. An item assigned to Breakfast and another category remains visible through the other category while Breakfast is closed.
+
+## 11) Workstation Groups
+
+- Go to **Cafe → Menu Management → Catalog → Workstation Groups**.
+- Create a group such as `Barista Counters` and select the active workstations it should combine.
+- The group appears in the workstation switcher and in the **Prep Display Kiosk URL** settings on the Cafe home page.
+- A group kiosk URL has the form `/cafe/display/<kiosk-key>/group/<group-slug>` and shows today's orders from all member workstations. Existing individual workstation kiosk URLs continue to show only their own queues.
+- Status changes made in a group display update the same underlying order items as the individual workstation displays. Removing or renaming a group does not change menu-item workstation assignments.
+- The settings remain on the Windows server in `instance/deployment_config.json` and are not pushed to GitHub. They can also be supplied as `BREAKFAST_START_TIME` and `BREAKFAST_END_TIME` environment variables.

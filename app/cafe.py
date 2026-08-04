@@ -43,6 +43,12 @@ from .leave_logic import (
     validate_leave_request,
     weekly_off_config,
 )
+from .menu_schedule import (
+    DEFAULT_WORKSTATION_END_TIME,
+    DEFAULT_WORKSTATION_START_TIME,
+    menu_item_window_is_open,
+    workstation_schedule_map,
+)
 from .models import (
     CafeFeedback,
     CafeFeedbackItem,
@@ -80,6 +86,7 @@ from .models import (
     TableBooking,
     User,
     Workstation,
+    WorkstationGroup,
 )
 from .sms_gateway import send_sms_from_config
 from .staff_lifecycle import retire_staff_account
@@ -119,7 +126,10 @@ WORKSTATION_COLOR_PALETTE = (
 )
 IST_TZ = ZoneInfo("Asia/Kolkata")
 UTC_TZ = ZoneInfo("UTC")
-PROTECTED_MENU_CATEGORY_NAMES = {"other", "utility"}
+PROTECTED_MENU_CATEGORY_NAMES = {"other", "utility", "breakfast"}
+BREAKFAST_CATEGORY_NAME = "breakfast"
+DEFAULT_BREAKFAST_START_TIME = "08:00"
+DEFAULT_BREAKFAST_END_TIME = "12:00"
 ITEM_PREP_STATUSES = ("pending", "preparing", "ready", "served")
 DEFAULT_ATTENDANCE_CAFE_LAT = 25.207989477704068
 DEFAULT_ATTENDANCE_CAFE_LNG = 80.87374457551877
@@ -149,6 +159,18 @@ def _slugify_workstation(value: str) -> str:
     value = "".join(ch.lower() if ch.isalnum() else "-" for ch in str(value or "").strip())
     slug = "-".join(part for part in value.split("-") if part)
     return slug[:40]
+
+
+def _all_workstation_groups(include_inactive: bool = False):
+    _ensure_workstations_seeded()
+    query = WorkstationGroup.query
+    if not include_inactive:
+        query = query.filter_by(active=True)
+    return query.order_by(WorkstationGroup.display_order.asc(), WorkstationGroup.name.asc()).all()
+
+
+def _workstation_group_slug_set(include_inactive: bool = False) -> set[str]:
+    return {group.slug for group in _all_workstation_groups(include_inactive=include_inactive) if group.slug}
 
 
 def _ensure_workstations_seeded():
@@ -743,7 +765,9 @@ def _has_valid_reception_kiosk_access(token: str | None) -> bool:
     return bool(configured and supplied and secrets.compare_digest(configured, supplied))
 
 
-def _kiosk_display_url(token: str, station: str = "kitchen") -> str:
+def _kiosk_display_url(token: str, station: str = "kitchen", group: str | None = None) -> str:
+    if group:
+        return url_for("cafe.kiosk_group_display", access_key=token, group_slug=group)
     return url_for("cafe.kiosk_display", access_key=token, station=station)
 
 
@@ -925,10 +949,12 @@ def _default_menu_form_state():
 
 def _render_menu_page(active_menu_section: str = "catalog", add_form_state: dict | None = None):
     _ensure_workstations_seeded()
+    breakfast_settings = _breakfast_settings()
     items = MenuItem.query.filter(MenuItem.is_deleted.is_(False)).order_by(MenuItem.name).all()
     deleted_items = MenuItem.query.filter(MenuItem.is_deleted.is_(True)).order_by(MenuItem.updated_at.desc(), MenuItem.name.asc()).all()
     all_categories = MenuCategory.query.order_by(MenuCategory.name).all()
     workstation_options = _all_workstations(include_inactive=True)
+    workstation_group_options = _all_workstation_groups(include_inactive=True)
     chef_options = _chef_options()
     workstation_name_map = {station.slug: station.name for station in workstation_options}
     chef_name_map = {chef.id: chef.full_name for chef in chef_options}
@@ -973,6 +999,7 @@ def _render_menu_page(active_menu_section: str = "catalog", add_form_state: dict
         protected_category_ids=[c.id for c in all_categories if _is_protected_menu_category(c)],
         menu_types=MenuType.query.order_by(MenuType.name).all(),
         workstation_options=workstation_options,
+        workstation_group_options=workstation_group_options,
         workstation_name_map=workstation_name_map,
         chef_options=chef_options,
         chef_name_map=chef_name_map,
@@ -982,6 +1009,8 @@ def _render_menu_page(active_menu_section: str = "catalog", add_form_state: dict
         availability_items=availability_items,
         selected_category_filter=selected_category_filter,
         add_form=add_form_state or _default_menu_form_state(),
+        breakfast_start_time=breakfast_settings["start_time"],
+        breakfast_end_time=breakfast_settings["end_time"],
     )
 
 
@@ -1022,6 +1051,31 @@ def _parse_cutoff_time(raw_value: str | None):
 def _format_cutoff_value(raw_value: str | None) -> str:
     parsed = _parse_cutoff_time(raw_value)
     return parsed.strftime("%H:%M") if parsed else ""
+
+
+def _breakfast_settings() -> dict[str, str]:
+    cached = getattr(g, "breakfast_settings", None)
+    if cached is not None:
+        return cached
+    cfg = load_deployment_config(current_app.instance_path)
+    settings = {
+        "start_time": _format_cutoff_value(cfg.get("BREAKFAST_START_TIME")) or DEFAULT_BREAKFAST_START_TIME,
+        "end_time": _format_cutoff_value(cfg.get("BREAKFAST_END_TIME")) or DEFAULT_BREAKFAST_END_TIME,
+    }
+    g.breakfast_settings = settings
+    return settings
+
+
+def _breakfast_window_is_open(at_time=None) -> bool:
+    settings = _breakfast_settings()
+    start = _parse_cutoff_time(settings["start_time"])
+    end = _parse_cutoff_time(settings["end_time"])
+    if not start or not end or start == end:
+        return False
+    now = at_time or datetime.now(IST_TZ).time()
+    if start < end:
+        return start <= now < end
+    return now >= start or now < end
 
 
 def _order_cutoff_message(channel: str):
@@ -1273,6 +1327,8 @@ def _get_or_create_utility_category():
 def _ensure_protected_menu_categories():
     _get_or_create_other_category()
     _get_or_create_utility_category()
+    if not MenuCategory.query.filter(db.func.lower(MenuCategory.name) == BREAKFAST_CATEGORY_NAME).first():
+        db.session.add(MenuCategory(name="Breakfast"))
     db.session.flush()
 
 
@@ -1285,7 +1341,9 @@ def _public_menu_category_ids(item: MenuItem, category_name_by_id: dict[int, str
     seen: set[int] = set()
     for cid in _menu_item_category_ids(item):
         cname = (category_name_by_id.get(cid) or "").strip().lower()
-        if not cname or cname in PROTECTED_MENU_CATEGORY_NAMES or cid in seen:
+        if not cname or cname in {"other", "utility"} or cid in seen:
+            continue
+        if cname == BREAKFAST_CATEGORY_NAME and not _breakfast_window_is_open():
             continue
         visible_ids.append(cid)
         seen.add(cid)
@@ -1319,7 +1377,10 @@ def _get_item_category_names(item: MenuItem, category_name_by_id: dict[int, str]
     names_seen: set[str] = set()
     for cid in _menu_item_category_ids(item):
         cname = category_name_by_id.get(cid)
-        if not include_protected and cname and cname.strip().lower() in PROTECTED_MENU_CATEGORY_NAMES:
+        normalized_name = cname.strip().lower() if cname else ""
+        if not include_protected and normalized_name in {"other", "utility"}:
+            continue
+        if not include_protected and normalized_name == BREAKFAST_CATEGORY_NAME and not _breakfast_window_is_open():
             continue
         if cname and cname.lower() not in names_seen:
             names.append(cname)
@@ -1332,7 +1393,11 @@ def _visible_categories_for_available_menu(include_protected: bool = False) -> l
     category_name_by_id = {c.id: c.name for c in all_categories}
     categories = list(all_categories)
     if not include_protected:
-        categories = [c for c in categories if (c.name or "").strip().lower() not in PROTECTED_MENU_CATEGORY_NAMES]
+        categories = [
+            c for c in categories
+            if (c.name or "").strip().lower() not in {"other", "utility"}
+            and ((c.name or "").strip().lower() != BREAKFAST_CATEGORY_NAME or _breakfast_window_is_open())
+        ]
     available_items = MenuItem.query.filter_by(available=True, is_deleted=False).all()
     used_category_ids: set[int] = set()
     for item in available_items:
@@ -2276,6 +2341,7 @@ def home():
     today_start, today_end = _current_ist_day_bounds()
     _ensure_workstations_seeded()
     workstation_options = _all_workstations()
+    workstation_group_options = _all_workstation_groups()
     sms_enabled = str(cfg.get("SMS_ENABLED", "0")).strip() in ["1", "true", "True"]
     sms_ca_bundle = (cfg.get("SMS_CA_BUNDLE") or "").strip()
     sms_allow_insecure_ssl = str(cfg.get("SMS_ALLOW_INSECURE_SSL", "0")).strip() in ["1", "true", "True"]
@@ -2286,6 +2352,7 @@ def home():
     textbee_key_hint = f"{textbee_api_key[:4]}...{textbee_api_key[-4:]}" if len(textbee_api_key) >= 10 else ("Set" if textbee_api_key else "")
     qr_order_cutoff_time = _format_cutoff_value(cfg.get("QR_ORDER_CUTOFF_TIME"))
     staff_order_cutoff_time = _format_cutoff_value(cfg.get("STAFF_ORDER_CUTOFF_TIME"))
+    breakfast_settings = _breakfast_settings()
     kiosk_token = (cfg.get("KDS_KIOSK_TOKEN") or "").strip()
     reception_kiosk_token = (cfg.get("RECEPTION_KIOSK_TOKEN") or "").strip()
     return render_template(
@@ -2319,6 +2386,8 @@ def home():
         textbee_base_url=textbee_base_url,
         qr_order_cutoff_time=qr_order_cutoff_time,
         staff_order_cutoff_time=staff_order_cutoff_time,
+        breakfast_start_time=breakfast_settings["start_time"],
+        breakfast_end_time=breakfast_settings["end_time"],
         service_charge_rate=tax_settings["service_charge_rate"],
         kiosk_token=kiosk_token,
         workstation_options=workstation_options,
@@ -2329,6 +2398,17 @@ def home():
                 "url": f"{public_base}{_kiosk_display_url(kiosk_token, station.slug)}" if kiosk_token else "",
             }
             for station in workstation_options
+        ],
+        workstation_group_kiosk_urls=[
+            {
+                "slug": group.slug,
+                "name": group.name,
+                "stations": ", ".join(
+                    station.name for station in group.workstations if station.active
+                ),
+                "url": f"{public_base}{_kiosk_display_url(kiosk_token, group=group.slug)}" if kiosk_token else "",
+            }
+            for group in workstation_group_options
         ],
         reception_kiosk_token=reception_kiosk_token,
         reception_kiosk_url=f"{public_base}{_reception_kiosk_url(reception_kiosk_token)}" if reception_kiosk_token else "",
@@ -2399,6 +2479,25 @@ def update_order_cutoff_settings():
         },
     )
     flash("Order cutoff settings saved.", "success")
+    return redirect(url_for("cafe.home"))
+
+
+@bp.route("/breakfast-settings", methods=["POST"])
+@roles_required("admin", "manager")
+def update_breakfast_settings():
+    start = _parse_cutoff_time(request.form.get("breakfast_start_time"))
+    end = _parse_cutoff_time(request.form.get("breakfast_end_time"))
+    if not start or not end or start == end:
+        flash("Breakfast start and end times must be different valid times.", "error")
+        return redirect(url_for("cafe.home"))
+    save_deployment_config(
+        current_app.instance_path,
+        {
+            "BREAKFAST_START_TIME": start.strftime("%H:%M"),
+            "BREAKFAST_END_TIME": end.strftime("%H:%M"),
+        },
+    )
+    flash("Breakfast visibility timing saved.", "success")
     return redirect(url_for("cafe.home"))
 
 
@@ -2992,6 +3091,8 @@ def update_workstation(workstation_id):
 def delete_workstation(workstation_id):
     _ensure_workstations_seeded()
     workstation = Workstation.query.get_or_404(workstation_id)
+    for group in list(workstation.groups):
+        group.workstations.remove(workstation)
     MenuItem.query.filter_by(prep_station=workstation.slug).update({"prep_station": ""}, synchronize_session=False)
     InventoryExpenseLog.query.filter_by(workstation_slug=workstation.slug).update({"workstation_slug": "unassigned"}, synchronize_session=False)
     InventoryToPurchase.query.filter_by(workstation_slug=workstation.slug).update({"workstation_slug": "unassigned"}, synchronize_session=False)
@@ -2999,6 +3100,104 @@ def delete_workstation(workstation_id):
     db.session.commit()
     flash("Workstation deleted. Linked menu items are now unassigned.", "success")
     return redirect(url_for("cafe.menu"))
+
+
+def _selected_workstations_from_form():
+    raw_ids = request.form.getlist("workstation_ids")
+    ids = []
+    for raw_id in raw_ids:
+        try:
+            workstation_id = int(raw_id)
+        except (TypeError, ValueError):
+            continue
+        if workstation_id not in ids:
+            ids.append(workstation_id)
+    if not ids:
+        return []
+    return Workstation.query.filter(Workstation.id.in_(ids), Workstation.active.is_(True)).all()
+
+
+@bp.route("/menu/workstation-groups", methods=["POST"])
+@roles_required("admin", "manager")
+def add_workstation_group():
+    _ensure_workstations_seeded()
+    name = (request.form.get("name") or "").strip()
+    slug = _slugify_workstation(request.form.get("slug") or name)
+    workstations = _selected_workstations_from_form()
+    if not name or not slug:
+        flash("Group name and slug are required.", "error")
+        return redirect(url_for("cafe.menu", section="catalog"))
+    if not workstations:
+        flash("Select at least one active workstation for the group.", "error")
+        return redirect(url_for("cafe.menu", section="catalog"))
+    if WorkstationGroup.query.filter(db.func.lower(WorkstationGroup.slug) == slug.lower()).first():
+        flash("Workstation group slug already exists.", "error")
+        return redirect(url_for("cafe.menu", section="catalog"))
+    if WorkstationGroup.query.filter(db.func.lower(WorkstationGroup.name) == name.lower()).first():
+        flash("Workstation group name already exists.", "error")
+        return redirect(url_for("cafe.menu", section="catalog"))
+    last_order = db.session.query(db.func.max(WorkstationGroup.display_order)).scalar() or 0
+    group = WorkstationGroup(
+        slug=slug,
+        name=name,
+        active=True,
+        display_order=int(last_order) + 1,
+        workstations=workstations,
+    )
+    db.session.add(group)
+    db.session.commit()
+    flash("Workstation group added. Its kiosk URL is available in the home settings.", "success")
+    return redirect(url_for("cafe.menu", section="catalog"))
+
+
+@bp.route("/menu/workstation-groups/<int:group_id>/update", methods=["POST"])
+@roles_required("admin", "manager")
+def update_workstation_group(group_id):
+    _ensure_workstations_seeded()
+    group = WorkstationGroup.query.get_or_404(group_id)
+    name = (request.form.get("name") or "").strip()
+    slug = _slugify_workstation(request.form.get("slug") or group.slug)
+    workstations = _selected_workstations_from_form()
+    if not name or not slug:
+        flash("Group name and slug are required.", "error")
+        return redirect(url_for("cafe.menu", section="catalog"))
+    if not workstations:
+        flash("Select at least one active workstation for the group.", "error")
+        return redirect(url_for("cafe.menu", section="catalog"))
+    duplicate_slug = WorkstationGroup.query.filter(
+        db.func.lower(WorkstationGroup.slug) == slug.lower(),
+        WorkstationGroup.id != group.id,
+    ).first()
+    if duplicate_slug:
+        flash("Another workstation group already uses that slug.", "error")
+        return redirect(url_for("cafe.menu", section="catalog"))
+    duplicate_name = WorkstationGroup.query.filter(
+        db.func.lower(WorkstationGroup.name) == name.lower(),
+        WorkstationGroup.id != group.id,
+    ).first()
+    if duplicate_name:
+        flash("Another workstation group already uses that name.", "error")
+        return redirect(url_for("cafe.menu", section="catalog"))
+    group.name = name
+    group.slug = slug
+    group.active = True if request.form.get("active") else False
+    group.workstations = workstations
+    db.session.commit()
+    flash("Workstation group updated.", "success")
+    return redirect(url_for("cafe.menu", section="catalog"))
+
+
+@bp.route("/menu/workstation-groups/<int:group_id>/delete", methods=["POST"])
+@roles_required("admin", "manager")
+def delete_workstation_group(group_id):
+    group = WorkstationGroup.query.get_or_404(group_id)
+    # Detach memberships explicitly so SQLite deployments without foreign-key
+    # enforcement cannot leave orphaned group-member rows behind.
+    group.workstations = []
+    db.session.delete(group)
+    db.session.commit()
+    flash("Workstation group deleted. Individual workstation kiosks are unchanged.", "success")
+    return redirect(url_for("cafe.menu", section="catalog"))
 
 
 @bp.route("/menu/<int:item_id>/availability", methods=["POST"])
@@ -4509,15 +4708,29 @@ def reception_kiosk_settlement_feedback(access_key, order_id):
     return _render_feedback_form(order, source="offline", kiosk_mode=True, kiosk_access_key=access_key)
 
 
-def _render_kitchen_display(station: str = "kitchen", kiosk_mode: bool = False, access_key: str = ""):
+def _render_kitchen_display(
+    station: str = "kitchen",
+    kiosk_mode: bool = False,
+    access_key: str = "",
+    workstation_group=None,
+):
     _ensure_workstations_seeded()
     workstation_options = _all_workstations()
     station_lookup = {ws.slug: ws for ws in workstation_options}
     fallback_station = workstation_options[0].slug if workstation_options else "kitchen"
-    station = (request.args.get("station") or station or fallback_station).strip().lower()
-    if station not in station_lookup:
-        station = fallback_station
-    station_name = station_lookup.get(station).name if station in station_lookup else _workstation_display_name(station)
+    if workstation_group:
+        member_workstations = [ws for ws in workstation_group.workstations if ws.active]
+        station_slugs = {ws.slug for ws in member_workstations if ws.slug}
+        if not station_slugs:
+            return Response("This workstation group has no active member workstations.", status=422)
+        station = f"group:{workstation_group.slug}"
+        station_name = workstation_group.name
+    else:
+        station = (request.args.get("station") or station or fallback_station).strip().lower()
+        if station not in station_lookup:
+            station = fallback_station
+        station_slugs = {station}
+        station_name = station_lookup.get(station).name if station in station_lookup else _workstation_display_name(station)
     today_start, today_end = _current_ist_day_bounds()
     orders = (
         CafeOrder.query.join(CafeOrderItem, CafeOrderItem.order_id == CafeOrder.id)
@@ -4526,7 +4739,7 @@ def _render_kitchen_display(station: str = "kitchen", kiosk_mode: bool = False, 
             CafeOrder.status.in_(["pending_approval", "open", "preparing", "ready", "served"]),
             CafeOrder.created_at >= today_start,
             CafeOrder.created_at <= today_end,
-            MenuItem.prep_station == station,
+            MenuItem.prep_station.in_(station_slugs),
         )
         .options(
             joinedload(CafeOrder.table),
@@ -4538,7 +4751,7 @@ def _render_kitchen_display(station: str = "kitchen", kiosk_mode: bool = False, 
     )
     recipes = (
         InventoryRecipe.query.join(MenuItem, MenuItem.id == InventoryRecipe.menu_item_id)
-        .filter(InventoryRecipe.active.is_(True), MenuItem.prep_station == station)
+        .filter(InventoryRecipe.active.is_(True), MenuItem.prep_station.in_(station_slugs))
         .options(joinedload(InventoryRecipe.menu_item), joinedload(InventoryRecipe.ingredients).joinedload(InventoryRecipeItem.inventory_item))
         .all()
     )
@@ -4585,7 +4798,7 @@ def _render_kitchen_display(station: str = "kitchen", kiosk_mode: bool = False, 
             }
         )
         for oi in sorted(order.order_items, key=lambda row: (row.created_at or datetime.min, row.id or 0)):
-            if not oi.menu_item or (oi.menu_item.prep_station or "").strip().lower() != station:
+            if not oi.menu_item or (oi.menu_item.prep_station or "").strip().lower() not in station_slugs:
                 continue
             if (oi.approval_status or "pending") == "rejected":
                 continue
@@ -4656,7 +4869,7 @@ def _render_kitchen_display(station: str = "kitchen", kiosk_mode: bool = False, 
         {
             "menu_item_id": recipe.menu_item_id,
             "name": recipe.menu_item.name if recipe.menu_item else "Menu Item",
-            "prep_station": recipe.menu_item.prep_station if recipe.menu_item else station,
+            "prep_station": recipe.menu_item.prep_station if recipe.menu_item else next(iter(station_slugs), station),
             "sizes": _load_menu_item_size_variants(recipe.menu_item),
             "sop": _serialize_recipe_sop(recipe),
         }
@@ -4671,12 +4884,23 @@ def _render_kitchen_display(station: str = "kitchen", kiosk_mode: bool = False, 
         station_name=station_name,
         station_action_label=_station_action_label(station, station_name),
         workstation_options=workstation_options,
+        workstation_group_options=_all_workstation_groups(),
+        display_group_slug=workstation_group.slug if workstation_group else "",
+        display_group_name=workstation_group.name if workstation_group else "",
         active_orders=len(order_cards),
         avg_ticket_minutes=avg_ticket_minutes,
         sop_library=sop_library,
         kiosk_mode=kiosk_mode,
         kiosk_access_key=access_key,
-        current_page_url=_kiosk_display_url(access_key, station) if kiosk_mode and access_key else url_for("cafe.kitchen_display", station=station),
+        current_page_url=(
+            _kiosk_display_url(access_key, group=workstation_group.slug)
+            if kiosk_mode and access_key and workstation_group
+            else _kiosk_display_url(access_key, station)
+            if kiosk_mode and access_key
+            else url_for("cafe.kitchen_display", group=workstation_group.slug)
+            if workstation_group
+            else url_for("cafe.kitchen_display", station=station)
+        ),
         status_update_url_template=(
             url_for("cafe.kiosk_update_order_status", access_key=access_key, order_id=0)
             if kiosk_mode and access_key
@@ -4694,7 +4918,19 @@ def _render_kitchen_display(station: str = "kitchen", kiosk_mode: bool = False, 
 @bp.route("/kitchen")
 @login_required
 def kitchen_display():
+    group_slug = (request.args.get("group") or "").strip().lower()
+    if group_slug:
+        group = WorkstationGroup.query.filter_by(slug=group_slug, active=True).first_or_404()
+        return _render_kitchen_display(workstation_group=group, kiosk_mode=False)
     return _render_kitchen_display("kitchen", kiosk_mode=False)
+
+
+@bp.route("/display/<string:access_key>/group/<string:group_slug>")
+def kiosk_group_display(access_key, group_slug):
+    if not _has_valid_kiosk_access(access_key):
+        return Response("Invalid kiosk access key.", status=403)
+    group = WorkstationGroup.query.filter_by(slug=group_slug.strip().lower(), active=True).first_or_404()
+    return _render_kitchen_display(workstation_group=group, kiosk_mode=True, access_key=access_key)
 
 
 @bp.route("/display/<string:access_key>")

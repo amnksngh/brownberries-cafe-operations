@@ -117,6 +117,33 @@ class Workstation(TimestampMixin, db.Model):
     name = db.Column(db.String(80), nullable=False, unique=True)
     active = db.Column(db.Boolean, default=True, nullable=False)
     display_order = db.Column(db.Integer, default=0, nullable=False)
+    groups = db.relationship(
+        "WorkstationGroup",
+        secondary="workstation_group_member",
+        back_populates="workstations",
+    )
+
+
+workstation_group_member = db.Table(
+    "workstation_group_member",
+    db.Column("group_id", db.Integer, db.ForeignKey("workstation_group.id"), primary_key=True),
+    db.Column("workstation_id", db.Integer, db.ForeignKey("workstation.id"), primary_key=True),
+)
+
+
+class WorkstationGroup(TimestampMixin, db.Model):
+    """A named display that aggregates one or more preparation workstations."""
+
+    id = db.Column(db.Integer, primary_key=True)
+    slug = db.Column(db.String(40), nullable=False, unique=True)
+    name = db.Column(db.String(80), nullable=False, unique=True)
+    active = db.Column(db.Boolean, default=True, nullable=False)
+    display_order = db.Column(db.Integer, default=0, nullable=False)
+    workstations = db.relationship(
+        "Workstation",
+        secondary=workstation_group_member,
+        back_populates="groups",
+    )
 
 
 class MenuItem(TimestampMixin, db.Model):

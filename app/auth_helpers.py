@@ -17,6 +17,7 @@ ENDPOINT_PERMISSIONS = {
     "cafe.delete_type": "can_manage_menu",
     "cafe.update_menu_item": "can_manage_menu",
     "cafe.bulk_update_menu_items": "can_manage_menu",
+    "cafe.update_breakfast_settings": "can_manage_menu",
     "cafe.delete_menu_item": "can_manage_menu",
     "cafe.update_menu_availability": "can_manage_menu",
     "cafe.orders": "can_manage_orders",

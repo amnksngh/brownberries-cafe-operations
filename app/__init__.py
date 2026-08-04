@@ -39,6 +39,7 @@ from .models import (
     SubscriptionPlan,
     User,
     Workstation,
+    WorkstationGroup,
 )
 
 

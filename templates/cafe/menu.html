@@ -51,6 +51,20 @@
     </section>
 
     <section class="panel">
+      <h3>Breakfast Menu Timing</h3>
+      <p class="muted">Breakfast is protected and these times use IST. Breakfast-only items are hidden outside this window. Items tagged with Breakfast and another category remain visible through their other category.</p>
+      <form method="post" action="{{ url_for('cafe.update_breakfast_settings') }}" class="grid grid-4">
+        <label>Visible From (IST)
+          <input name="breakfast_start_time" type="time" value="{{ breakfast_start_time or '08:00' }}" required />
+        </label>
+        <label>Visible Until (IST)
+          <input name="breakfast_end_time" type="time" value="{{ breakfast_end_time or '12:00' }}" required />
+        </label>
+        <button type="submit">Save Breakfast Timing</button>
+      </form>
+    </section>
+
+    <section class="panel">
       <h3>Types</h3>
       <form method="post" action="{{ url_for('cafe.add_type') }}" class="grid grid-3">
         <label>Add Type <input name="name" required placeholder="Veg / Beverage / Dessert" /></label>
@@ -102,6 +116,54 @@
         </tr>
         {% endfor %}
       </table>
+    </section>
+
+    <section class="panel">
+      <h3>Workstation Groups</h3>
+      <p class="muted">Combine multiple workstations into one live kiosk. Orders remain assigned to their original station, while the group display shows the combined queue and keeps the same item-level status controls.</p>
+      <form method="post" action="{{ url_for('cafe.add_workstation_group') }}" class="grid grid-4">
+        <label>Name <input name="name" required placeholder="Barista Counters" /></label>
+        <label>Slug <input name="slug" placeholder="barista-counters" /></label>
+        <fieldset class="full">
+          <legend>Member workstations</legend>
+          <div class="grid grid-4">
+            {% for st in workstation_options if st.active %}
+            <label><input type="checkbox" name="workstation_ids" value="{{ st.id }}" /> {{ st.name }}</label>
+            {% endfor %}
+          </div>
+        </fieldset>
+        <button type="submit">Add Workstation Group</button>
+      </form>
+
+      {% if workstation_group_options %}
+      <table>
+        <tr><th>Name</th><th>Slug</th><th>Member Workstations</th><th>Active</th><th>Actions</th></tr>
+        {% for group in workstation_group_options %}
+        <tr>
+          <td><input form="workstation-group-form-{{ group.id }}" name="name" value="{{ group.name }}" required /></td>
+          <td><input form="workstation-group-form-{{ group.id }}" name="slug" value="{{ group.slug }}" required /></td>
+          <td>
+            <div class="grid grid-3">
+              {% for st in workstation_options if st.active %}
+              <label><input form="workstation-group-form-{{ group.id }}" type="checkbox" name="workstation_ids" value="{{ st.id }}" {% if st in group.workstations %}checked{% endif %} /> {{ st.name }}</label>
+              {% endfor %}
+            </div>
+          </td>
+          <td><label><input form="workstation-group-form-{{ group.id }}" type="checkbox" name="active" {% if group.active %}checked{% endif %} /> Active</label></td>
+          <td>
+            <form id="workstation-group-form-{{ group.id }}" method="post" action="{{ url_for('cafe.update_workstation_group', group_id=group.id) }}" class="inline">
+              <button type="submit">Save</button>
+            </form>
+            <form method="post" action="{{ url_for('cafe.delete_workstation_group', group_id=group.id) }}" class="inline confirm-delete-form" data-confirm-message="Delete workstation group '{{ group.name }}'? Individual workstation kiosks will remain unchanged.">
+              <button type="submit">Delete</button>
+            </form>
+          </td>
+        </tr>
+        {% endfor %}
+      </table>
+      {% else %}
+      <p class="muted">No workstation groups yet.</p>
+      {% endif %}
     </section>
     {% endif %}
 
