@@ -4919,6 +4919,11 @@ def _render_kitchen_display(
         station_action_label=_station_action_label(station, station_name),
         workstation_options=workstation_options,
         workstation_group_options=_all_workstation_groups(),
+        display_workstations=[
+            {"slug": ws.slug, "name": ws.name}
+            for ws in (workstation_group.workstations if workstation_group else [])
+            if ws.active and ws.slug
+        ],
         display_group_slug=workstation_group.slug if workstation_group else "",
         display_group_name=workstation_group.name if workstation_group else "",
         active_orders=len(order_cards),

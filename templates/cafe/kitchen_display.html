@@ -148,6 +148,7 @@
   const station = "{{ station }}";
   const stationName = {{ station_name|tojson }};
   const groupedDisplay = {{ 'true' if display_group_slug else 'false' }};
+  const groupedWorkstations = {{ display_workstations|tojson }};
   const displayLabel = {{ station_action_label|tojson }};
   const currentPageUrl = {{ current_page_url|tojson }};
   const statusUpdateUrlTemplate = {{ status_update_url_template|tojson }};
@@ -395,7 +396,132 @@
     return `${orderId || "library"}:${itemId || ""}:${sizeLabel || ""}`;
   }
 
+  function renderGroupedBoard() {
+    board.classList.add("grouped-kitchen-grid");
+    board.style.setProperty("--kds-group-count", String(Math.max(1, groupedWorkstations.length)));
+    activeOrdersEl.textContent = String(orderCards.length);
+    const avgMinutes = orderCards.length
+      ? orderCards.reduce((sum, card) => sum + minutesSince(card.created_at_iso), 0) / orderCards.length
+      : 0;
+    avgTicketEl.textContent = `${avgMinutes.toFixed(1)} min`;
+
+    if (!groupedWorkstations.length) {
+      board.innerHTML = `
+        <article class="k-card k-card-empty">
+          <h3>No workstations configured for this group</h3>
+          <p class="muted">Add an active workstation to start receiving grouped tickets.</p>
+        </article>`;
+      return;
+    }
+
+    const renderLaneCard = (workstation, card) => {
+      const laneItems = (card.items || []).filter((item) => item.prep_station === workstation.slug);
+      if (!laneItems.length) return "";
+      const displayCardId = `${card.id}::${workstation.slug}`;
+      const elapsed = minutesSince(card.created_at_iso);
+      const delayed = card.expected_minutes > 0 && elapsed > card.expected_minutes;
+      const itemRows = laneItems.map((item) => {
+        const sopKey = buildSopKey(card.id, item.id, item.size_label || "");
+        const awaitingApproval = item.approval_status === "pending";
+        return `
+          <div class="kds-item-shell ${selectedSopKey === sopKey ? "active" : ""} ${awaitingApproval ? "approval-pending" : "approval-approved"} ${item.prep_status === "served" ? "item-served" : ""} ${escapeHtml(item.priority_class || "")} ">
+            <button type="button" class="kds-item-row" data-order-id="${card.id}" data-item-id="${item.id}">
+              <div class="kds-item-main">
+                <strong>${escapeHtml(item.name)}</strong>
+                <span>${item.size_label ? escapeHtml(item.size_label) : "Standard"} • x ${Number(item.qty || 0)}</span>
+                <small>Order #${escapeHtml(item.order_pickup_no || "-")} • ${escapeHtml(item.ordered_at || "-")}</small>
+              </div>
+              <div class="kds-item-side">
+                <span class="kds-station-badge">${escapeHtml(item.prep_station_name || workstation.name)}</span>
+                ${item.priority_rank ? `<span class="kds-priority-badge">P${Number(item.priority_rank)}</span>` : ""}
+                ${item.is_parcel ? '<span class="kds-mini-badge">Parcel</span>' : ""}
+                <span class="kds-status-badge ${statusClass(item.approval_status === "pending" ? "pending_approval" : "ready")}">${itemApprovalLabel(item.approval_status)}</span>
+                <span class="kds-status-badge ${statusClass(item.prep_status)}">${itemStatusLabel(item.prep_status)}</span>
+                <span class="kds-sop-quick">📖 SOP</span>
+              </div>
+            </button>
+            <div class="kds-item-actions">
+              ${["pending", "preparing", "ready", "served"].map((actionStatus) => `
+                <form method="post" action="${itemStatusUpdateUrlTemplate.replace('/0/status', `/${item.id}/status`)}" class="inline">
+                  <input type="hidden" name="next" value="${escapeHtml(currentPageUrl)}" />
+                  <input type="hidden" name="status" value="${actionStatus}" />
+                  <button type="submit" class="${item.prep_status === actionStatus ? "active" : ""}" ${awaitingApproval ? "disabled" : ""}>${escapeHtml(itemStatusLabel(actionStatus))}</button>
+                </form>
+              `).join("")}
+            </div>
+          </div>`;
+      }).join("");
+
+      return `
+        <article class="k-card ${delayed ? "delayed" : ""} ${expandedCardId === displayCardId ? "maximized" : ""}" data-order-id="${card.id}" data-workstation="${escapeHtml(workstation.slug)}">
+          <div class="kds-ticket-head">
+            <div>
+              <h3>${escapeHtml(card.table_name || card.id)}</h3>
+              <p class="muted">${laneItems.length} item(s) • Since ${escapeHtml(card.created_at || "-")}</p>
+            </div>
+            <div class="kds-ticket-meta">
+              <button type="button" class="kds-card-toggle" data-card-toggle="${escapeHtml(displayCardId)}" aria-expanded="${expandedCardId === displayCardId ? "true" : "false"}" aria-label="${expandedCardId === displayCardId ? "Minimize table card" : "Maximize table card"}">${expandedCardId === displayCardId ? "↙" : "↗"}</button>
+              <span class="kds-status-badge ${statusClass(card.status)}">${orderStatusLabel(card.status)}</span>
+              <span class="kds-ticket-timer ${delayed ? "delayed" : ""}">${elapsed} min${card.expected_minutes > 0 ? ` / ${card.expected_minutes} min` : ""}</span>
+            </div>
+          </div>
+          <p class="muted kds-ticket-ref">${(card.order_refs || []).map((ref) => `#${escapeHtml(ref.pickup_no || "-")} (${escapeHtml(ref.created_at || "-")})`).join(" • ")}</p>
+          <div class="kds-item-list">${itemRows}</div>
+        </article>`;
+    };
+
+    board.innerHTML = groupedWorkstations.map((workstation) => {
+      const laneCards = orderCards
+        .map((card) => ({ card, items: (card.items || []).filter((item) => item.prep_station === workstation.slug) }))
+        .filter((entry) => entry.items.length);
+      const itemCount = laneCards.reduce((sum, entry) => sum + entry.items.length, 0);
+      return `
+        <section class="kds-station-lane" data-workstation-lane="${escapeHtml(workstation.slug)}">
+          <header class="kds-station-lane-head">
+            <div>
+              <h3>${escapeHtml(workstation.name)}</h3>
+              <p class="muted">${laneCards.length} table${laneCards.length === 1 ? "" : "s"} • ${itemCount} item${itemCount === 1 ? "" : "s"}</p>
+            </div>
+          </header>
+          <div class="kds-station-lane-cards">
+            ${laneCards.length ? laneCards.map((entry) => renderLaneCard(workstation, entry.card)).join("") : '<p class="muted kds-lane-empty">No active items.</p>'}
+          </div>
+        </section>`;
+    }).join("");
+
+    board.querySelectorAll(".kds-item-row").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const orderId = String(btn.dataset.orderId || "");
+        const itemId = Number(btn.dataset.itemId || 0);
+        const card = orderCards.find((row) => String(row.id) === orderId);
+        const item = card?.items?.find((row) => Number(row.id) === itemId);
+        if (!item) return;
+        selectedSopKey = buildSopKey(orderId, itemId, item.size_label || "");
+        openSop({ name: item.name, sizeLabel: item.size_label || "", sop: item.sop || {}, source: card?.table_name || "" });
+        renderBoard();
+      });
+    });
+
+    board.querySelectorAll(".kds-card-toggle").forEach((btn) => {
+      btn.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        const cardId = String(btn.dataset.cardToggle || "");
+        expandedCardId = expandedCardId === cardId ? "" : cardId;
+        document.body.classList.toggle("kds-card-expanded", Boolean(expandedCardId));
+        syncExpandedCardBounds();
+        updateExpandedBackdrop();
+        renderBoard();
+      });
+    });
+  }
+
   function renderBoard() {
+    if (groupedDisplay) {
+      renderGroupedBoard();
+      return;
+    }
+    board.classList.remove("grouped-kitchen-grid");
     activeOrdersEl.textContent = String(orderCards.length);
     if (!orderCards.length) {
       avgTicketEl.textContent = "0 min";

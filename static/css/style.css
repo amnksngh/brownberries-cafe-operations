@@ -2335,6 +2335,61 @@ th {
   gap: 0.8rem;
 }
 
+/* Grouped kiosks use one stable vertical lane per workstation. */
+.kitchen-grid.grouped-kitchen-grid {
+  grid-template-columns: repeat(var(--kds-group-count, 2), minmax(260px, 1fr));
+  align-items: start;
+  overflow-x: auto;
+  padding: 0.1rem 0.1rem 0.5rem;
+}
+
+.kds-station-lane {
+  min-width: 260px;
+  display: grid;
+  align-content: start;
+  gap: 0.65rem;
+}
+
+.kds-station-lane-head {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.6rem;
+  padding: 0.72rem 0.8rem;
+  border: 1px solid rgba(111, 74, 53, 0.16);
+  border-radius: 10px;
+  background: #fff8f0;
+  box-shadow: 0 5px 16px rgba(47, 29, 20, 0.06);
+}
+
+.kds-station-lane-head h3 {
+  margin: 0;
+  color: #4a2c1d;
+  font-size: 1rem;
+}
+
+.kds-station-lane-head p {
+  margin-top: 0.16rem;
+  font-size: 0.76rem;
+}
+
+.kds-station-lane-cards {
+  display: grid;
+  align-content: start;
+  gap: 0.8rem;
+}
+
+.kds-lane-empty {
+  padding: 1rem 0.8rem;
+  border: 1px dashed rgba(111, 74, 53, 0.22);
+  border-radius: 10px;
+  background: rgba(255, 253, 249, 0.72);
+  text-align: center;
+}
+
 .k-card {
   background: #ffffff;
   border: 1px solid var(--line);
