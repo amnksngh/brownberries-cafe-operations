@@ -2744,6 +2744,21 @@ th {
   cursor: pointer;
 }
 
+/* Grouped lanes are intentionally narrow: keep item identity and quantity
+   on the first line, then wrap status/actions underneath without overlap. */
+.grouped-kitchen-grid .kds-item-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  align-items: start;
+  gap: 0.45rem;
+}
+
+.grouped-kitchen-grid .kds-item-side {
+  width: 100%;
+  justify-content: flex-start;
+  align-items: center;
+}
+
 .kds-item-main {
   display: grid;
   gap: 0.18rem;

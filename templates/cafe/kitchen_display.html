@@ -443,8 +443,7 @@
               </div>
               <div class="kds-item-side">
                 ${item.is_parcel ? '<span class="kds-mini-badge">Parcel</span>' : ""}
-                <span class="kds-status-badge ${statusClass(item.approval_status === "pending" ? "pending_approval" : "ready")}">${itemApprovalLabel(item.approval_status)}</span>
-                <span class="kds-status-badge ${statusClass(item.prep_status)}">${itemStatusLabel(item.prep_status)}</span>
+                <span class="kds-status-badge ${statusClass(awaitingApproval ? "pending_approval" : item.prep_status)}">${awaitingApproval ? "Pending Approval" : itemStatusLabel(item.prep_status)}</span>
                 <span class="kds-sop-quick">📖 SOP</span>
               </div>
             </button>
@@ -560,8 +559,7 @@
               <div class="kds-item-side">
                 ${groupedDisplay ? `<span class="kds-station-badge">${escapeHtml(item.prep_station_name || "Workstation")}</span>` : ""}
                 ${item.is_parcel ? '<span class="kds-mini-badge">Parcel</span>' : ""}
-                <span class="kds-status-badge ${statusClass(item.approval_status === "pending" ? "pending_approval" : "ready")}">${itemApprovalLabel(item.approval_status)}</span>
-                <span class="kds-status-badge ${statusClass(item.prep_status)}">${itemStatusLabel(item.prep_status)}</span>
+                <span class="kds-status-badge ${statusClass(awaitingApproval ? "pending_approval" : item.prep_status)}">${awaitingApproval ? "Pending Approval" : itemStatusLabel(item.prep_status)}</span>
                 <span class="kds-sop-quick">📖 SOP</span>
               </div>
             </button>
