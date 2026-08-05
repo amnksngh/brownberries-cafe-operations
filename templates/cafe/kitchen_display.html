@@ -1,4 +1,9 @@
 {% extends "base.html" %}
+{% block extra_head %}
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Kalam:wght@400;700&family=Nunito:wght@400;600;700;800&family=Patrick+Hand&family=Quicksand:wght@400;500;600;700&display=swap" rel="stylesheet" />
+{% endblock %}
 {% block content %}
 {% set display_title = station_name ~ " Display" %}
 <section class="panel kds-shell">
@@ -358,7 +363,7 @@
     if (status === "preparing") return displayLabel;
     if (status === "ready") return "Ready";
     if (status === "served") return "Served";
-    return "Pending";
+    return "Queued";
   }
 
   function itemApprovalLabel(approvalStatus) {
@@ -443,7 +448,7 @@
               </div>
               <div class="kds-item-side">
                 ${item.is_parcel ? '<span class="kds-mini-badge">Parcel</span>' : ""}
-                <span class="kds-status-badge ${statusClass(awaitingApproval ? "pending_approval" : item.prep_status)}">${awaitingApproval ? "Pending Approval" : itemStatusLabel(item.prep_status)}</span>
+                <span class="kds-status-badge ${statusClass(awaitingApproval ? "pending_approval" : "ready")}">${awaitingApproval ? "Pending Approval" : "Approved"}</span>
                 <span class="kds-sop-quick">📖 SOP</span>
               </div>
             </button>
@@ -468,7 +473,6 @@
             </div>
             <div class="kds-ticket-meta">
               <button type="button" class="kds-card-toggle" data-card-toggle="${escapeHtml(displayCardId)}" aria-expanded="${expandedCardId === displayCardId ? "true" : "false"}" aria-label="${expandedCardId === displayCardId ? "Minimize table card" : "Maximize table card"}">${expandedCardId === displayCardId ? "↙" : "↗"}</button>
-              <span class="kds-status-badge ${statusClass(card.status)}">${orderStatusLabel(card.status)}</span>
               <span class="kds-ticket-timer ${delayed ? "delayed" : ""}">${elapsed} min${card.expected_minutes > 0 ? ` / ${card.expected_minutes} min` : ""}</span>
             </div>
           </div>
@@ -559,7 +563,7 @@
               <div class="kds-item-side">
                 ${groupedDisplay ? `<span class="kds-station-badge">${escapeHtml(item.prep_station_name || "Workstation")}</span>` : ""}
                 ${item.is_parcel ? '<span class="kds-mini-badge">Parcel</span>' : ""}
-                <span class="kds-status-badge ${statusClass(awaitingApproval ? "pending_approval" : item.prep_status)}">${awaitingApproval ? "Pending Approval" : itemStatusLabel(item.prep_status)}</span>
+                <span class="kds-status-badge ${statusClass(awaitingApproval ? "pending_approval" : "ready")}">${awaitingApproval ? "Pending Approval" : "Approved"}</span>
                 <span class="kds-sop-quick">📖 SOP</span>
               </div>
             </button>
@@ -589,7 +593,6 @@
                 aria-expanded="${expandedCardId === String(card.id) ? "true" : "false"}"
                 aria-label="${expandedCardId === String(card.id) ? "Minimize table card" : "Maximize table card"}"
               >${expandedCardId === String(card.id) ? "↙" : "↗"}</button>
-              <span class="kds-status-badge ${statusClass(card.status)}">${orderStatusLabel(card.status)}</span>
               <span class="kds-ticket-timer ${delayed ? "delayed" : ""}">
                 ${elapsed} min${card.expected_minutes > 0 ? ` / ${card.expected_minutes} min` : ""}
               </span>

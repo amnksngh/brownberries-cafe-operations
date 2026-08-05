@@ -2720,8 +2720,8 @@ th {
 }
 
 .kds-item-shell.priority-3 .kds-item-row {
-  background: #fff8df;
-  border-color: rgba(187, 145, 35, 0.34);
+  background: #eaf4ff;
+  border-color: rgba(73, 133, 190, 0.34);
 }
 
 .kds-item-shell.active .kds-item-row {
@@ -2736,9 +2736,9 @@ th {
   color: var(--text);
   border-radius: 10px;
   padding: 0.72rem 0.8rem;
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  align-items: start;
   gap: 0.7rem;
   text-align: left;
   cursor: pointer;
@@ -2791,12 +2791,13 @@ th {
 }
 
 .kds-item-side {
-  display: inline-flex;
+  width: 100%;
+  display: flex;
   align-items: center;
   flex-wrap: wrap;
   gap: 0.35rem;
-  justify-content: flex-end;
-  flex-shrink: 0;
+  justify-content: flex-start;
+  min-width: 0;
 }
 
 .kds-mini-badge {
@@ -2847,8 +2848,8 @@ th {
 }
 
 .kds-priority-chip.priority-3 {
-  background: #fff8df;
-  border-color: rgba(187, 145, 35, 0.34);
+  background: #eaf4ff;
+  border-color: rgba(73, 133, 190, 0.34);
 }
 
 .kds-station-badge {
@@ -2859,6 +2860,8 @@ th {
 .kds-sop-quick {
   color: #6f4a35;
   font-weight: 700;
+  margin-left: auto;
+  white-space: nowrap;
 }
 
 .kds-item-actions {
@@ -2892,6 +2895,38 @@ th {
   color: #99897d;
   border-color: rgba(111, 74, 53, 0.1);
   cursor: not-allowed;
+}
+
+/* Keep the handwritten treatment inside item tickets only. The rounded
+   fallbacks keep the cards usable when the font CDN is unavailable. */
+.kds-item-shell,
+.kds-item-row,
+.kds-item-actions {
+  font-family: "Kalam", "Patrick Hand", "Nunito", "Quicksand", sans-serif;
+}
+
+.kds-item-main strong,
+.kds-item-main span,
+.kds-item-main small {
+  font-family: "Patrick Hand", "Kalam", "Nunito", "Quicksand", sans-serif;
+  letter-spacing: 0;
+}
+
+.kds-item-side,
+.kds-status-badge,
+.kds-sop-quick,
+.kds-item-actions button {
+  font-family: "Nunito", "Quicksand", "Avenir Next", "Segoe UI", sans-serif;
+}
+
+.kds-item-main strong {
+  font-size: 1.12rem;
+  line-height: 1.1;
+}
+
+.kds-item-actions button {
+  font-family: "Nunito", "Quicksand", "Avenir Next", "Segoe UI", sans-serif;
+  font-weight: 700;
 }
 
 .k-card.maximized {
