@@ -61,9 +61,9 @@
       </div>
       <div class="kds-board-state">
         <div class="kds-priority-legend" aria-label="Preparation priority legend">
-          <span class="kds-priority-chip priority-1">1st</span>
-          <span class="kds-priority-chip priority-2">2nd</span>
-          <span class="kds-priority-chip priority-3">3rd</span>
+          <span class="kds-priority-chip priority-1" title="Prepare first">First</span>
+          <span class="kds-priority-chip priority-2" title="Prepare second">Next</span>
+          <span class="kds-priority-chip priority-3" title="Prepare third">Third</span>
         </div>
         <span class="kds-live-dot"></span>
         <span id="socket-state">Connecting...</span>
@@ -442,7 +442,6 @@
                 <small>Order #${escapeHtml(item.order_pickup_no || "-")} • ${escapeHtml(item.ordered_at || "-")}</small>
               </div>
               <div class="kds-item-side">
-                ${item.priority_rank ? `<span class="kds-priority-badge">P${Number(item.priority_rank)}</span>` : ""}
                 ${item.is_parcel ? '<span class="kds-mini-badge">Parcel</span>' : ""}
                 <span class="kds-status-badge ${statusClass(item.approval_status === "pending" ? "pending_approval" : "ready")}">${itemApprovalLabel(item.approval_status)}</span>
                 <span class="kds-status-badge ${statusClass(item.prep_status)}">${itemStatusLabel(item.prep_status)}</span>
@@ -560,7 +559,6 @@
               </div>
               <div class="kds-item-side">
                 ${groupedDisplay ? `<span class="kds-station-badge">${escapeHtml(item.prep_station_name || "Workstation")}</span>` : ""}
-                ${item.priority_rank ? `<span class="kds-priority-badge">P${Number(item.priority_rank)}</span>` : ""}
                 ${item.is_parcel ? '<span class="kds-mini-badge">Parcel</span>' : ""}
                 <span class="kds-status-badge ${statusClass(item.approval_status === "pending" ? "pending_approval" : "ready")}">${itemApprovalLabel(item.approval_status)}</span>
                 <span class="kds-status-badge ${statusClass(item.prep_status)}">${itemStatusLabel(item.prep_status)}</span>

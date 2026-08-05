@@ -2789,8 +2789,7 @@ th {
   color: #9a5500;
 }
 
-.kds-station-badge,
-.kds-priority-badge {
+.kds-station-badge {
   display: inline-flex;
   align-items: center;
   min-height: 1.35rem;
@@ -2840,11 +2839,6 @@ th {
 .kds-station-badge {
   background: rgba(111, 74, 53, 0.1);
   color: #68442f;
-}
-
-.kds-priority-badge {
-  background: rgba(255, 255, 255, 0.74);
-  color: #6f4a35;
 }
 
 .kds-sop-quick {
