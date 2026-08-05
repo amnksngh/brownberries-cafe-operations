@@ -195,6 +195,7 @@
   let orderCards = [];
   let sopLibraryItems = [];
   let selectedSopKey = "";
+  const announcedOrderKeys = new Set();
   let boardRefreshInFlight = false;
   let boardRefreshPending = false;
   let expandedCardId = "";
@@ -204,6 +205,7 @@
   const sopPanelKey = `kds_sop_panel_open_v1:${station}`;
   const notifAudio = new Audio(notifSoundUrl);
   notifAudio.preload = "auto";
+  notifAudio.loop = false;
 
   function escapeHtml(value) {
     return String(value || "")
@@ -302,6 +304,14 @@
     if (!text) return;
     announcementQueue.push(text);
     processAnnouncementQueue();
+  }
+
+  function isDuplicateOrderAnnouncement(payload) {
+    const key = String(payload?.id || payload?.order_code || payload?.display_code || "").trim();
+    if (!key) return false;
+    if (announcedOrderKeys.has(key)) return true;
+    announcedOrderKeys.add(key);
+    return false;
   }
 
   function summarizeItems(items) {
@@ -432,7 +442,6 @@
                 <small>Order #${escapeHtml(item.order_pickup_no || "-")} • ${escapeHtml(item.ordered_at || "-")}</small>
               </div>
               <div class="kds-item-side">
-                <span class="kds-station-badge">${escapeHtml(item.prep_station_name || workstation.name)}</span>
                 ${item.priority_rank ? `<span class="kds-priority-badge">P${Number(item.priority_rank)}</span>` : ""}
                 ${item.is_parcel ? '<span class="kds-mini-badge">Parcel</span>' : ""}
                 <span class="kds-status-badge ${statusClass(item.approval_status === "pending" ? "pending_approval" : "ready")}">${itemApprovalLabel(item.approval_status)}</span>
@@ -835,6 +844,11 @@
 
   socket.on("order_created", (payload) => {
     if (payload?.created_on_ist && payload.created_on_ist !== currentIstDayKey()) return;
+    const duplicate = isDuplicateOrderAnnouncement(payload);
+    if (duplicate) {
+      refreshBoardData();
+      return;
+    }
     notifs.unshift({
       id: payload.id,
       order_id: payload.order_code || payload.id,
