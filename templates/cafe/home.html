@@ -245,25 +245,30 @@
 
 <section class="panel">
   <h3>SMS Gateway Settings</h3>
-  <p class="muted">Configure TextBee for receipts, reminders, and consumer alerts from this server.</p>
+  <p class="muted">Configure Fast2SMS for receipts, reminders, and consumer alerts from this server.</p>
   <form method="post" action="{{ url_for('cafe.update_sms_settings') }}" class="grid grid-4">
     <label>CA Bundle Path (Optional)
       <input name="sms_ca_bundle" value="{{ sms_ca_bundle or '' }}" placeholder="/path/to/cacert.pem" />
     </label>
     <label><input type="checkbox" name="sms_enabled" {% if sms_enabled %}checked{% endif %} /> Enable SMS Gateway</label>
-    <label><input type="checkbox" name="sms_allow_insecure_ssl" {% if sms_allow_insecure_ssl %}checked{% endif %} /> Emergency: Allow Insecure SSL (not recommended)</label>
-    <label>TextBee API Key
-      <input type="password" name="textbee_api_key" placeholder="Paste TextBee API key" />
-      {% if textbee_key_hint %}<small class="muted">Current: {{ textbee_key_hint }}</small>{% endif %}
+    <label>Fast2SMS API Key
+      <input type="password" name="fast2sms_api_key" placeholder="Paste Fast2SMS API key" />
+      {% if fast2sms_key_hint %}<small class="muted">Current: {{ fast2sms_key_hint }}</small>{% endif %}
     </label>
-    <label>TextBee Device ID
-      <input name="textbee_device_id" value="{{ textbee_device_id or '' }}" placeholder="Device ID from TextBee dashboard" />
+    <label>Fast2SMS Route
+      <select name="fast2sms_route">
+        <option value="q" {% if fast2sms_route == 'q' %}selected{% endif %}>Quick SMS</option>
+        <option value="dlt_manual" {% if fast2sms_route == 'dlt_manual' %}selected{% endif %}>DLT Manual</option>
+      </select>
     </label>
-    <label>TextBee Default SIM Subscription ID
-      <input name="textbee_sim_subscription_id" value="{{ textbee_sim_subscription_id or '' }}" placeholder="Optional numeric SIM ID" />
+    <label>DLT Sender ID (optional)
+      <input name="fast2sms_sender_id" value="{{ fast2sms_sender_id or '' }}" placeholder="Required for DLT Manual" />
     </label>
-    <label>TextBee Base URL
-      <input name="textbee_base_url" value="{{ textbee_base_url or 'https://api.textbee.dev/api/v1' }}" placeholder="https://api.textbee.dev/api/v1" />
+    <label>DLT Template ID (optional)
+      <input name="fast2sms_template_id" value="{{ fast2sms_template_id or '' }}" placeholder="Fast2SMS template ID" />
+    </label>
+    <label>DLT Entity ID (optional)
+      <input name="fast2sms_entity_id" value="{{ fast2sms_entity_id or '' }}" placeholder="Fast2SMS entity ID" />
     </label>
     <button type="submit">Save SMS Settings</button>
   </form>
@@ -271,13 +276,10 @@
     <label>Country Code
       <select name="test_country_code">
         <option value="+91" selected>India (+91)</option>
-        <option value="+1">USA (+1)</option>
-        <option value="+44">UK (+44)</option>
-        <option value="+971">UAE (+971)</option>
       </select>
     </label>
     <label>Mobile Number
-      <input name="test_mobile" placeholder="Test number" />
+      <input name="test_mobile" inputmode="numeric" placeholder="10-digit Indian mobile" />
     </label>
     <label>Test Message
       <input name="test_message" placeholder="Brownberries Cafe SMS test message." />

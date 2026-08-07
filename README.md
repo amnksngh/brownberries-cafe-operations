@@ -74,6 +74,22 @@ Professional, single-website operations platform for:
 - Library statistics Excel export
 - Due-tomorrow alert count on dashboard
 
+### Fast2SMS
+
+SMS receipts and library reminders use Fast2SMS through its `POST /dev/bulkV2`
+API. Configure it from **Cafe → SMS Gateway Settings** after deployment:
+
+1. Enable the SMS gateway.
+2. Paste the Fast2SMS API key.
+3. Keep **Quick SMS** selected for development/testing, or select **DLT Manual**
+   and provide the approved Sender ID, Template ID, and Entity ID for production
+   template traffic.
+4. Use **Send Test SMS** to verify the Windows server configuration.
+
+The API key is stored only in the ignored runtime file
+`instance/deployment_config.json` and must never be committed to Git. Fast2SMS
+currently accepts Indian `+91` mobile numbers in this integration.
+
 ## 4) Run Locally (localhost + Wi-Fi)
 
 ```bash

@@ -2344,12 +2344,12 @@ def home():
     workstation_group_options = _all_workstation_groups()
     sms_enabled = str(cfg.get("SMS_ENABLED", "0")).strip() in ["1", "true", "True"]
     sms_ca_bundle = (cfg.get("SMS_CA_BUNDLE") or "").strip()
-    sms_allow_insecure_ssl = str(cfg.get("SMS_ALLOW_INSECURE_SSL", "0")).strip() in ["1", "true", "True"]
-    textbee_api_key = (cfg.get("TEXTBEE_API_KEY") or "").strip()
-    textbee_device_id = (cfg.get("TEXTBEE_DEVICE_ID") or "").strip()
-    textbee_sim_subscription_id = (cfg.get("TEXTBEE_SIM_SUBSCRIPTION_ID") or "").strip()
-    textbee_base_url = (cfg.get("TEXTBEE_BASE_URL") or "https://api.textbee.dev/api/v1").strip()
-    textbee_key_hint = f"{textbee_api_key[:4]}...{textbee_api_key[-4:]}" if len(textbee_api_key) >= 10 else ("Set" if textbee_api_key else "")
+    fast2sms_api_key = (cfg.get("FAST2SMS_API_KEY") or "").strip()
+    fast2sms_route = (cfg.get("FAST2SMS_ROUTE") or "q").strip().lower()
+    fast2sms_sender_id = (cfg.get("FAST2SMS_SENDER_ID") or "").strip()
+    fast2sms_template_id = (cfg.get("FAST2SMS_TEMPLATE_ID") or "").strip()
+    fast2sms_entity_id = (cfg.get("FAST2SMS_ENTITY_ID") or "").strip()
+    fast2sms_key_hint = f"{fast2sms_api_key[:4]}...{fast2sms_api_key[-4:]}" if len(fast2sms_api_key) >= 10 else ("Set" if fast2sms_api_key else "")
     qr_order_cutoff_time = _format_cutoff_value(cfg.get("QR_ORDER_CUTOFF_TIME"))
     staff_order_cutoff_time = _format_cutoff_value(cfg.get("STAFF_ORDER_CUTOFF_TIME"))
     breakfast_settings = _breakfast_settings()
@@ -2379,11 +2379,11 @@ def home():
         public_notice_enabled=(cfg.get("PUBLIC_NOTICE_ENABLED", "0") in [1, "1", True, "true", "True"]),
         sms_enabled=sms_enabled,
         sms_ca_bundle=sms_ca_bundle,
-        sms_allow_insecure_ssl=sms_allow_insecure_ssl,
-        textbee_key_hint=textbee_key_hint,
-        textbee_device_id=textbee_device_id,
-        textbee_sim_subscription_id=textbee_sim_subscription_id,
-        textbee_base_url=textbee_base_url,
+        fast2sms_key_hint=fast2sms_key_hint,
+        fast2sms_route=fast2sms_route,
+        fast2sms_sender_id=fast2sms_sender_id,
+        fast2sms_template_id=fast2sms_template_id,
+        fast2sms_entity_id=fast2sms_entity_id,
         qr_order_cutoff_time=qr_order_cutoff_time,
         staff_order_cutoff_time=staff_order_cutoff_time,
         breakfast_start_time=breakfast_settings["start_time"],
@@ -2446,20 +2446,23 @@ def update_sms_settings():
     cfg = load_deployment_config(current_app.instance_path)
     sms_enabled = True if request.form.get("sms_enabled") else False
     ca_bundle = (request.form.get("sms_ca_bundle") or "").strip()
-    allow_insecure_ssl = True if request.form.get("sms_allow_insecure_ssl") else False
-    textbee_api_key = (request.form.get("textbee_api_key") or "").strip()
-    textbee_device_id = (request.form.get("textbee_device_id") or "").strip()
-    textbee_sim_subscription_id = (request.form.get("textbee_sim_subscription_id") or "").strip()
-    textbee_base_url = (request.form.get("textbee_base_url") or "").strip()
+    fast2sms_api_key = (request.form.get("fast2sms_api_key") or "").strip()
+    fast2sms_route = (request.form.get("fast2sms_route") or "q").strip().lower()
+    if fast2sms_route not in {"q", "dlt_manual"}:
+        fast2sms_route = "q"
+    fast2sms_sender_id = (request.form.get("fast2sms_sender_id") or "").strip()
+    fast2sms_template_id = (request.form.get("fast2sms_template_id") or "").strip()
+    fast2sms_entity_id = (request.form.get("fast2sms_entity_id") or "").strip()
 
     updates = {
         "SMS_ENABLED": "1" if sms_enabled else "0",
         "SMS_CA_BUNDLE": ca_bundle or (cfg.get("SMS_CA_BUNDLE") or ""),
-        "SMS_ALLOW_INSECURE_SSL": "1" if allow_insecure_ssl else "0",
-        "TEXTBEE_API_KEY": textbee_api_key or (cfg.get("TEXTBEE_API_KEY") or ""),
-        "TEXTBEE_DEVICE_ID": textbee_device_id or (cfg.get("TEXTBEE_DEVICE_ID") or ""),
-        "TEXTBEE_SIM_SUBSCRIPTION_ID": textbee_sim_subscription_id or (cfg.get("TEXTBEE_SIM_SUBSCRIPTION_ID") or ""),
-        "TEXTBEE_BASE_URL": textbee_base_url or (cfg.get("TEXTBEE_BASE_URL") or "https://api.textbee.dev/api/v1"),
+        "FAST2SMS_API_KEY": fast2sms_api_key or (cfg.get("FAST2SMS_API_KEY") or ""),
+        "FAST2SMS_BASE_URL": "https://www.fast2sms.com/dev/bulkV2",
+        "FAST2SMS_ROUTE": fast2sms_route,
+        "FAST2SMS_SENDER_ID": fast2sms_sender_id,
+        "FAST2SMS_TEMPLATE_ID": fast2sms_template_id,
+        "FAST2SMS_ENTITY_ID": fast2sms_entity_id,
     }
     save_deployment_config(current_app.instance_path, updates)
     flash("SMS gateway settings saved.", "success")
