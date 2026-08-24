@@ -44,7 +44,10 @@
       const activeRow = submenuRows.find((row) => row.dataset.menuSubmenu === activeGroup);
       if (!activeRow || !scrollCue) return;
       const remaining = activeRow.scrollWidth - activeRow.clientWidth - activeRow.scrollLeft;
-      scrollCue.classList.toggle("is-visible", remaining > 6);
+      const visible = remaining > 6;
+      scrollCue.classList.toggle("is-visible", visible);
+      scrollCue.disabled = !visible;
+      scrollCue.setAttribute("aria-hidden", visible ? "false" : "true");
     }
 
     function requestScrollCueSync() {
@@ -113,6 +116,13 @@
       activeSection = sectionButton.dataset.menuSection;
       syncButtons();
       applyFilters();
+    });
+
+    scrollCue?.addEventListener("click", () => {
+      const activeRow = submenuRows.find((row) => row.dataset.menuSubmenu === activeGroup);
+      if (!activeRow) return;
+      activeRow.scrollTo({ left: activeRow.scrollWidth, behavior: "smooth" });
+      requestScrollCueSync();
     });
 
     searchInput?.addEventListener("input", () => {

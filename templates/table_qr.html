@@ -9,6 +9,7 @@
     z-index: 70;
     display: grid;
     grid-template-columns: repeat(4, minmax(0, 1fr));
+    grid-auto-rows: 1fr;
     gap: 0.5rem;
     padding: 0.55rem;
     border-radius: 20px;
@@ -25,7 +26,10 @@
     border-radius: 16px;
     background: rgba(255, 255, 255, 0.08);
     color: #fff7f2;
-    min-height: 62px;
+    width: 100%;
+    min-width: 0;
+    height: 66px;
+    min-height: 66px;
     padding: 0.7rem 0.6rem;
     display: grid;
     gap: 0.18rem;
@@ -48,14 +52,27 @@
     transform: translateY(1px) scale(0.99);
   }
   .qr-dock-title {
+    display: flex;
+    align-items: flex-end;
+    justify-content: center;
+    width: 100%;
+    min-height: 1.05rem;
     font-size: 0.82rem;
     font-weight: 700;
     letter-spacing: 0;
   }
   .qr-dock-meta {
+    display: flex;
+    align-items: flex-start;
+    justify-content: center;
+    width: 100%;
+    min-width: 0;
+    min-height: 1.55rem;
     font-size: 0.73rem;
     opacity: 0.88;
-    white-space: nowrap;
+    line-height: 1.12;
+    overflow: hidden;
+    text-wrap: balance;
   }
   .qr-sheet-summary {
     display: grid;
@@ -284,6 +301,10 @@
     justify-content: flex-end;
     gap: 0.5rem;
   }
+  .bill-receipt-actions .is-disabled {
+    cursor: not-allowed;
+    opacity: 0.64;
+  }
   @media (max-width: 640px) {
     .bill-receipt-footer {
       align-items: stretch;
@@ -312,7 +333,8 @@
       border-radius: 18px;
     }
     .qr-dock-btn {
-      min-height: 58px;
+      height: 62px;
+      min-height: 62px;
       padding: 0.56rem 0.28rem;
       border-radius: 14px;
     }
@@ -549,39 +571,19 @@
         <div class="qr-sheet-note">
           Settle at the cashier when you are ready. The service charge is optional and you can change it any time before payment.
         </div>
-        <div class="table-feedback-prompt {% if not feedback_prompt %}hidden{% endif %}" id="table-feedback-prompt">
-          <strong id="feedback-prompt-title">
-            {% if feedback_prompt and feedback_prompt.feedback_exists and not feedback_prompt.feedback_editable %}
-            Feedback already saved
-            {% elif feedback_prompt and feedback_prompt.feedback_exists %}
-            Update your feedback
-            {% else %}
-            How was your visit?
-            {% endif %}
-          </strong>
-          <p class="muted" id="feedback-prompt-copy">
-            {% if feedback_prompt %}
-              {% if feedback_prompt.feedback_exists and not feedback_prompt.feedback_editable %}
-              Feedback for your latest settled visit is already recorded.
-              {% elif feedback_prompt.feedback_exists %}
-              A staff note was saved for your latest settled visit. You can still add your own feedback here.
-              {% else %}
-              Your latest settled table bill was ₹{{ "%.2f"|format(feedback_prompt.settlement_total or 0) }}. Please rate your ordered items and service.
-              {% endif %}
-            {% endif %}
-          </p>
-          <div>
-            <a id="feedback-prompt-link" class="button-link {% if feedback_prompt and feedback_prompt.feedback_exists and not feedback_prompt.feedback_editable %}hidden{% endif %}" href="{% if feedback_prompt %}{{ feedback_prompt.feedback_url }}{% else %}#{% endif %}">{% if feedback_prompt and feedback_prompt.feedback_exists %}Add Your Feedback{% else %}Leave Feedback{% endif %}</a>
-          </div>
+        <div class="table-feedback-prompt hidden" id="table-feedback-prompt">
+          <strong id="feedback-prompt-title">How was your visit?</strong>
+          <p class="muted" id="feedback-prompt-copy"></p>
+          <div><a id="feedback-prompt-link" class="button-link" href="#">Leave Feedback</a></div>
         </div>
-        <footer class="bill-receipt-footer {% if not feedback_prompt %}hidden{% endif %}" id="bill-receipt-footer">
+        <footer class="bill-receipt-footer" id="bill-receipt-footer">
           <div>
-            <strong>Your receipt is ready</strong>
-            <span class="muted" id="bill-receipt-footer-copy">Download or print the receipt for all orders settled together at this table.</span>
+            <strong id="bill-receipt-footer-title">Receipt available after settlement</strong>
+            <span class="muted" id="bill-receipt-footer-copy">Preview the current bill now. Settle the table at the cashier before generating the final receipt.</span>
           </div>
           <div class="bill-receipt-actions">
-            <a id="bill-receipt-view" class="button-link" href="{% if feedback_prompt %}{{ feedback_prompt.receipt_url }}{% else %}#{% endif %}" target="_blank" rel="noopener">View Receipt</a>
-            <a id="bill-receipt-print" class="button-link" href="{% if feedback_prompt %}{{ feedback_prompt.receipt_url }}?print=1{% else %}#{% endif %}" target="_blank" rel="noopener">Print / Save PDF</a>
+            <a id="bill-receipt-preview" class="button-link" href="{{ url_for('cafe.public_table_bill_preview', slug=table.qr_slug) }}" target="_blank" rel="noopener">Preview Current Bill</a>
+            <a id="bill-receipt-generate" class="button-link is-disabled" href="#" aria-disabled="true">Generate Receipt</a>
           </div>
         </footer>
       </div>
@@ -662,6 +664,7 @@
   const cart = {};
   const CART_STORAGE_KEY = `brownberries_qr_cart_v1:${tableId}`;
   const ORDERING_STARTED_KEY = `brownberries_qr_started_v1:${tableId}`;
+  const RECEIPT_STORAGE_KEY = `brownberries_qr_receipt_v2:${tableId}`;
   const cartLines = document.getElementById("cart-lines");
   const cartPayloadInput = document.getElementById("cart-payload");
   const cartTotal = document.getElementById("cart-total");
@@ -718,9 +721,10 @@
   const feedbackPromptTitle = document.getElementById("feedback-prompt-title");
   const feedbackPromptCopy = document.getElementById("feedback-prompt-copy");
   const feedbackPromptLink = document.getElementById("feedback-prompt-link");
-  const billReceiptFooter = document.getElementById("bill-receipt-footer");
-  const billReceiptView = document.getElementById("bill-receipt-view");
-  const billReceiptPrint = document.getElementById("bill-receipt-print");
+  const billReceiptFooterTitle = document.getElementById("bill-receipt-footer-title");
+  const billReceiptFooterCopy = document.getElementById("bill-receipt-footer-copy");
+  const billReceiptPreview = document.getElementById("bill-receipt-preview");
+  const billReceiptGenerate = document.getElementById("bill-receipt-generate");
   const serviceChargeRate = Number({{ service_charge_rate or 5 }});
   let orderSubmitLocked = false;
   let toastTimer = null;
@@ -733,6 +737,8 @@
     emptyResults,
   });
   let dockPulseTimer = null;
+  let receiptExpiryTimer = null;
+  let pendingSettlementAccess = null;
   let activeGuestView = "menu";
   const liveOrders = new Map();
 
@@ -899,16 +905,9 @@
     if (!prompt) {
       feedbackPrompt.classList.add("hidden");
       if (feedbackPromptLink) feedbackPromptLink.href = "#";
-      billReceiptFooter?.classList.add("hidden");
-      if (billReceiptView) billReceiptView.href = "#";
-      if (billReceiptPrint) billReceiptPrint.href = "#";
       return;
     }
     feedbackPrompt.classList.remove("hidden");
-    const receiptUrl = prompt.receipt_url || "#";
-    billReceiptFooter?.classList.remove("hidden");
-    if (billReceiptView) billReceiptView.href = receiptUrl;
-    if (billReceiptPrint) billReceiptPrint.href = receiptUrl === "#" ? "#" : `${receiptUrl}?print=1`;
     if (feedbackPromptTitle) {
       if (prompt.feedback_exists && !prompt.feedback_editable) {
         feedbackPromptTitle.textContent = "Feedback already saved";
@@ -934,13 +933,79 @@
     }
   }
 
-  async function refreshFeedbackPrompt() {
-    if (isPreview || !feedbackPrompt) return;
+  function clearStoredReceiptAccess() {
+    pendingSettlementAccess = null;
+    if (receiptExpiryTimer) {
+      window.clearTimeout(receiptExpiryTimer);
+      receiptExpiryTimer = null;
+    }
     try {
-      const res = await fetch(`{{ url_for('main.table_feedback_status') }}?slug={{ table.qr_slug }}`);
-      const data = await res.json();
-      if (data?.ok) renderFeedbackPrompt(data.feedback_prompt || null);
+      window.sessionStorage.removeItem(RECEIPT_STORAGE_KEY);
     } catch (_) {}
+  }
+
+  function storedReceiptAccess() {
+    try {
+      const saved = JSON.parse(window.sessionStorage.getItem(RECEIPT_STORAGE_KEY) || "null");
+      if (!saved?.receipt_url || Date.parse(saved.expires_at || "") <= Date.now()) {
+        window.sessionStorage.removeItem(RECEIPT_STORAGE_KEY);
+        return null;
+      }
+      return saved;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function renderReceiptAccess(access) {
+    const expiresAt = Date.parse(access?.expires_at || "");
+    const ready = !!access?.receipt_url && Number.isFinite(expiresAt) && expiresAt > Date.now() && getLiveOrderCount() === 0;
+    if (!ready) {
+      if (billReceiptFooterTitle) billReceiptFooterTitle.textContent = "Receipt available after settlement";
+      if (billReceiptFooterCopy) billReceiptFooterCopy.textContent = "Preview the current bill now. Settle the table at the cashier before generating the final receipt.";
+      if (billReceiptPreview) {
+        billReceiptPreview.href = "{{ url_for('cafe.public_table_bill_preview', slug=table.qr_slug) }}";
+        billReceiptPreview.textContent = "Preview Current Bill";
+      }
+      if (billReceiptGenerate) {
+        billReceiptGenerate.href = "#";
+        billReceiptGenerate.textContent = "Generate Receipt";
+        billReceiptGenerate.classList.add("is-disabled");
+        billReceiptGenerate.setAttribute("aria-disabled", "true");
+      }
+      renderFeedbackPrompt(null);
+      return;
+    }
+    if (billReceiptFooterTitle) billReceiptFooterTitle.textContent = "Your receipt is ready";
+    if (billReceiptFooterCopy) billReceiptFooterCopy.textContent = "Download access remains on this mobile for five minutes after settlement.";
+    if (billReceiptPreview) {
+      billReceiptPreview.href = access.receipt_url;
+      billReceiptPreview.textContent = "View Receipt";
+    }
+    if (billReceiptGenerate) {
+      billReceiptGenerate.href = `${access.receipt_url}?print=1`;
+      billReceiptGenerate.textContent = "Download Receipt";
+      billReceiptGenerate.classList.remove("is-disabled");
+      billReceiptGenerate.setAttribute("aria-disabled", "false");
+      billReceiptGenerate.target = "_blank";
+      billReceiptGenerate.rel = "noopener";
+    }
+    renderFeedbackPrompt(access);
+    if (receiptExpiryTimer) window.clearTimeout(receiptExpiryTimer);
+    receiptExpiryTimer = window.setTimeout(() => {
+      clearStoredReceiptAccess();
+      renderReceiptAccess(null);
+    }, Math.max(0, expiresAt - Date.now()));
+  }
+
+  function acceptSettlementAccess(access) {
+    if (!access?.receipt_url) return;
+    pendingSettlementAccess = access;
+    if (getLiveOrderCount() > 0) return;
+    try {
+      window.sessionStorage.setItem(RECEIPT_STORAGE_KEY, JSON.stringify(access));
+    } catch (_) {}
+    renderReceiptAccess(access);
   }
 
   function updateSettlementEstimate() {
@@ -1268,6 +1333,11 @@
     ordersBackToMenu?.addEventListener("click", () => showGuestView("menu"));
     billBackToMenu?.addEventListener("click", () => showGuestView("menu"));
     cartContinueBtn?.addEventListener("click", () => showGuestView("menu"));
+    billReceiptGenerate?.addEventListener("click", (event) => {
+      if (billReceiptGenerate.getAttribute("aria-disabled") !== "true") return;
+      event.preventDefault();
+      alert("Please settle the table first to generate and download the final receipt. You can preview the current bill before settlement.");
+    });
   }
 
   if (!isPreview) {
@@ -1337,6 +1407,11 @@
       renderOrdersSheet();
       updateSettlementEstimate();
       syncDockState();
+      if (order.status === "paid" && order.settlement_access) {
+        acceptSettlementAccess(order.settlement_access);
+      } else if (pendingSettlementAccess && getLiveOrderCount() === 0) {
+        acceptSettlementAccess(pendingSettlementAccess);
+      }
       return;
     }
     const itemHtml = order.items
@@ -1363,6 +1438,8 @@
     }
     row.innerHTML = rowHtml;
     liveOrders.set(order.id, order);
+    clearStoredReceiptAccess();
+    renderReceiptAccess(null);
     renderOrdersSheet();
     updateSettlementEstimate();
     syncDockState();
@@ -1458,7 +1535,6 @@
       const existing = document.querySelector(`tr[data-order-id="${payload.id}"] .order-status`);
       const oldStatus = existing ? existing.textContent.trim() : "";
       upsertOrderRow(payload);
-      refreshFeedbackPrompt();
       if (oldStatus === "pending_approval" && payload.status === "open") {
         alert("Your order has been approved and placed.");
       }
@@ -1475,9 +1551,8 @@
   }
 
   setGreeting();
-  renderFeedbackPrompt({{ feedback_prompt|tojson if feedback_prompt else "null" }});
+  renderReceiptAccess(storedReceiptAccess());
   updateSettlementEstimate();
-  refreshFeedbackPrompt();
   syncCallStaffButton(Number(callStaffBtn?.dataset.cooldownRemaining || 0));
   if (!isPreview) {
     const alreadyStarted = (() => {

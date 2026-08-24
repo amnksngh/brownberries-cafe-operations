@@ -48,7 +48,6 @@ from .menu_navigation import (
     recent_paid_item_frequency,
 )
 from .models import (
-    CafeFeedback,
     CafeOrder,
     CafeOrderItem,
     CafeTable,
@@ -427,56 +426,6 @@ def _service_charge_rate_for_public():
     except (TypeError, ValueError):
         value = 5.0
     return round(min(max(value or 5.0, 5.0), 10.0), 2)
-
-
-def _table_feedback_prompt(table: CafeTable | None) -> dict | None:
-    if not table:
-        return None
-    today_start, today_end = _current_ist_day_bounds_utc_naive()
-    latest_paid_order = (
-        CafeOrder.query.options(joinedload(CafeOrder.table))
-        .filter(
-            CafeOrder.table_id == table.id,
-            CafeOrder.status == "paid",
-            CafeOrder.paid_at.is_not(None),
-            CafeOrder.paid_at >= today_start,
-            CafeOrder.paid_at <= today_end,
-        )
-        .order_by(CafeOrder.paid_at.desc(), CafeOrder.id.desc())
-        .first()
-    )
-    if not latest_paid_order:
-        return None
-    primary_order = (
-        CafeOrder.query.filter(
-            CafeOrder.table_id == latest_paid_order.table_id,
-            CafeOrder.status == "paid",
-            CafeOrder.paid_at == latest_paid_order.paid_at,
-        )
-        .order_by(CafeOrder.created_at.asc(), CafeOrder.id.asc())
-        .first()
-    ) or latest_paid_order
-    feedback = CafeFeedback.query.filter_by(primary_order_id=primary_order.id).order_by(CafeFeedback.id.desc()).first()
-    settlement_total = (
-        db.session.query(db.func.coalesce(db.func.sum(CafeOrder.total_amount), 0))
-        .filter(
-            CafeOrder.table_id == latest_paid_order.table_id,
-            CafeOrder.status == "paid",
-            CafeOrder.paid_at == latest_paid_order.paid_at,
-        )
-        .scalar()
-        or 0
-    )
-    return {
-        "primary_order_id": primary_order.id,
-        "settlement_total": round(float(settlement_total or 0), 2),
-        "feedback_exists": bool(feedback),
-        "feedback_source": (feedback.source if feedback else ""),
-        "feedback_editable": (not feedback) or (feedback.source != "online"),
-        "paid_at": latest_paid_order.paid_at.astimezone(UTC_TZ).isoformat() if getattr(latest_paid_order.paid_at, "tzinfo", None) else (latest_paid_order.paid_at.isoformat() if latest_paid_order.paid_at else ""),
-        "feedback_url": url_for("cafe.public_settlement_feedback", order_id=primary_order.id),
-        "receipt_url": url_for("cafe.public_receipt", order_id=primary_order.id),
-    }
 
 
 def _public_menu_category_ids(item: MenuItem, category_name_by_id: dict[int, str]) -> list[int]:
@@ -2093,7 +2042,6 @@ def table_qr_page():
         staff_call_cooldown_remaining = _staff_call_cooldown_remaining_seconds(table)
     qr_success_toast = session.pop("qr_success_toast", None)
     service_charge_rate = _service_charge_rate_for_public()
-    feedback_prompt = _table_feedback_prompt(table) if table else None
     return render_template(
         "table_qr.html",
         table=table,
@@ -2108,7 +2056,6 @@ def table_qr_page():
         staff_call_cooldown_remaining=staff_call_cooldown_remaining,
         service_charge_rate=service_charge_rate,
         service_charge_enabled=not bool(getattr(table, "service_charge_opt_out_requested", False)),
-        feedback_prompt=feedback_prompt,
         qr_success_toast=qr_success_toast,
         hide_staff_nav=True,
     )
@@ -2124,15 +2071,6 @@ def table_service_charge_preference():
     table.service_charge_opt_out_requested = not include_service_charge
     db.session.commit()
     return jsonify({"ok": True, "apply_service_charge": include_service_charge})
-
-
-@bp.route("/table/feedback-status")
-def table_feedback_status():
-    slug = (request.args.get("slug") or "").strip()
-    table = CafeTable.query.filter_by(qr_slug=slug, active=True).first()
-    if not table:
-        return jsonify({"ok": False, "message": "Table not found."}), 404
-    return jsonify({"ok": True, "feedback_prompt": _table_feedback_prompt(table)})
 
 
 @bp.route("/users", methods=["GET", "POST"])

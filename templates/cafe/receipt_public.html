@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Brownberries Café Receipt</title>
+  <title>Brownberries Café {{ "Bill Preview" if is_preview else "Receipt" }}</title>
   <style>
     :root {
       color-scheme: light;
@@ -46,6 +46,16 @@
       border-radius: 16px;
       box-shadow: 0 16px 48px rgba(42, 23, 12, 0.08);
       padding: 28px 28px 20px;
+    }
+    .preview-notice {
+      margin: 0 0 16px;
+      padding: 12px 14px;
+      border: 1px solid #e4c987;
+      border-radius: 12px;
+      background: #fff8df;
+      color: #654d18;
+      font-size: 14px;
+      line-height: 1.45;
     }
     .receipt-header {
       text-align: center;
@@ -207,24 +217,31 @@
 </head>
 <body>
   <div class="receipt-page">
+    {% if not is_preview %}
     <div class="print-actions">
       <button type="button" onclick="window.print()">Print / Save as PDF</button>
     </div>
+    {% endif %}
     <article class="receipt-paper">
       <header class="receipt-header">
         <h1>Brownberries Café</h1>
         <p>{{ receipt_location }}</p>
       </header>
 
+      {% if is_preview %}
+      <p class="preview-notice"><strong>Unsettled bill preview.</strong> This shows only the table’s current active orders. Settle the table at the cashier to generate and download the final receipt.</p>
+      {% endif %}
+
       <section class="receipt-meta">
         <div><strong>Order IDs</strong>{% for settled_order in receipt_orders %}#{{ settled_order.daily_sequence or settled_order.id }}{% if not loop.last %}, {% endif %}{% endfor %}</div>
         <div><strong>Internal Refs</strong>{% for settled_order in receipt_orders %}{{ settled_order.display_code or settled_order.id }}{% if not loop.last %}, {% endif %}{% endfor %}</div>
         <div><strong>Table</strong>{{ "For Delivery" if order.is_delivery else (order.table.name if order.table else "-") }}</div>
-        <div><strong>Status</strong>{{ order.status|replace("_", " ")|title }}</div>
-        <div><strong>Paid</strong>{{ paid_at_display or "-" }}</div>
-        <div><strong>Payment</strong>{{ order.payment_type or "-" }}</div>
+        <div><strong>Status</strong>{{ "Unsettled Preview" if is_preview else order.status|replace("_", " ")|title }}</div>
+        <div><strong>Paid</strong>{{ "Not settled" if is_preview else (paid_at_display or "-") }}</div>
+        <div><strong>Payment</strong>{{ "Not selected" if is_preview else (order.payment_type or "-") }}</div>
       </section>
 
+      {% if not is_preview %}
       <section class="payment-block">
         <h3>Payment Details</h3>
         {% for row in payment_breakdown %}
@@ -241,6 +258,7 @@
         <div class="payment-line"><span>No payment details available</span><strong>-</strong></div>
         {% endfor %}
       </section>
+      {% endif %}
 
       <table>
         <thead>
@@ -287,14 +305,16 @@
       </section>
 
       <footer class="receipt-footer">
-        <div>Thank you for visiting Brownberries Café.</div>
+        <div>{{ "This preview is not a final receipt." if is_preview else "Thank you for visiting Brownberries Café." }}</div>
+        {% if not is_preview %}
         <div style="margin-top:8px;"><a href="{{ feedback_link }}">Rate this visit</a></div>
         <div style="margin-top:8px;"><a href="{{ review_link }}" target="_blank" rel="noopener">Leave us a Google review</a></div>
+        {% endif %}
       </footer>
     </article>
   </div>
   <script>
-    if (new URLSearchParams(window.location.search).get("print") === "1") {
+    if (!{{ "true" if is_preview else "false" }} && new URLSearchParams(window.location.search).get("print") === "1") {
       window.addEventListener("load", () => window.setTimeout(() => window.print(), 350));
     }
   </script>

@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>No Current Bill | Brownberries Café</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; min-height: 100vh; display: grid; place-items: center; padding: 24px; font-family: Inter, "Segoe UI", Arial, sans-serif; color: #2f1d12; background: #f4efe8; }
+    main { width: min(100%, 520px); padding: 30px 24px; border: 1px solid #ddd2c8; border-radius: 16px; background: #fff; text-align: center; box-shadow: 0 16px 48px rgba(42, 23, 12, 0.08); }
+    h1 { margin: 0 0 10px; font-size: 24px; }
+    p { color: #6c5b4f; line-height: 1.5; }
+    a { display: inline-block; margin-top: 8px; padding: 12px 18px; border-radius: 10px; background: #6f4a35; color: #fff; font-weight: 700; text-decoration: none; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>No current bill</h1>
+    <p>There are no active orders for {{ table.name }}. Add an order first, then return here to preview the current table bill.</p>
+    <a href="{{ back_url }}">Back to Menu</a>
+  </main>
+</body>
+</html>

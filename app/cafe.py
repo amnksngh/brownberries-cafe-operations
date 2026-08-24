@@ -555,6 +555,27 @@ def _receipt_orders_for_settlement(order: CafeOrder) -> list[CafeOrder]:
     return related or [order]
 
 
+def _settlement_access_payload(
+    order: CafeOrder,
+    *,
+    settlement_total: float | None = None,
+    paid_at: datetime | None = None,
+) -> dict:
+    """Short-lived QR handoff emitted only to browsers present at settlement."""
+    settled_at = paid_at or order.paid_at or datetime.utcnow()
+    expires_at = settled_at + timedelta(minutes=5)
+    return {
+        "primary_order_id": order.id,
+        "settlement_total": round(float(settlement_total if settlement_total is not None else order.total_amount or 0), 2),
+        "receipt_url": url_for("cafe.public_receipt", order_id=order.id),
+        "feedback_url": url_for("cafe.public_settlement_feedback", order_id=order.id),
+        "feedback_exists": False,
+        "feedback_source": "",
+        "feedback_editable": True,
+        "expires_at": expires_at.replace(tzinfo=UTC_TZ).isoformat(),
+    }
+
+
 def _all_order_settlement_groups(orders: list[CafeOrder]) -> list[dict]:
     """Build cashier All Orders groups without merging separate settlements.
 
@@ -3667,6 +3688,8 @@ def mark_order_paid(order_id):
             sms_message = " SMS not sent: mobile missing."
     db.session.commit()
     payload = _serialize_order(order)
+    if order.table_id:
+        payload["settlement_access"] = _settlement_access_payload(order)
     socketio.emit("order_updated", payload, namespace="/kitchen")
     socketio.emit("order_updated", payload, namespace="/table")
     flash(f"Order #{_format_pickup_number(order)} marked as paid.{sms_message}", "success")
@@ -3793,9 +3816,6 @@ def _clear_table_orders_impl(table_id: int, next_url: str = ""):
         order.payment_reference = summary_ref or order.payment_reference
         order.payment_breakdown_json = payment_breakdown_json
         order.settlement_group_id = settlement_group_id
-        payload = _serialize_order(order)
-        socketio.emit("order_updated", payload, namespace="/kitchen")
-        socketio.emit("order_updated", payload, namespace="/table")
         count += 1
     settlement_label = ", ".join(f"#{_format_pickup_number(order)}" for order in payable_orders)
     for row in split_rows:
@@ -3835,6 +3855,16 @@ def _clear_table_orders_impl(table_id: int, next_url: str = ""):
             )
     table.service_charge_opt_out_requested = False
     db.session.commit()
+    settlement_access = _settlement_access_payload(
+        payable_orders[0],
+        settlement_total=selected_total,
+        paid_at=paid_now,
+    )
+    for order in payable_orders:
+        payload = _serialize_order(order)
+        payload["settlement_access"] = settlement_access
+        socketio.emit("order_updated", payload, namespace="/kitchen")
+        socketio.emit("order_updated", payload, namespace="/table")
     sms_message = ""
     if request.form.get("send_receipt_sms"):
         cc = (request.form.get("receipt_country_code") or "+91").strip()
@@ -4520,9 +4550,19 @@ def public_receipt(order_id):
         joinedload(CafeOrder.table),
         joinedload(CafeOrder.order_items).joinedload(CafeOrderItem.menu_item),
     ).get_or_404(order_id)
+    if order.status != "paid":
+        return Response(
+            "Settle the table first to generate the final receipt. Use the table bill preview before payment.",
+            status=409,
+            mimetype="text/plain",
+        )
     receipt_orders = _receipt_orders_for_settlement(order)
+    return _render_public_receipt(receipt_orders, is_preview=False)
+
+
+def _render_public_receipt(receipt_orders: list[CafeOrder], *, is_preview: bool):
     primary_order = receipt_orders[0]
-    payment_breakdown = _payment_breakdown_rows(primary_order)
+    payment_breakdown = [] if is_preview else _payment_breakdown_rows(primary_order)
     subtotal = round(
         sum(
             float(oi.unit_price or 0) * int(oi.quantity or 0)
@@ -4534,11 +4574,22 @@ def public_receipt(order_id):
     )
     packaging_charge = round(sum(float(settled_order.packaging_charge or 0) for settled_order in receipt_orders), 2)
     delivery_charge = round(sum(float(settled_order.delivery_charge or 0) for settled_order in receipt_orders), 2)
-    service_tax_amount = round(sum(float(settled_order.service_tax_amount or 0) for settled_order in receipt_orders), 2)
+    if is_preview:
+        apply_service_charge = not bool(
+            primary_order.table and primary_order.table.service_charge_opt_out_requested
+        )
+        preview_breakdowns = _settlement_tax_breakdowns(
+            receipt_orders,
+            flags={"apply_service_charge": apply_service_charge},
+        )
+        service_tax_amount = round(sum(float(row["service_tax_amount"] or 0) for row in preview_breakdowns), 2)
+        settlement_total = round(sum(float(row["grand_total"] or 0) for row in preview_breakdowns), 2)
+    else:
+        service_tax_amount = round(sum(float(settled_order.service_tax_amount or 0) for settled_order in receipt_orders), 2)
+        settlement_total = round(sum(float(settled_order.total_amount or 0) for settled_order in receipt_orders), 2)
     gst_amount = 0.0
     cst_amount = 0.0
     tax_amount = 0.0
-    settlement_total = round(sum(float(settled_order.total_amount or 0) for settled_order in receipt_orders), 2)
     receipt_lines = []
     for settled_order in receipt_orders:
         pickup_no = _format_pickup_number(settled_order)
@@ -4575,7 +4626,38 @@ def public_receipt(order_id):
         receipt_location=_receipt_location_text(),
         review_link=_google_review_link(),
         feedback_link=url_for("cafe.public_settlement_feedback", order_id=primary_order.id),
+        is_preview=is_preview,
     )
+
+
+@bp.route("/table-bill-preview")
+def public_table_bill_preview():
+    slug = (request.args.get("slug") or "").strip()
+    table = CafeTable.query.filter_by(qr_slug=slug, active=True).first()
+    if not table:
+        return Response("Table not found.", status=404)
+    day_start, day_end = _current_ist_day_bounds()
+    current_orders = (
+        CafeOrder.query.options(
+            joinedload(CafeOrder.table),
+            joinedload(CafeOrder.order_items).joinedload(CafeOrderItem.menu_item),
+        )
+        .filter(
+            CafeOrder.table_id == table.id,
+            CafeOrder.status.notin_(["paid", "cancelled"]),
+            CafeOrder.created_at >= day_start,
+            CafeOrder.created_at <= day_end,
+        )
+        .order_by(CafeOrder.created_at.asc(), CafeOrder.id.asc())
+        .all()
+    )
+    if not current_orders:
+        return render_template(
+            "cafe/bill_preview_empty.html",
+            table=table,
+            back_url=url_for("main.table_qr_page", slug=table.qr_slug, start=1),
+        )
+    return _render_public_receipt(current_orders, is_preview=True)
 
 
 def _render_feedback_form(
