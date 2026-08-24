@@ -53,6 +53,26 @@
 </section>
 
 <section class="panel">
+  <h3>Menu Serving Hours</h3>
+  <p class="muted">Every menu item is assigned to either Regular Hours or Breakfast Hours. These windows use Indian Standard Time and apply to QR ordering, menu browsing, delivery ordering, and staff-assisted ordering.</p>
+  <form method="post" action="{{ url_for('cafe.update_menu_serving_hours') }}" class="grid grid-4">
+    <label>Regular Hours From (IST)
+      <input name="regular_start_time" type="time" value="{{ regular_start_time or '11:00' }}" required />
+    </label>
+    <label>Regular Hours Until (IST)
+      <input name="regular_end_time" type="time" value="{{ regular_end_time or '23:00' }}" required />
+    </label>
+    <label>Breakfast Hours From (IST)
+      <input name="breakfast_start_time" type="time" value="{{ breakfast_start_time or '08:00' }}" required />
+    </label>
+    <label>Breakfast Hours Until (IST)
+      <input name="breakfast_end_time" type="time" value="{{ breakfast_end_time or '12:00' }}" required />
+    </label>
+    <button type="submit">Save Menu Serving Hours</button>
+  </form>
+</section>
+
+<section class="panel">
   <h3>Default Service Charge</h3>
   <p class="muted">This is voluntary and enabled by default at settlement. Cashier can remove it if a customer asks not to pay it.</p>
   <form method="post" action="{{ url_for('cafe.update_tax_settings') }}" class="grid grid-4">

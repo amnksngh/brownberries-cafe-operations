@@ -127,20 +127,6 @@
     </section>
 
     <section class="panel">
-      <h3>Breakfast Menu Timing</h3>
-      <p class="muted">Breakfast is protected and these times use IST. Breakfast-only items are hidden outside this window. Items tagged with Breakfast and another category remain visible through their other category.</p>
-      <form method="post" action="{{ url_for('cafe.update_breakfast_settings') }}" class="grid grid-4">
-        <label>Visible From (IST)
-          <input name="breakfast_start_time" type="time" value="{{ breakfast_start_time or '08:00' }}" required />
-        </label>
-        <label>Visible Until (IST)
-          <input name="breakfast_end_time" type="time" value="{{ breakfast_end_time or '12:00' }}" required />
-        </label>
-        <button type="submit">Save Breakfast Timing</button>
-      </form>
-    </section>
-
-    <section class="panel">
       <h3>Types</h3>
       <form method="post" action="{{ url_for('cafe.add_type') }}" class="grid grid-3">
         <label>Add Type <input name="name" required placeholder="Veg / Beverage / Dessert" /></label>
@@ -270,6 +256,11 @@
             {% for t in menu_types %}<option value="{{ t.id }}" {% if add_form.menu_type_id == (t.id|string) %}selected{% endif %}>{{ t.name }}</option>{% endfor %}
           </select>
         </label>
+        <label>Serving Hours
+          <select name="serving_period" required>
+            {% for value, label in menu_serving_periods %}<option value="{{ value }}" {% if add_form.serving_period == value %}selected{% endif %}>{{ label }}</option>{% endfor %}
+          </select>
+        </label>
         <label>Name <input name="name" value="{{ add_form.name }}" required /></label>
         <label>Workstation
           <select name="prep_station">
@@ -321,13 +312,14 @@
       <label>Search Item <input id="menu-item-search" placeholder="Search by name/category/type..." /></label>
       <form id="bulk-menu-items-form" method="post" action="{{ url_for('cafe.bulk_update_menu_items') }}" enctype="multipart/form-data"></form>
       <table id="menu-items-table">
-        <tr><th>Category</th><th>Item</th><th>Type</th><th>Workstation</th><th>Responsible Staff</th><th>Price</th><th>Image</th><th>Actions</th></tr>
+        <tr><th>Category</th><th>Item</th><th>Type</th><th>Serving Hours</th><th>Workstation</th><th>Responsible Staff</th><th>Price</th><th>Image</th><th>Actions</th></tr>
         {% for item in items %}
         {% set selected_cats = item_category_map.get(item.id, []) %}
         <tr>
           <td>{% for c in categories if c.id in selected_cats %}{{ c.name }}{% if not loop.last %}, {% endif %}{% endfor %}</td>
           <td>{{ item.name }}</td>
           <td>{{ item.item_type }}</td>
+          <td>{{ menu_serving_period_labels.get(item.serving_period, 'Regular Hours') }}</td>
           <td>{{ workstation_name_map.get(item.prep_station, 'No workstation') }}</td>
           <td>{{ chef_name_map.get(item.chef_user_id, 'Unassigned') }}</td>
           <td>₹{{ "%.2f"|format(item.price) }}</td>
@@ -365,6 +357,11 @@
                 <label>Type
                   <select name="menu_type_id" required>
                     {% for t in menu_types %}<option value="{{ t.id }}" {% if item.item_type == t.name %}selected{% endif %}>{{ t.name }}</option>{% endfor %}
+                  </select>
+                </label>
+                <label>Serving Hours
+                  <select name="serving_period" required>
+                    {% for value, label in menu_serving_periods %}<option value="{{ value }}" {% if item.serving_period == value %}selected{% endif %}>{{ label }}</option>{% endfor %}
                   </select>
                 </label>
                 <label>Name <input name="name" value="{{ item.name }}" required /></label>

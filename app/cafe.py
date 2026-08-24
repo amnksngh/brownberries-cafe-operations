@@ -45,10 +45,9 @@ from .leave_logic import (
     weekly_off_config,
 )
 from .menu_schedule import (
-    DEFAULT_WORKSTATION_END_TIME,
-    DEFAULT_WORKSTATION_START_TIME,
+    MENU_SERVING_PERIODS,
     menu_item_window_is_open,
-    workstation_schedule_map,
+    menu_period_settings,
 )
 from .menu_navigation import (
     COLLECTION_KINDS,
@@ -137,8 +136,6 @@ IST_TZ = ZoneInfo("Asia/Kolkata")
 UTC_TZ = ZoneInfo("UTC")
 PROTECTED_MENU_CATEGORY_NAMES = {"other", "utility", "breakfast"}
 BREAKFAST_CATEGORY_NAME = "breakfast"
-DEFAULT_BREAKFAST_START_TIME = "08:00"
-DEFAULT_BREAKFAST_END_TIME = "12:00"
 ITEM_PREP_STATUSES = ("pending", "preparing", "ready", "served")
 DEFAULT_ATTENDANCE_CAFE_LAT = 25.207989477704068
 DEFAULT_ATTENDANCE_CAFE_LNG = 80.87374457551877
@@ -924,6 +921,7 @@ def _menu_form_state_from_request():
     return {
         "selected_category_ids": selected_category_ids,
         "menu_type_id": form.get("menu_type_id", "").strip(),
+        "serving_period": form.get("serving_period", "regular").strip().lower(),
         "navigation_section_id": form.get("navigation_section_id", "").strip(),
         "name": form.get("name", "").strip(),
         "prep_station": _normalize_prep_station(form.get("prep_station")),
@@ -944,6 +942,7 @@ def _default_menu_form_state():
     return {
         "selected_category_ids": [],
         "menu_type_id": "",
+        "serving_period": "regular",
         "navigation_section_id": "",
         "name": "",
         "prep_station": "",
@@ -962,7 +961,6 @@ def _default_menu_form_state():
 
 def _render_menu_page(active_menu_section: str = "catalog", add_form_state: dict | None = None):
     _ensure_workstations_seeded()
-    breakfast_settings = _breakfast_settings()
     items = MenuItem.query.filter(MenuItem.is_deleted.is_(False)).order_by(MenuItem.name).all()
     deleted_items = MenuItem.query.filter(MenuItem.is_deleted.is_(True)).order_by(MenuItem.updated_at.desc(), MenuItem.name.asc()).all()
     all_categories = MenuCategory.query.order_by(MenuCategory.name).all()
@@ -1025,14 +1023,14 @@ def _render_menu_page(active_menu_section: str = "catalog", add_form_state: dict
         navigation_groups=navigation_groups,
         catalog_navigation_groups=catalog_navigation_groups,
         navigation_collection_kinds=COLLECTION_KINDS,
+        menu_serving_periods=MENU_SERVING_PERIODS,
+        menu_serving_period_labels=dict(MENU_SERVING_PERIODS),
         item_category_map=item_category_map,
         item_size_map=item_size_map,
         active_menu_section=active_menu_section,
         availability_items=availability_items,
         selected_category_filter=selected_category_filter,
         add_form=add_form_state or _default_menu_form_state(),
-        breakfast_start_time=breakfast_settings["start_time"],
-        breakfast_end_time=breakfast_settings["end_time"],
     )
 
 
@@ -1073,31 +1071,6 @@ def _parse_cutoff_time(raw_value: str | None):
 def _format_cutoff_value(raw_value: str | None) -> str:
     parsed = _parse_cutoff_time(raw_value)
     return parsed.strftime("%H:%M") if parsed else ""
-
-
-def _breakfast_settings() -> dict[str, str]:
-    cached = getattr(g, "breakfast_settings", None)
-    if cached is not None:
-        return cached
-    cfg = load_deployment_config(current_app.instance_path)
-    settings = {
-        "start_time": _format_cutoff_value(cfg.get("BREAKFAST_START_TIME")) or DEFAULT_BREAKFAST_START_TIME,
-        "end_time": _format_cutoff_value(cfg.get("BREAKFAST_END_TIME")) or DEFAULT_BREAKFAST_END_TIME,
-    }
-    g.breakfast_settings = settings
-    return settings
-
-
-def _breakfast_window_is_open(at_time=None) -> bool:
-    settings = _breakfast_settings()
-    start = _parse_cutoff_time(settings["start_time"])
-    end = _parse_cutoff_time(settings["end_time"])
-    if not start or not end or start == end:
-        return False
-    now = at_time or datetime.now(IST_TZ).time()
-    if start < end:
-        return start <= now < end
-    return now >= start or now < end
 
 
 def _order_cutoff_message(channel: str):
@@ -1365,15 +1338,13 @@ def _public_menu_category_ids(item: MenuItem, category_name_by_id: dict[int, str
         cname = (category_name_by_id.get(cid) or "").strip().lower()
         if not cname or cname in {"other", "utility"} or cid in seen:
             continue
-        if cname == BREAKFAST_CATEGORY_NAME and not _breakfast_window_is_open():
-            continue
         visible_ids.append(cid)
         seen.add(cid)
     return visible_ids
 
 
 def _is_public_menu_item(item: MenuItem, category_name_by_id: dict[int, str]) -> bool:
-    return len(_public_menu_category_ids(item, category_name_by_id)) > 0
+    return menu_item_window_is_open(item) and len(_public_menu_category_ids(item, category_name_by_id)) > 0
 
 
 def _menu_item_category_ids(item: MenuItem) -> list[int]:
@@ -1394,6 +1365,26 @@ def _menu_item_category_ids(item: MenuItem) -> list[int]:
     return list(dict.fromkeys(parsed))
 
 
+def _ensure_menu_serving_periods():
+    """Backfill the explicit timing field for catalogs created before it existed."""
+    breakfast_category = MenuCategory.query.filter(
+        db.func.lower(MenuCategory.name) == BREAKFAST_CATEGORY_NAME
+    ).first()
+    valid_periods = {value for value, _ in MENU_SERVING_PERIODS}
+    changed = False
+    for item in MenuItem.query.all():
+        if (item.serving_period or "").strip().lower() in valid_periods:
+            continue
+        item.serving_period = (
+            "breakfast"
+            if breakfast_category and breakfast_category.id in _menu_item_category_ids(item)
+            else "regular"
+        )
+        changed = True
+    if changed:
+        db.session.commit()
+
+
 def _get_item_category_names(item: MenuItem, category_name_by_id: dict[int, str], include_protected: bool = True) -> list[str]:
     names: list[str] = []
     names_seen: set[str] = set()
@@ -1401,8 +1392,6 @@ def _get_item_category_names(item: MenuItem, category_name_by_id: dict[int, str]
         cname = category_name_by_id.get(cid)
         normalized_name = cname.strip().lower() if cname else ""
         if not include_protected and normalized_name in {"other", "utility"}:
-            continue
-        if not include_protected and normalized_name == BREAKFAST_CATEGORY_NAME and not _breakfast_window_is_open():
             continue
         if cname and cname.lower() not in names_seen:
             names.append(cname)
@@ -1418,11 +1407,12 @@ def _visible_categories_for_available_menu(include_protected: bool = False) -> l
         categories = [
             c for c in categories
             if (c.name or "").strip().lower() not in {"other", "utility"}
-            and ((c.name or "").strip().lower() != BREAKFAST_CATEGORY_NAME or _breakfast_window_is_open())
         ]
     available_items = MenuItem.query.filter_by(available=True, is_deleted=False).all()
     used_category_ids: set[int] = set()
     for item in available_items:
+        if not menu_item_window_is_open(item):
+            continue
         category_ids = (
             _menu_item_category_ids(item)
             if include_protected
@@ -1650,6 +1640,12 @@ def _apply_menu_item_form_values(item: MenuItem, form, files, prefix: str = "") 
             return "Please select a valid type."
         item.item_type = menu_type.name
 
+    serving_period = _menu_form_value(form, "serving_period", prefix).lower()
+    valid_serving_periods = {value for value, _ in MENU_SERVING_PERIODS}
+    if serving_period not in valid_serving_periods:
+        return "Please select Regular Hours or Breakfast Hours."
+    item.serving_period = serving_period
+
     category_ids = []
     for value in _menu_form_list(form, "category_ids", prefix):
         try:
@@ -1807,6 +1803,7 @@ def _parse_line_items_from_request():
         MenuItem.available.is_(True),
         MenuItem.is_deleted.is_(False),
     ).all()
+    items = [item for item in items if menu_item_window_is_open(item)]
     item_by_id = {item.id: item for item in items}
     line_items = []
     for (menu_item_id, is_parcel, size_label, unit_price_key), quantity in merged.items():
@@ -2382,7 +2379,7 @@ def home():
     fast2sms_key_hint = f"{fast2sms_api_key[:4]}...{fast2sms_api_key[-4:]}" if len(fast2sms_api_key) >= 10 else ("Set" if fast2sms_api_key else "")
     qr_order_cutoff_time = _format_cutoff_value(cfg.get("QR_ORDER_CUTOFF_TIME"))
     staff_order_cutoff_time = _format_cutoff_value(cfg.get("STAFF_ORDER_CUTOFF_TIME"))
-    breakfast_settings = _breakfast_settings()
+    serving_hours = menu_period_settings()
     kiosk_token = (cfg.get("KDS_KIOSK_TOKEN") or "").strip()
     reception_kiosk_token = (cfg.get("RECEPTION_KIOSK_TOKEN") or "").strip()
     return render_template(
@@ -2416,8 +2413,10 @@ def home():
         fast2sms_entity_id=fast2sms_entity_id,
         qr_order_cutoff_time=qr_order_cutoff_time,
         staff_order_cutoff_time=staff_order_cutoff_time,
-        breakfast_start_time=breakfast_settings["start_time"],
-        breakfast_end_time=breakfast_settings["end_time"],
+        regular_start_time=serving_hours["regular"]["start_time"],
+        regular_end_time=serving_hours["regular"]["end_time"],
+        breakfast_start_time=serving_hours["breakfast"]["start_time"],
+        breakfast_end_time=serving_hours["breakfast"]["end_time"],
         service_charge_rate=tax_settings["service_charge_rate"],
         kiosk_token=kiosk_token,
         workstation_options=workstation_options,
@@ -2516,21 +2515,31 @@ def update_order_cutoff_settings():
 
 
 @bp.route("/breakfast-settings", methods=["POST"])
+@bp.route("/menu-serving-hours", methods=["POST"])
 @roles_required("admin", "manager")
-def update_breakfast_settings():
-    start = _parse_cutoff_time(request.form.get("breakfast_start_time"))
-    end = _parse_cutoff_time(request.form.get("breakfast_end_time"))
-    if not start or not end or start == end:
-        flash("Breakfast start and end times must be different valid times.", "error")
+def update_menu_serving_hours():
+    regular_start = _parse_cutoff_time(request.form.get("regular_start_time"))
+    regular_end = _parse_cutoff_time(request.form.get("regular_end_time"))
+    breakfast_start = _parse_cutoff_time(request.form.get("breakfast_start_time"))
+    breakfast_end = _parse_cutoff_time(request.form.get("breakfast_end_time"))
+    if not regular_start or not regular_end or regular_start == regular_end:
+        flash("Regular Hours start and end must be different valid times.", "error")
+        return redirect(url_for("cafe.home"))
+    if not breakfast_start or not breakfast_end or breakfast_start == breakfast_end:
+        flash("Breakfast Hours start and end must be different valid times.", "error")
         return redirect(url_for("cafe.home"))
     save_deployment_config(
         current_app.instance_path,
         {
-            "BREAKFAST_START_TIME": start.strftime("%H:%M"),
-            "BREAKFAST_END_TIME": end.strftime("%H:%M"),
+            "REGULAR_MENU_START_TIME": regular_start.strftime("%H:%M"),
+            "REGULAR_MENU_END_TIME": regular_end.strftime("%H:%M"),
+            "BREAKFAST_MENU_START_TIME": breakfast_start.strftime("%H:%M"),
+            "BREAKFAST_MENU_END_TIME": breakfast_end.strftime("%H:%M"),
+            "BREAKFAST_START_TIME": breakfast_start.strftime("%H:%M"),
+            "BREAKFAST_END_TIME": breakfast_end.strftime("%H:%M"),
         },
     )
-    flash("Breakfast visibility timing saved.", "success")
+    flash("Menu serving hours saved.", "success")
     return redirect(url_for("cafe.home"))
 
 
@@ -2819,6 +2828,10 @@ def menu():
         if not category_ids:
             flash("Please select at least one category.", "error")
             return _render_menu_page("add_item", form_state)
+        serving_period = request.form.get("serving_period", "regular").strip().lower()
+        if serving_period not in {value for value, _ in MENU_SERVING_PERIODS}:
+            flash("Please select Regular Hours or Breakfast Hours.", "error")
+            return _render_menu_page("add_item", form_state)
         navigation_section_id_raw = request.form.get("navigation_section_id", "").strip()
         navigation_section = (
             MenuNavSection.query.get(int(navigation_section_id_raw))
@@ -2861,6 +2874,7 @@ def menu():
             category_id=category_ids[0],
             subcategory_id=None,
             item_type=menu_type.name,
+            serving_period=serving_period,
             category_ids_json=json.dumps(category_ids),
             navigation_section_id=navigation_section.id,
             name=name,
@@ -3562,6 +3576,7 @@ def _render_orders_view(kiosk_mode: bool = False, access_key: str = ""):
     if item_type:
         menu_query = menu_query.filter(MenuItem.item_type == item_type)
     filtered_items = menu_query.all()
+    filtered_items = [item for item in filtered_items if menu_item_window_is_open(item)]
 
     item_frequency = recent_paid_item_frequency()
     menu_items = sorted(

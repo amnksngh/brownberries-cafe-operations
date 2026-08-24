@@ -16,6 +16,7 @@ from .auth_helpers import (
 from .cafe import (
     _backfill_order_codes,
     _backfill_paid_timestamps,
+    _ensure_menu_serving_periods,
     _ensure_protected_menu_categories,
     bp as cafe_bp,
 )
@@ -49,6 +50,7 @@ def _ensure_sqlite_schema_columns():
     column_specs = {
         "menu_item": {
             "prep_station": "TEXT NOT NULL DEFAULT 'kitchen'",
+            "serving_period": "TEXT",
             "category_ids_json": "TEXT",
             "navigation_section_id": "INTEGER",
             "has_size_variants": "BOOLEAN NOT NULL DEFAULT 0",
@@ -528,6 +530,7 @@ def create_app():
         db.create_all()
         _ensure_sqlite_schema_columns()
         _ensure_protected_menu_categories()
+        _ensure_menu_serving_periods()
         ensure_menu_navigation_seeded()
         _backfill_order_codes()
         _backfill_paid_timestamps()

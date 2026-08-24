@@ -79,10 +79,6 @@ from .rulebook import ensure_rulebook_default
 
 bp = Blueprint("main", __name__)
 PROTECTED_ADMIN_EMAIL = "admin@brownberries.local"
-PROTECTED_MENU_CATEGORY_NAMES = {"other", "utility", "breakfast"}
-BREAKFAST_CATEGORY_NAME = "breakfast"
-DEFAULT_BREAKFAST_START_TIME = "08:00"
-DEFAULT_BREAKFAST_END_TIME = "12:00"
 IST_TZ = ZoneInfo("Asia/Kolkata")
 UTC_TZ = ZoneInfo("UTC")
 DEFAULT_ATTENDANCE_CAFE_LAT = 25.207989477704068
@@ -490,8 +486,6 @@ def _public_menu_category_ids(item: MenuItem, category_name_by_id: dict[int, str
         cname = (category_name_by_id.get(cid) or "").strip().lower()
         if not cname or cname in {"other", "utility"} or cid in seen:
             continue
-        if cname == BREAKFAST_CATEGORY_NAME and not _breakfast_window_is_open():
-            continue
         visible_ids.append(cid)
         seen.add(cid)
     return visible_ids
@@ -513,8 +507,6 @@ def _get_item_category_names(item: MenuItem, category_name_by_id: dict[int, str]
                     normalized_name = cname.strip().lower() if cname else ""
                     if cname and (not include_protected) and normalized_name in {"other", "utility"}:
                         continue
-                    if cname and (not include_protected) and normalized_name == BREAKFAST_CATEGORY_NAME and not _breakfast_window_is_open():
-                        continue
                     if cname and cname.lower() not in names_seen:
                         names.append(cname)
                         names_seen.add(cname.lower())
@@ -523,8 +515,6 @@ def _get_item_category_names(item: MenuItem, category_name_by_id: dict[int, str]
     if item.category and item.category.name:
         normalized_name = item.category.name.strip().lower()
         if include_protected or normalized_name not in {"other", "utility"}:
-            if not include_protected and normalized_name == BREAKFAST_CATEGORY_NAME and not _breakfast_window_is_open():
-                return names
             if item.category.name.lower() not in names_seen:
                 names.append(item.category.name)
                 names_seen.add(item.category.name.lower())
@@ -532,37 +522,7 @@ def _get_item_category_names(item: MenuItem, category_name_by_id: dict[int, str]
 
 
 def _is_public_menu_item(item: MenuItem, category_name_by_id: dict[int, str]) -> bool:
-    return len(_public_menu_category_ids(item, category_name_by_id)) > 0
-
-
-def _breakfast_settings() -> dict[str, str]:
-    cached = getattr(g, "breakfast_settings", None)
-    if cached is not None:
-        return cached
-    cfg = load_deployment_config(current_app.instance_path)
-    def _format(value, fallback):
-        try:
-            return datetime.strptime((value or "").strip(), "%H:%M").strftime("%H:%M")
-        except ValueError:
-            return fallback
-    settings = {
-        "start_time": _format(cfg.get("BREAKFAST_START_TIME"), DEFAULT_BREAKFAST_START_TIME),
-        "end_time": _format(cfg.get("BREAKFAST_END_TIME"), DEFAULT_BREAKFAST_END_TIME),
-    }
-    g.breakfast_settings = settings
-    return settings
-
-
-def _breakfast_window_is_open(at_time=None) -> bool:
-    settings = _breakfast_settings()
-    start = datetime.strptime(settings["start_time"], "%H:%M").time()
-    end = datetime.strptime(settings["end_time"], "%H:%M").time()
-    if start == end:
-        return False
-    now = at_time or datetime.now(IST_TZ).time()
-    if start < end:
-        return start <= now < end
-    return now >= start or now < end
+    return menu_item_window_is_open(item) and len(_public_menu_category_ids(item, category_name_by_id)) > 0
 
 
 def _attendance_settings():
@@ -651,11 +611,12 @@ def _visible_categories_for_available_menu() -> list[MenuCategory]:
     categories = [
         c for c in all_categories
         if (c.name or "").strip().lower() not in {"other", "utility"}
-        and ((c.name or "").strip().lower() != BREAKFAST_CATEGORY_NAME or _breakfast_window_is_open())
     ]
     available_items = MenuItem.query.filter_by(available=True, is_deleted=False).all()
     used_category_ids: set[int] = set()
     for item in available_items:
+        if not menu_item_window_is_open(item):
+            continue
         for cid in _public_menu_category_ids(item, category_name_by_id):
             used_category_ids.add(cid)
     return [
@@ -1405,6 +1366,7 @@ def customer_menu():
                 MenuItem.available.is_(True),
                 MenuItem.is_deleted.is_(False),
             ).all() if item_ids else []
+            menu_items = [item for item in menu_items if menu_item_window_is_open(item)]
             item_map = {m.id: m for m in menu_items}
             for menu_item_id, quantity in qty_map.items():
                 if menu_item_id in item_map:

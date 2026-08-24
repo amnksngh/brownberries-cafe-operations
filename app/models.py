@@ -182,6 +182,7 @@ class MenuItem(TimestampMixin, db.Model):
         db.Integer, db.ForeignKey("menu_subcategory.id"), nullable=True
     )
     item_type = db.Column(db.String(80), nullable=False)
+    serving_period = db.Column(db.String(20), nullable=False, default="regular")
     category_ids_json = db.Column(db.String(500), nullable=True)
     navigation_section_id = db.Column(db.Integer, db.ForeignKey("menu_nav_section.id"), nullable=True)
     name = db.Column(db.String(120), nullable=False)

@@ -16,6 +16,14 @@ from .deploy_config import load_deployment_config
 
 DEFAULT_WORKSTATION_START_TIME = "00:00"
 DEFAULT_WORKSTATION_END_TIME = "23:59"
+DEFAULT_REGULAR_START_TIME = "11:00"
+DEFAULT_REGULAR_END_TIME = "23:00"
+DEFAULT_BREAKFAST_START_TIME = "08:00"
+DEFAULT_BREAKFAST_END_TIME = "12:00"
+MENU_SERVING_PERIODS = (
+    ("regular", "Regular Hours"),
+    ("breakfast", "Breakfast Hours"),
+)
 IST_TZ = ZoneInfo("Asia/Kolkata")
 
 
@@ -58,6 +66,54 @@ def workstation_schedule_map() -> dict[str, dict[str, str]]:
     return schedules
 
 
+def menu_period_settings() -> dict[str, dict[str, str]]:
+    """Return the two configurable item-serving windows in IST."""
+    cached = getattr(g, "menu_period_settings", None)
+    if cached is not None:
+        return cached
+    cfg = load_deployment_config(current_app.instance_path)
+    settings = {
+        "regular": {
+            "label": "Regular Hours",
+            "start_time": _valid_time(cfg.get("REGULAR_MENU_START_TIME"), DEFAULT_REGULAR_START_TIME),
+            "end_time": _valid_time(cfg.get("REGULAR_MENU_END_TIME"), DEFAULT_REGULAR_END_TIME),
+        },
+        "breakfast": {
+            "label": "Breakfast Hours",
+            "start_time": _valid_time(
+                cfg.get("BREAKFAST_MENU_START_TIME") or cfg.get("BREAKFAST_START_TIME"),
+                DEFAULT_BREAKFAST_START_TIME,
+            ),
+            "end_time": _valid_time(
+                cfg.get("BREAKFAST_MENU_END_TIME") or cfg.get("BREAKFAST_END_TIME"),
+                DEFAULT_BREAKFAST_END_TIME,
+            ),
+        },
+    }
+    g.menu_period_settings = settings
+    return settings
+
+
+def time_window_is_open(start_value: str, end_value: str, at_time: time) -> bool:
+    """Evaluate a same-day or overnight half-open time window."""
+    start = datetime.strptime(start_value, "%H:%M").time()
+    end = datetime.strptime(end_value, "%H:%M").time()
+    if start == end:
+        return False
+    if start < end:
+        return start <= at_time < end
+    return at_time >= start or at_time < end
+
+
+def menu_period_window_is_open(period: str | None, at_time: time | None = None) -> bool:
+    normalized_period = (period or "regular").strip().lower()
+    if normalized_period not in {key for key, _ in MENU_SERVING_PERIODS}:
+        normalized_period = "regular"
+    schedule = menu_period_settings()[normalized_period]
+    now = at_time or datetime.now(IST_TZ).time()
+    return time_window_is_open(schedule["start_time"], schedule["end_time"], now)
+
+
 def workstation_window_is_open(slug: str | None, at_time: time | None = None) -> bool:
     """Return whether ordering for a workstation is currently open in IST.
 
@@ -87,4 +143,6 @@ def workstation_window_is_open(slug: str | None, at_time: time | None = None) ->
 
 
 def menu_item_window_is_open(item, at_time: time | None = None) -> bool:
-    return workstation_window_is_open(getattr(item, "prep_station", None), at_time)
+    return menu_period_window_is_open(getattr(item, "serving_period", "regular"), at_time) and workstation_window_is_open(
+        getattr(item, "prep_station", None), at_time
+    )
