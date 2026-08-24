@@ -54,7 +54,7 @@
 
 <section class="panel">
   <h3>Menu Serving Hours</h3>
-  <p class="muted">Every menu item is assigned to either Regular Hours or Breakfast Hours. These windows use Indian Standard Time and apply to QR ordering, menu browsing, delivery ordering, and staff-assisted ordering.</p>
+  <p class="muted">Serving windows use Indian Standard Time. Breakfast-only items follow Breakfast Hours; items tagged Breakfast plus another category follow both windows; all other items follow Regular Hours. Timing applies to ordering and Item Availability, but not to menu browsing.</p>
   <form method="post" action="{{ url_for('cafe.update_menu_serving_hours') }}" class="grid grid-4">
     <label>Regular Hours From (IST)
       <input name="regular_start_time" type="time" value="{{ regular_start_time or '11:00' }}" required />

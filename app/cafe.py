@@ -44,11 +44,7 @@ from .leave_logic import (
     validate_leave_request,
     weekly_off_config,
 )
-from .menu_schedule import (
-    MENU_SERVING_PERIODS,
-    menu_item_window_is_open,
-    menu_period_settings,
-)
+from .menu_schedule import menu_item_window_is_open, menu_period_settings
 from .menu_navigation import (
     COLLECTION_KINDS,
     build_menu_navigation,
@@ -921,7 +917,6 @@ def _menu_form_state_from_request():
     return {
         "selected_category_ids": selected_category_ids,
         "menu_type_id": form.get("menu_type_id", "").strip(),
-        "serving_period": form.get("serving_period", "regular").strip().lower(),
         "navigation_section_id": form.get("navigation_section_id", "").strip(),
         "name": form.get("name", "").strip(),
         "prep_station": _normalize_prep_station(form.get("prep_station")),
@@ -942,7 +937,6 @@ def _default_menu_form_state():
     return {
         "selected_category_ids": [],
         "menu_type_id": "",
-        "serving_period": "regular",
         "navigation_section_id": "",
         "name": "",
         "prep_station": "",
@@ -1006,6 +1000,7 @@ def _render_menu_page(active_menu_section: str = "catalog", add_form_state: dict
         MenuItem.query.filter(MenuItem.is_deleted.is_(False)).order_by(MenuItem.name.asc()),
         selected_category_filter,
     ).all()
+    availability_items = [item for item in availability_items if menu_item_window_is_open(item)]
     if active_menu_section not in ["catalog", "navigation", "add_item", "items", "availability", "deleted_items"]:
         active_menu_section = "catalog"
     return render_template(
@@ -1023,8 +1018,6 @@ def _render_menu_page(active_menu_section: str = "catalog", add_form_state: dict
         navigation_groups=navigation_groups,
         catalog_navigation_groups=catalog_navigation_groups,
         navigation_collection_kinds=COLLECTION_KINDS,
-        menu_serving_periods=MENU_SERVING_PERIODS,
-        menu_serving_period_labels=dict(MENU_SERVING_PERIODS),
         item_category_map=item_category_map,
         item_size_map=item_size_map,
         active_menu_section=active_menu_section,
@@ -1343,10 +1336,6 @@ def _public_menu_category_ids(item: MenuItem, category_name_by_id: dict[int, str
     return visible_ids
 
 
-def _is_public_menu_item(item: MenuItem, category_name_by_id: dict[int, str]) -> bool:
-    return menu_item_window_is_open(item) and len(_public_menu_category_ids(item, category_name_by_id)) > 0
-
-
 def _menu_item_category_ids(item: MenuItem) -> list[int]:
     parsed: list[int] = []
     if item.category_ids_json:
@@ -1363,26 +1352,6 @@ def _menu_item_category_ids(item: MenuItem) -> list[int]:
     if not parsed and item.category_id:
         parsed = [item.category_id]
     return list(dict.fromkeys(parsed))
-
-
-def _ensure_menu_serving_periods():
-    """Backfill the explicit timing field for catalogs created before it existed."""
-    breakfast_category = MenuCategory.query.filter(
-        db.func.lower(MenuCategory.name) == BREAKFAST_CATEGORY_NAME
-    ).first()
-    valid_periods = {value for value, _ in MENU_SERVING_PERIODS}
-    changed = False
-    for item in MenuItem.query.all():
-        if (item.serving_period or "").strip().lower() in valid_periods:
-            continue
-        item.serving_period = (
-            "breakfast"
-            if breakfast_category and breakfast_category.id in _menu_item_category_ids(item)
-            else "regular"
-        )
-        changed = True
-    if changed:
-        db.session.commit()
 
 
 def _get_item_category_names(item: MenuItem, category_name_by_id: dict[int, str], include_protected: bool = True) -> list[str]:
@@ -1639,12 +1608,6 @@ def _apply_menu_item_form_values(item: MenuItem, form, files, prefix: str = "") 
         if not menu_type:
             return "Please select a valid type."
         item.item_type = menu_type.name
-
-    serving_period = _menu_form_value(form, "serving_period", prefix).lower()
-    valid_serving_periods = {value for value, _ in MENU_SERVING_PERIODS}
-    if serving_period not in valid_serving_periods:
-        return "Please select Regular Hours or Breakfast Hours."
-    item.serving_period = serving_period
 
     category_ids = []
     for value in _menu_form_list(form, "category_ids", prefix):
@@ -2828,10 +2791,6 @@ def menu():
         if not category_ids:
             flash("Please select at least one category.", "error")
             return _render_menu_page("add_item", form_state)
-        serving_period = request.form.get("serving_period", "regular").strip().lower()
-        if serving_period not in {value for value, _ in MENU_SERVING_PERIODS}:
-            flash("Please select Regular Hours or Breakfast Hours.", "error")
-            return _render_menu_page("add_item", form_state)
         navigation_section_id_raw = request.form.get("navigation_section_id", "").strip()
         navigation_section = (
             MenuNavSection.query.get(int(navigation_section_id_raw))
@@ -2874,7 +2833,6 @@ def menu():
             category_id=category_ids[0],
             subcategory_id=None,
             item_type=menu_type.name,
-            serving_period=serving_period,
             category_ids_json=json.dumps(category_ids),
             navigation_section_id=navigation_section.id,
             name=name,
@@ -3095,6 +3053,7 @@ def update_menu_availability():
     category_filter = request.form.get("category_filter", "").strip()
     category_filter_id = int(category_filter) if category_filter.isdigit() else None
     scoped_items = _apply_category_filter(MenuItem.query.filter(MenuItem.is_deleted.is_(False)), category_filter_id).all()
+    scoped_items = [item for item in scoped_items if menu_item_window_is_open(item)]
     selected_ids = {
         int(x) for x in request.form.getlist("available_item_ids") if str(x).isdigit()
     }
@@ -3117,6 +3076,7 @@ def items_availability():
         MenuItem.query.filter(MenuItem.is_deleted.is_(False)).order_by(MenuItem.name.asc()),
         selected_category_filter,
     ).all()
+    availability_items = [item for item in availability_items if menu_item_window_is_open(item)]
     return render_template(
         "cafe/items_availability.html",
         categories=categories,

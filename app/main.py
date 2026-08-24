@@ -521,8 +521,17 @@ def _get_item_category_names(item: MenuItem, category_name_by_id: dict[int, str]
     return names
 
 
-def _is_public_menu_item(item: MenuItem, category_name_by_id: dict[int, str]) -> bool:
-    return menu_item_window_is_open(item) and len(_public_menu_category_ids(item, category_name_by_id)) > 0
+def _is_public_menu_item(
+    item: MenuItem,
+    category_name_by_id: dict[int, str],
+    *,
+    respect_serving_hours: bool = True,
+) -> bool:
+    if not respect_serving_hours:
+        return True
+    if not menu_item_window_is_open(item):
+        return False
+    return len(_public_menu_category_ids(item, category_name_by_id)) > 0
 
 
 def _attendance_settings():
@@ -605,7 +614,7 @@ def _attendance_source_label(row) -> str:
     return "Manual"
 
 
-def _visible_categories_for_available_menu() -> list[MenuCategory]:
+def _visible_categories_for_available_menu(*, respect_serving_hours: bool = True) -> list[MenuCategory]:
     all_categories = MenuCategory.query.order_by(MenuCategory.name.asc()).all()
     category_name_by_id = {c.id: c.name for c in all_categories}
     categories = [
@@ -615,7 +624,7 @@ def _visible_categories_for_available_menu() -> list[MenuCategory]:
     available_items = MenuItem.query.filter_by(available=True, is_deleted=False).all()
     used_category_ids: set[int] = set()
     for item in available_items:
-        if not menu_item_window_is_open(item):
+        if respect_serving_hours and not menu_item_window_is_open(item):
             continue
         for cid in _public_menu_category_ids(item, category_name_by_id):
             used_category_ids.add(cid)
@@ -2022,7 +2031,9 @@ def table_qr_page():
             item_frequency={},
             hide_staff_nav=True,
         )
-    categories = _visible_categories_for_available_menu()
+    categories = _visible_categories_for_available_menu(
+        respect_serving_hours=not is_preview
+    )
     all_category_rows = MenuCategory.query.order_by(MenuCategory.name.asc()).all()
     all_category_name_by_id = {c.id: c.name for c in all_category_rows}
     category_name_by_id = {c.id: c.name for c in categories}
@@ -2032,7 +2043,15 @@ def table_qr_page():
         .options(joinedload(MenuItem.category), joinedload(MenuItem.subcategory))
         .all()
     )
-    menu_items = [item for item in menu_items if _is_public_menu_item(item, all_category_name_by_id)]
+    menu_items = [
+        item
+        for item in menu_items
+        if _is_public_menu_item(
+            item,
+            all_category_name_by_id,
+            respect_serving_hours=not is_preview,
+        )
+    ]
     menu_items.sort(key=lambda item: (-item_frequency.get(item.id, 0), item.name.lower()))
     item_size_map = {}
     item_category_names_map = {}

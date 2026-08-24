@@ -114,6 +114,49 @@ def menu_period_window_is_open(period: str | None, at_time: time | None = None) 
     return time_window_is_open(schedule["start_time"], schedule["end_time"], now)
 
 
+def breakfast_category_id() -> int | None:
+    """Return the protected Breakfast category id, cached for this request."""
+    cached = getattr(g, "breakfast_category_id", None)
+    if cached is not None:
+        return cached or None
+    from .extensions import db
+    from .models import MenuCategory
+
+    row = MenuCategory.query.filter(db.func.lower(MenuCategory.name) == "breakfast").first()
+    g.breakfast_category_id = row.id if row else 0
+    return row.id if row else None
+
+
+def menu_item_serving_periods(item, breakfast_id: int | None = None) -> tuple[str, ...]:
+    """Derive item windows from its category membership.
+
+    Breakfast alone means Breakfast Hours; Breakfast plus any other category
+    means both windows; all other category combinations mean Regular Hours.
+    """
+    if breakfast_id is None:
+        breakfast_id = breakfast_category_id()
+    category_ids = []
+    raw_ids = getattr(item, "category_ids_json", None)
+    if raw_ids:
+        try:
+            parsed = json.loads(raw_ids)
+            if isinstance(parsed, list):
+                for value in parsed:
+                    try:
+                        category_ids.append(int(value))
+                    except (TypeError, ValueError):
+                        continue
+        except (TypeError, json.JSONDecodeError):
+            category_ids = []
+    primary_id = getattr(item, "category_id", None)
+    if primary_id and int(primary_id) not in category_ids:
+        category_ids.append(int(primary_id))
+    unique_ids = set(category_ids)
+    if breakfast_id and breakfast_id in unique_ids:
+        return ("breakfast", "regular") if unique_ids - {breakfast_id} else ("breakfast",)
+    return ("regular",)
+
+
 def workstation_window_is_open(slug: str | None, at_time: time | None = None) -> bool:
     """Return whether ordering for a workstation is currently open in IST.
 
@@ -142,7 +185,14 @@ def workstation_window_is_open(slug: str | None, at_time: time | None = None) ->
     return now >= start or now < end
 
 
-def menu_item_window_is_open(item, at_time: time | None = None) -> bool:
-    return menu_period_window_is_open(getattr(item, "serving_period", "regular"), at_time) and workstation_window_is_open(
-        getattr(item, "prep_station", None), at_time
+def menu_item_window_is_open(
+    item,
+    at_time: time | None = None,
+    *,
+    breakfast_id: int | None = None,
+) -> bool:
+    serving_open = any(
+        menu_period_window_is_open(period, at_time)
+        for period in menu_item_serving_periods(item, breakfast_id)
     )
+    return serving_open and workstation_window_is_open(getattr(item, "prep_station", None), at_time)
