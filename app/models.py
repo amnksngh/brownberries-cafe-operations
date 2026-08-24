@@ -111,6 +111,35 @@ class MenuType(TimestampMixin, db.Model):
     name = db.Column(db.String(80), nullable=False, unique=True)
 
 
+class MenuNavGroup(TimestampMixin, db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    slug = db.Column(db.String(80), nullable=False, unique=True)
+    label = db.Column(db.String(80), nullable=False)
+    display_order = db.Column(db.Integer, default=0, nullable=False)
+    active = db.Column(db.Boolean, default=True, nullable=False)
+    is_global_default = db.Column(db.Boolean, default=False, nullable=False)
+    sections = db.relationship(
+        "MenuNavSection",
+        back_populates="group",
+        cascade="all, delete-orphan",
+        order_by="MenuNavSection.display_order, MenuNavSection.id",
+    )
+
+
+class MenuNavSection(TimestampMixin, db.Model):
+    __table_args__ = (db.UniqueConstraint("group_id", "slug", name="uq_menu_nav_section_group_slug"),)
+
+    id = db.Column(db.Integer, primary_key=True)
+    group_id = db.Column(db.Integer, db.ForeignKey("menu_nav_group.id"), nullable=False)
+    slug = db.Column(db.String(80), nullable=False)
+    label = db.Column(db.String(80), nullable=False)
+    display_order = db.Column(db.Integer, default=0, nullable=False)
+    active = db.Column(db.Boolean, default=True, nullable=False)
+    is_default = db.Column(db.Boolean, default=False, nullable=False)
+    collection_kind = db.Column(db.String(40), default="catalog", nullable=False)
+    group = db.relationship("MenuNavGroup", back_populates="sections")
+
+
 class Workstation(TimestampMixin, db.Model):
     id = db.Column(db.Integer, primary_key=True)
     slug = db.Column(db.String(40), nullable=False, unique=True)
@@ -154,6 +183,7 @@ class MenuItem(TimestampMixin, db.Model):
     )
     item_type = db.Column(db.String(80), nullable=False)
     category_ids_json = db.Column(db.String(500), nullable=True)
+    navigation_section_id = db.Column(db.Integer, db.ForeignKey("menu_nav_section.id"), nullable=True)
     name = db.Column(db.String(120), nullable=False)
     image_url = db.Column(db.String(255), nullable=True)
     short_description = db.Column(db.String(140), nullable=True)
@@ -169,6 +199,7 @@ class MenuItem(TimestampMixin, db.Model):
     is_deleted = db.Column(db.Boolean, default=False, nullable=False)
     category = db.relationship("MenuCategory", backref="items")
     subcategory = db.relationship("MenuSubcategory", backref="items")
+    navigation_section = db.relationship("MenuNavSection", backref="menu_items")
     chef = db.relationship("User", foreign_keys=[chef_user_id])
 
 

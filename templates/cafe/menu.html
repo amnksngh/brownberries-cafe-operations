@@ -8,6 +8,7 @@
 <section class="library-layout">
   <aside class="library-sidebar panel">
     <a href="{{ url_for('cafe.menu', section='catalog') }}" class="{% if active_menu_section == 'catalog' %}active{% endif %}">Catalog</a>
+    <a href="{{ url_for('cafe.menu', section='navigation') }}" class="{% if active_menu_section == 'navigation' %}active{% endif %}">Menu Navigation</a>
     <a href="{{ url_for('cafe.menu', section='add_item') }}" class="{% if active_menu_section == 'add_item' %}active{% endif %}">Add Menu Item</a>
     <a href="{{ url_for('cafe.menu', section='items') }}" class="{% if active_menu_section == 'items' %}active{% endif %}">Menu Items</a>
     <a href="{{ url_for('cafe.menu', section='availability') }}" class="{% if active_menu_section == 'availability' %}active{% endif %}">Items Availability</a>
@@ -15,6 +16,81 @@
   </aside>
 
   <div class="library-content">
+    {% if active_menu_section == 'navigation' %}
+    <section class="panel">
+      <h3>Menu Navigation</h3>
+      <p class="muted">Controls the two navigation rows used by QR ordering, staff-assisted ordering, and menu browsing. The global default opens first; each main category has its own default subcategory.</p>
+      <form method="post" action="{{ url_for('cafe.add_menu_navigation_group') }}" class="grid grid-3">
+        <label>New Main Category <input name="label" required placeholder="Seasonal" /></label>
+        <label>Display Order <input name="display_order" type="number" value="50" /></label>
+        <button type="submit">Add Main Category</button>
+      </form>
+    </section>
+
+    {% for group in navigation_groups %}
+    <section class="panel">
+      <h3>{{ group.label }} {% if group.is_global_default %}<span class="tag">Global Default</span>{% endif %}</h3>
+      <div class="grid grid-4">
+        <label>Name <input form="nav-group-{{ group.id }}" name="label" value="{{ group.label }}" required /></label>
+        <label>Display Order <input form="nav-group-{{ group.id }}" name="display_order" type="number" value="{{ group.display_order }}" /></label>
+        <label><input form="nav-group-{{ group.id }}" type="checkbox" name="active" {% if group.active %}checked{% endif %} /> Active</label>
+        <label><input form="nav-group-{{ group.id }}" type="checkbox" name="is_global_default" {% if group.is_global_default %}checked{% endif %} /> Open first globally</label>
+      </div>
+      <form id="nav-group-{{ group.id }}" method="post" action="{{ url_for('cafe.update_menu_navigation_group', group_id=group.id) }}" class="inline">
+        <button type="submit">Save Main Category</button>
+      </form>
+      <form method="post" action="{{ url_for('cafe.delete_menu_navigation_group', group_id=group.id) }}" class="inline confirm-delete-form" data-confirm-message="Delete '{{ group.label }}'? It must have no subcategories.">
+        <button type="submit">Delete Main Category</button>
+      </form>
+
+      <table style="margin-top:1rem;">
+        <tr><th>Subcategory</th><th>Main Category</th><th>Order</th><th>Content</th><th>Active / Default</th><th>Assigned Items</th><th>Actions</th></tr>
+        {% for subsection in group.sections %}
+        <tr>
+          <td><input form="nav-section-{{ subsection.id }}" name="label" value="{{ subsection.label }}" required /></td>
+          <td><select form="nav-section-{{ subsection.id }}" name="group_id">{% for target_group in navigation_groups %}<option value="{{ target_group.id }}" {% if target_group.id == group.id %}selected{% endif %}>{{ target_group.label }}</option>{% endfor %}</select></td>
+          <td><input form="nav-section-{{ subsection.id }}" name="display_order" type="number" value="{{ subsection.display_order }}" style="max-width:6rem;" /></td>
+          <td>
+            <select form="nav-section-{{ subsection.id }}" name="collection_kind">
+              {% for kind, label in navigation_collection_kinds.items() %}
+              <option value="{{ kind }}" {% if subsection.collection_kind == kind %}selected{% endif %}>{{ label }}</option>
+              {% endfor %}
+            </select>
+          </td>
+          <td>
+            <label><input form="nav-section-{{ subsection.id }}" type="checkbox" name="active" {% if subsection.active %}checked{% endif %} /> Active</label>
+            <label><input form="nav-section-{{ subsection.id }}" type="checkbox" name="is_default" {% if subsection.is_default %}checked{% endif %} /> Default for {{ group.label }}</label>
+          </td>
+          <td>{{ subsection.menu_items|length if subsection.collection_kind == 'catalog' else 'Automatic' }}</td>
+          <td>
+            <form id="nav-section-{{ subsection.id }}" method="post" action="{{ url_for('cafe.update_menu_navigation_section', section_id=subsection.id) }}" class="inline"><button type="submit">Save</button></form>
+            <form method="post" action="{{ url_for('cafe.delete_menu_navigation_section', section_id=subsection.id) }}" class="inline confirm-delete-form" data-confirm-message="Delete subcategory '{{ subsection.label }}'? Assigned items must be moved first."><button type="submit">Delete</button></form>
+          </td>
+        </tr>
+        {% else %}
+        <tr><td colspan="7" class="muted">No subcategories yet.</td></tr>
+        {% endfor %}
+      </table>
+    </section>
+    {% endfor %}
+
+    <section class="panel">
+      <h3>Add Subcategory</h3>
+      <form method="post" action="{{ url_for('cafe.add_menu_navigation_section') }}" class="grid grid-4">
+        <label>Main Category
+          <select name="group_id" required>{% for group in navigation_groups %}<option value="{{ group.id }}">{{ group.label }}</option>{% endfor %}</select>
+        </label>
+        <label>Name <input name="label" required placeholder="Mocktails" /></label>
+        <label>Display Order <input name="display_order" type="number" value="50" /></label>
+        <label>Content
+          <select name="collection_kind">{% for kind, label in navigation_collection_kinds.items() %}<option value="{{ kind }}">{{ label }}</option>{% endfor %}</select>
+        </label>
+        <button type="submit">Add Subcategory</button>
+      </form>
+      <p class="muted">Catalog subcategories hold manually assigned menu items. Automatic collections update themselves from item and order data.</p>
+    </section>
+    {% endif %}
+
     {% if active_menu_section == 'catalog' %}
     <section class="panel">
       <h3>Categories</h3>
@@ -179,6 +255,16 @@
             {% endfor %}
           </div>
         </fieldset>
+        <label>Menu Navigation Location
+          <select name="navigation_section_id" required>
+            <option value="">Select a subcategory</option>
+            {% for group, sections in catalog_navigation_groups %}
+            <optgroup label="{{ group.label }}">
+              {% for subsection in sections %}<option value="{{ subsection.id }}" {% if add_form.navigation_section_id == (subsection.id|string) %}selected{% endif %}>{{ subsection.label }}</option>{% endfor %}
+            </optgroup>
+            {% endfor %}
+          </select>
+        </label>
         <label>Type
           <select name="menu_type_id" required>
             {% for t in menu_types %}<option value="{{ t.id }}" {% if add_form.menu_type_id == (t.id|string) %}selected{% endif %}>{{ t.name }}</option>{% endfor %}
@@ -267,6 +353,15 @@
                     {% endfor %}
                   </div>
                 </fieldset>
+                <label>Menu Navigation Location
+                  <select name="navigation_section_id" required>
+                    {% for group, sections in catalog_navigation_groups %}
+                    <optgroup label="{{ group.label }}">
+                      {% for subsection in sections %}<option value="{{ subsection.id }}" {% if item.navigation_section_id == subsection.id %}selected{% endif %}>{{ subsection.label }}</option>{% endfor %}
+                    </optgroup>
+                    {% endfor %}
+                  </select>
+                </label>
                 <label>Type
                   <select name="menu_type_id" required>
                     {% for t in menu_types %}<option value="{{ t.id }}" {% if item.item_type == t.name %}selected{% endif %}>{{ t.name }}</option>{% endfor %}

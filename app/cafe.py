@@ -2,6 +2,7 @@ import json
 import calendar
 import math
 import os
+import re
 import secrets
 from datetime import date, datetime, timedelta, time
 from io import BytesIO
@@ -49,7 +50,12 @@ from .menu_schedule import (
     menu_item_window_is_open,
     workstation_schedule_map,
 )
-from .menu_navigation import build_menu_navigation, recent_paid_item_frequency
+from .menu_navigation import (
+    COLLECTION_KINDS,
+    build_menu_navigation,
+    load_menu_navigation_configuration,
+    recent_paid_item_frequency,
+)
 from .models import (
     CafeFeedback,
     CafeFeedbackItem,
@@ -72,6 +78,8 @@ from .models import (
     InventoryWastage,
     MenuCategory,
     MenuItem,
+    MenuNavGroup,
+    MenuNavSection,
     MenuType,
     StaffAttendance,
     StaffDocument,
@@ -916,6 +924,7 @@ def _menu_form_state_from_request():
     return {
         "selected_category_ids": selected_category_ids,
         "menu_type_id": form.get("menu_type_id", "").strip(),
+        "navigation_section_id": form.get("navigation_section_id", "").strip(),
         "name": form.get("name", "").strip(),
         "prep_station": _normalize_prep_station(form.get("prep_station")),
         "chef_user_id": form.get("chef_user_id", "").strip(),
@@ -935,6 +944,7 @@ def _default_menu_form_state():
     return {
         "selected_category_ids": [],
         "menu_type_id": "",
+        "navigation_section_id": "",
         "name": "",
         "prep_station": "",
         "chef_user_id": "",
@@ -961,6 +971,12 @@ def _render_menu_page(active_menu_section: str = "catalog", add_form_state: dict
     chef_options = _chef_options()
     workstation_name_map = {station.slug: station.name for station in workstation_options}
     chef_name_map = {chef.id: chef.full_name for chef in chef_options}
+    navigation_groups = MenuNavGroup.query.order_by(MenuNavGroup.display_order, MenuNavGroup.id).all()
+    catalog_navigation_groups = [
+        (group, [section for section in group.sections if section.active and section.collection_kind == "catalog"])
+        for group in navigation_groups if group.active
+    ]
+    catalog_navigation_groups = [row for row in catalog_navigation_groups if row[1]]
     item_category_map = {}
     item_size_map = {}
     for item in items + deleted_items:
@@ -992,7 +1008,7 @@ def _render_menu_page(active_menu_section: str = "catalog", add_form_state: dict
         MenuItem.query.filter(MenuItem.is_deleted.is_(False)).order_by(MenuItem.name.asc()),
         selected_category_filter,
     ).all()
-    if active_menu_section not in ["catalog", "add_item", "items", "availability", "deleted_items"]:
+    if active_menu_section not in ["catalog", "navigation", "add_item", "items", "availability", "deleted_items"]:
         active_menu_section = "catalog"
     return render_template(
         "cafe/menu.html",
@@ -1006,6 +1022,9 @@ def _render_menu_page(active_menu_section: str = "catalog", add_form_state: dict
         workstation_name_map=workstation_name_map,
         chef_options=chef_options,
         chef_name_map=chef_name_map,
+        navigation_groups=navigation_groups,
+        catalog_navigation_groups=catalog_navigation_groups,
+        navigation_collection_kinds=COLLECTION_KINDS,
         item_category_map=item_category_map,
         item_size_map=item_size_map,
         active_menu_section=active_menu_section,
@@ -1643,6 +1662,13 @@ def _apply_menu_item_form_values(item: MenuItem, form, files, prefix: str = "") 
         item.category_id = category_ids[0]
         item.category_ids_json = json.dumps(category_ids)
     item.subcategory_id = None
+
+    if _menu_form_has(form, "navigation_section_id", prefix):
+        navigation_section_id = _menu_form_value(form, "navigation_section_id", prefix)
+        section = MenuNavSection.query.get(int(navigation_section_id)) if navigation_section_id.isdigit() else None
+        if not section or not section.active or not section.group.active or section.collection_kind != "catalog":
+            return f"Please select a valid menu navigation subcategory for {item.name}."
+        item.navigation_section_id = section.id
 
     item_name = _menu_form_value(form, "name", prefix)
     if item_name:
@@ -2793,6 +2819,19 @@ def menu():
         if not category_ids:
             flash("Please select at least one category.", "error")
             return _render_menu_page("add_item", form_state)
+        navigation_section_id_raw = request.form.get("navigation_section_id", "").strip()
+        navigation_section = (
+            MenuNavSection.query.get(int(navigation_section_id_raw))
+            if navigation_section_id_raw.isdigit() else None
+        )
+        if (
+            not navigation_section
+            or not navigation_section.active
+            or not navigation_section.group.active
+            or navigation_section.collection_kind != "catalog"
+        ):
+            flash("Please select a valid menu navigation subcategory.", "error")
+            return _render_menu_page("add_item", form_state)
         chef_user = None
         chef_user_id_raw = request.form.get("chef_user_id", "").strip()
         if chef_user_id_raw:
@@ -2823,6 +2862,7 @@ def menu():
             subcategory_id=None,
             item_type=menu_type.name,
             category_ids_json=json.dumps(category_ids),
+            navigation_section_id=navigation_section.id,
             name=name,
             image_url=image_url,
             short_description=request.form.get("short_description", "").strip() or None,
@@ -2849,6 +2889,190 @@ def menu():
         return redirect(url_for("cafe.menu", section="items"))
     active_menu_section = (request.args.get("section") or "catalog").strip().lower()
     return _render_menu_page(active_menu_section)
+
+
+def _unique_menu_navigation_slug(label: str, model, *, group_id: int | None = None) -> str:
+    base = re.sub(r"[^a-z0-9]+", "-", label.strip().lower()).strip("-") or "menu"
+    candidate = base
+    number = 2
+    while True:
+        query = model.query.filter(model.slug == candidate)
+        if group_id is not None:
+            query = query.filter(model.group_id == group_id)
+        if not query.first():
+            return candidate
+        candidate = f"{base}-{number}"
+        number += 1
+
+
+def _navigation_redirect():
+    return redirect(url_for("cafe.menu", section="navigation"))
+
+
+@bp.route("/menu/navigation/groups", methods=["POST"])
+@roles_required("admin", "manager")
+def add_menu_navigation_group():
+    label = request.form.get("label", "").strip()
+    if not label:
+        flash("Main category name is required.", "error")
+        return _navigation_redirect()
+    group = MenuNavGroup(
+        slug=_unique_menu_navigation_slug(label, MenuNavGroup),
+        label=label,
+        display_order=_safe_int(request.form.get("display_order"), 0),
+        active=True,
+        is_global_default=MenuNavGroup.query.count() == 0,
+    )
+    db.session.add(group)
+    db.session.commit()
+    flash("Menu navigation category added. Add at least one subcategory to display it.", "success")
+    return _navigation_redirect()
+
+
+@bp.route("/menu/navigation/groups/<int:group_id>/update", methods=["POST"])
+@roles_required("admin", "manager")
+def update_menu_navigation_group(group_id):
+    group = MenuNavGroup.query.get_or_404(group_id)
+    label = request.form.get("label", "").strip()
+    active = bool(request.form.get("active"))
+    make_default = bool(request.form.get("is_global_default"))
+    if not label:
+        flash("Main category name is required.", "error")
+        return _navigation_redirect()
+    if (group.is_global_default or make_default) and not active:
+        flash("The global default category must remain active.", "error")
+        return _navigation_redirect()
+    group.label = label
+    group.display_order = _safe_int(request.form.get("display_order"), group.display_order)
+    group.active = active
+    if make_default:
+        MenuNavGroup.query.update({MenuNavGroup.is_global_default: False}, synchronize_session=False)
+        group.is_global_default = True
+    db.session.commit()
+    flash("Menu navigation category updated.", "success")
+    return _navigation_redirect()
+
+
+@bp.route("/menu/navigation/groups/<int:group_id>/delete", methods=["POST"])
+@roles_required("admin", "manager")
+def delete_menu_navigation_group(group_id):
+    group = MenuNavGroup.query.get_or_404(group_id)
+    if group.sections:
+        flash("Delete or move all subcategories before deleting this main category.", "error")
+        return _navigation_redirect()
+    if group.is_global_default:
+        replacement = MenuNavGroup.query.filter(MenuNavGroup.id != group.id, MenuNavGroup.active.is_(True)).first()
+        if not replacement:
+            flash("At least one active main category is required.", "error")
+            return _navigation_redirect()
+        replacement.is_global_default = True
+    db.session.delete(group)
+    db.session.commit()
+    flash("Menu navigation category deleted.", "success")
+    return _navigation_redirect()
+
+
+@bp.route("/menu/navigation/sections", methods=["POST"])
+@roles_required("admin", "manager")
+def add_menu_navigation_section():
+    label = request.form.get("label", "").strip()
+    group_id = request.form.get("group_id", "").strip()
+    group = MenuNavGroup.query.get(int(group_id)) if group_id.isdigit() else None
+    kind = request.form.get("collection_kind", "catalog").strip()
+    if not label or not group or kind not in COLLECTION_KINDS:
+        flash("Choose a category, valid subcategory name, and collection type.", "error")
+        return _navigation_redirect()
+    section = MenuNavSection(
+        group_id=group.id,
+        slug=_unique_menu_navigation_slug(label, MenuNavSection, group_id=group.id),
+        label=label,
+        display_order=_safe_int(request.form.get("display_order"), 0),
+        active=True,
+        is_default=not bool(group.sections),
+        collection_kind=kind,
+    )
+    db.session.add(section)
+    db.session.commit()
+    flash("Menu navigation subcategory added.", "success")
+    return _navigation_redirect()
+
+
+@bp.route("/menu/navigation/sections/<int:section_id>/update", methods=["POST"])
+@roles_required("admin", "manager")
+def update_menu_navigation_section(section_id):
+    section = MenuNavSection.query.get_or_404(section_id)
+    group_id_raw = request.form.get("group_id", "").strip()
+    target_group = MenuNavGroup.query.get(int(group_id_raw)) if group_id_raw.isdigit() else None
+    label = request.form.get("label", "").strip()
+    active = bool(request.form.get("active"))
+    make_default = bool(request.form.get("is_default"))
+    kind = request.form.get("collection_kind", "catalog").strip()
+    if not label or not target_group or kind not in COLLECTION_KINDS:
+        flash("Main category, subcategory name, and collection type are required.", "error")
+        return _navigation_redirect()
+    if (section.is_default or make_default) and not active:
+        flash("A category's default subcategory must remain active.", "error")
+        return _navigation_redirect()
+    assigned_count = MenuItem.query.filter(MenuItem.navigation_section_id == section.id).count()
+    if assigned_count and kind != "catalog":
+        flash("Move assigned menu items before changing this to an automatic collection.", "error")
+        return _navigation_redirect()
+    section.label = label
+    section.display_order = _safe_int(request.form.get("display_order"), section.display_order)
+    section.active = active
+    section.collection_kind = kind
+    if target_group.id != section.group_id:
+        old_group_id = section.group_id
+        if section.is_default:
+            replacement = MenuNavSection.query.filter(
+                MenuNavSection.group_id == old_group_id,
+                MenuNavSection.id != section.id,
+                MenuNavSection.active.is_(True),
+            ).order_by(MenuNavSection.display_order, MenuNavSection.id).first()
+            if replacement:
+                replacement.is_default = True
+        target_has_default = MenuNavSection.query.filter(
+            MenuNavSection.group_id == target_group.id,
+            MenuNavSection.is_default.is_(True),
+        ).first()
+        section.group_id = target_group.id
+        section.slug = _unique_menu_navigation_slug(label, MenuNavSection, group_id=target_group.id)
+        section.is_default = make_default or target_has_default is None
+        if section.is_default:
+            MenuNavSection.query.filter(
+                MenuNavSection.group_id == target_group.id,
+                MenuNavSection.id != section.id,
+            ).update({MenuNavSection.is_default: False}, synchronize_session=False)
+    elif make_default:
+        MenuNavSection.query.filter(MenuNavSection.group_id == section.group_id).update(
+            {MenuNavSection.is_default: False}, synchronize_session=False
+        )
+        section.is_default = True
+    db.session.commit()
+    flash("Menu navigation subcategory updated.", "success")
+    return _navigation_redirect()
+
+
+@bp.route("/menu/navigation/sections/<int:section_id>/delete", methods=["POST"])
+@roles_required("admin", "manager")
+def delete_menu_navigation_section(section_id):
+    section = MenuNavSection.query.get_or_404(section_id)
+    assigned_count = MenuItem.query.filter(MenuItem.navigation_section_id == section.id).count()
+    if assigned_count:
+        flash(f"Move {assigned_count} assigned menu item(s) before deleting this subcategory.", "error")
+        return _navigation_redirect()
+    if section.is_default:
+        replacement = MenuNavSection.query.filter(
+            MenuNavSection.group_id == section.group_id,
+            MenuNavSection.id != section.id,
+            MenuNavSection.active.is_(True),
+        ).order_by(MenuNavSection.display_order, MenuNavSection.id).first()
+        if replacement:
+            replacement.is_default = True
+    db.session.delete(section)
+    db.session.commit()
+    flash("Menu navigation subcategory deleted.", "success")
+    return _navigation_redirect()
 
 
 @bp.route("/menu/availability", methods=["POST"])
@@ -3363,7 +3587,12 @@ def _render_orders_view(kiosk_mode: bool = False, access_key: str = ""):
     item_category_names_map = {
         item.id: _get_item_category_names(item, category_name_by_id) for item in menu_items
     }
-    menu_navigation = build_menu_navigation(menu_items, item_category_names_map, item_frequency)
+    menu_navigation = build_menu_navigation(
+        menu_items,
+        item_category_names_map,
+        item_frequency,
+        configuration=load_menu_navigation_configuration(),
+    )
     item_types = [
         row[0]
         for row in db.session.query(MenuItem.item_type)

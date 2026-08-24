@@ -53,6 +53,7 @@
     }
 
     function syncButtons() {
+      let activeSectionButton = null;
       root.querySelectorAll("[data-menu-group]").forEach((button) => {
         const active = button.dataset.menuGroup === activeGroup;
         button.classList.toggle("active", active);
@@ -68,7 +69,13 @@
           && button.dataset.menuSection === activeSection;
         button.classList.toggle("active", active);
         button.setAttribute("aria-pressed", active ? "true" : "false");
+        if (active) activeSectionButton = button;
       });
+      const activeRow = submenuRows.find((row) => row.dataset.menuSubmenu === activeGroup);
+      if (activeRow && activeSectionButton) {
+        const targetLeft = Math.max(0, activeSectionButton.offsetLeft - activeRow.offsetLeft - 12);
+        activeRow.scrollTo({ left: targetLeft, behavior: "auto" });
+      }
       requestScrollCueSync();
     }
 

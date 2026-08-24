@@ -24,6 +24,7 @@ from .extensions import db, socketio
 from .library import bp as library_bp
 from .leave_logic import ensure_leave_defaults, run_leave_maintenance
 from .main import bp as main_bp
+from .menu_navigation import ensure_menu_navigation_seeded
 from .mobile_attendance import bp as mobile_attendance_bp
 from .mobile_staff import bp as mobile_staff_bp
 from .rulebook import ensure_rulebook_default
@@ -49,6 +50,7 @@ def _ensure_sqlite_schema_columns():
         "menu_item": {
             "prep_station": "TEXT NOT NULL DEFAULT 'kitchen'",
             "category_ids_json": "TEXT",
+            "navigation_section_id": "INTEGER",
             "has_size_variants": "BOOLEAN NOT NULL DEFAULT 0",
             "size_pricing_json": "TEXT",
             "short_description": "TEXT",
@@ -526,6 +528,7 @@ def create_app():
         db.create_all()
         _ensure_sqlite_schema_columns()
         _ensure_protected_menu_categories()
+        ensure_menu_navigation_seeded()
         _backfill_order_codes()
         _backfill_paid_timestamps()
         _ensure_default_workstations()

@@ -12,9 +12,24 @@ class MenuNavigationTests(unittest.TestCase):
             SimpleNamespace(id=1, name="Mushroom duplex", item_type="Meal", created_at=now, is_brownberries_special=True),
             SimpleNamespace(id=2, name="Classic Iced Vanilla Latte", item_type="Beverage", created_at=now - timedelta(days=60), is_brownberries_special=False),
             SimpleNamespace(id=3, name="Vanilla affogato", item_type="Dessert", created_at=now - timedelta(days=10), is_brownberries_special=False),
+            SimpleNamespace(id=4, name="Cappuccino", item_type="Beverage", created_at=now - timedelta(days=60), is_brownberries_special=False),
+            SimpleNamespace(id=5, name="Vanilla ice cream", item_type="Dessert", created_at=now - timedelta(days=60), is_brownberries_special=False),
         ]
-        categories = {1: ["Starters"], 2: ["Hot & Cold Coffee"], 3: ["Desserts", "Hot & Cold Coffee"]}
+        categories = {
+            1: ["Starters"],
+            2: ["Hot & Cold Coffee"],
+            3: ["Desserts", "Hot & Cold Coffee"],
+            4: ["Hot & Cold Coffee"],
+            5: ["Desserts"],
+        }
         navigation = build_menu_navigation(items, categories, {1: 4, 2: 9}, now=now)
+
+        self.assertEqual(navigation["default_group"], "explore")
+        self.assertEqual(navigation["default_section"], "all-items")
+        defaults = {group["key"]: group["default_section"] for group in navigation["groups"]}
+        self.assertEqual(defaults["food"], "starters")
+        self.assertEqual(defaults["beverages"], "hot-coffee")
+        self.assertEqual(defaults["desserts"], "ice-creams")
 
         self.assertIn("food:starters", navigation["item_tokens"][1])
         self.assertIn("beverages:cold-coffee", navigation["item_tokens"][2])

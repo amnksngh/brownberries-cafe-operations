@@ -42,7 +42,11 @@ from .leave_logic import (
     validate_leave_request,
 )
 from .menu_schedule import menu_item_window_is_open
-from .menu_navigation import build_menu_navigation, recent_paid_item_frequency
+from .menu_navigation import (
+    build_menu_navigation,
+    load_menu_navigation_configuration,
+    recent_paid_item_frequency,
+)
 from .models import (
     CafeFeedback,
     CafeOrder,
@@ -2083,7 +2087,12 @@ def table_qr_page():
                 sizes = []
         item_size_map[item.id] = sizes
         item_category_names_map[item.id] = _get_item_category_names(item, category_name_by_id, include_protected=False)
-    menu_navigation = build_menu_navigation(menu_items, item_category_names_map, item_frequency)
+    menu_navigation = build_menu_navigation(
+        menu_items,
+        item_category_names_map,
+        item_frequency,
+        configuration=load_menu_navigation_configuration(),
+    )
 
     table_orders = []
     staff_call_cooldown_remaining = 0
