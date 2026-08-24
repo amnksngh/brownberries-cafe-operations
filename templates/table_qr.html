@@ -171,6 +171,31 @@
     color: #6a4c3b;
     border: 1px solid rgba(111, 74, 53, 0.12);
   }
+  #qr-menu-shell.qr-ordering-live .menu-navigation .qr-cat-pill.active {
+    border-color: #9bc9aa;
+    background: #dff3e5;
+    color: #27543a;
+    box-shadow: 0 4px 10px rgba(70, 137, 112, 0.18);
+  }
+  .cart-editing-note {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+  }
+  .cart-editing-note.hidden {
+    display: none;
+  }
+  .cart-editing-copy {
+    display: grid;
+    gap: 0.18rem;
+  }
+  .order-change-lock {
+    margin: 0;
+    color: #7a6557;
+    font-size: 0.78rem;
+    line-height: 1.4;
+  }
   .orders-sheet-card {
     display: grid;
     gap: 0.8rem;
@@ -381,7 +406,7 @@
 </section>
 {% endif %}
 
-<div id="qr-menu-shell" class="{% if not is_preview %}hidden{% endif %}">
+<div id="qr-menu-shell" class="{% if not is_preview %}qr-ordering-live hidden{% else %}qr-browsing-preview{% endif %}">
   <section class="panel qr-cafe-top qr-menu-header">
     <div class="qr-head">
       <img src="{{ url_for('static', filename='images/cafe-logo.png') }}" class="brand-logo" alt="Brownberries Cafe" />
@@ -526,6 +551,13 @@
           <h3>Your Order</h3>
         </div>
         <button type="button" id="cart-back-to-menu" class="qr-back-link">Back to Menu</button>
+      </div>
+      <div id="cart-editing-note" class="qr-sheet-note cart-editing-note hidden">
+        <div class="cart-editing-copy">
+          <strong id="cart-editing-title">Editing pending items</strong>
+          <span id="cart-editing-copy">Change quantities or remove items, then save your changes.</span>
+        </div>
+        <button type="button" id="cart-cancel-edit-btn">Cancel</button>
       </div>
       <div id="cart-lines" class="cart-lines"></div>
       <div class="cart-sheet-footer">
@@ -683,6 +715,11 @@
   const cartView = document.getElementById("cart-view");
   const cartBackToMenu = document.getElementById("cart-back-to-menu");
   const cartContinueBtn = document.getElementById("cart-continue-btn");
+  const cartPlaceOrderBtn = document.getElementById("cart-place-order-btn");
+  const cartEditingNote = document.getElementById("cart-editing-note");
+  const cartEditingTitle = document.getElementById("cart-editing-title");
+  const cartEditingCopy = document.getElementById("cart-editing-copy");
+  const cartCancelEditBtn = document.getElementById("cart-cancel-edit-btn");
   const ordersView = document.getElementById("orders-view");
   const ordersBackToMenu = document.getElementById("orders-back-to-menu");
   const ordersSheetLines = document.getElementById("orders-sheet-lines");
@@ -695,6 +732,7 @@
   const callStaffBtn = document.getElementById("call-staff-btn");
   const menuOnlyControls = document.getElementById("menu-only-controls");
   let editingOrderId = null;
+  let cartBeforeEditing = null;
   const ordersBoard = document.getElementById("table-orders-board");
   const cartToast = document.getElementById("cart-toast");
   const celebrationToast = document.getElementById("celebration-toast");
@@ -751,9 +789,12 @@
     items: [
       {% for oi in order.order_items if (oi.approval_status or "pending") != "rejected" %}
       {
+        menu_item_id: {{ oi.menu_item_id }},
         name: {{ (oi.menu_item.name if oi.menu_item else "-")|tojson }},
         qty: {{ oi.quantity or 0 }},
+        unit_price: {{ (oi.unit_price or 0)|float }},
         size_label: {{ oi.size_label|tojson }},
+        is_parcel: {{ "true" if oi.is_parcel else "false" }},
         approval_status: {{ (oi.approval_status or "pending")|tojson }}
       }{{ "," if not loop.last }}
       {% endfor %}
@@ -864,19 +905,26 @@
       return;
     }
     ordersSheetLines.innerHTML = orders.map((order) => {
-      const lines = (order.items || []).filter((item) => (item.approval_status || "pending") !== "rejected").map((item) => {
+      const activeItems = (order.items || []).filter((item) => (item.approval_status || "pending") !== "rejected");
+      const pendingItems = activeItems.filter((item) => (item.approval_status || "pending") === "pending");
+      const approvedItems = activeItems.filter((item) => (item.approval_status || "pending") !== "pending");
+      const lines = activeItems.map((item) => {
         const label = formatOrderStatusLabel(order.status, item.approval_status);
         return `<div class="tracked-item-line"><span>${item.name}${item.size_label ? ` (${item.size_label})` : ""} x ${item.qty}</span><span class="tracked-item-status tracked-item-status-${item.approval_status || "pending"}">${label}</span></div>`;
       }).join("");
-      const actionsMarkup = order.status === "pending_approval"
-        ? `<div class="orders-sheet-actions">
-            <button type="button" class="edit-order-btn" data-order-id="${order.id}">Edit Order</button>
-            <form method="post" action="/cafe/table-order/${order.id}/delete" class="inline">
-              <input type="hidden" name="slug" value="{{ table.qr_slug }}" />
-              <button type="submit">Delete</button>
-            </form>
-          </div>`
-        : "";
+      let actionsMarkup = '<p class="order-change-lock">This order is approved. Please contact staff if you need any changes.</p>';
+      if (pendingItems.length > 0) {
+        const deleteButton = approvedItems.length === 0
+          ? `<button type="button" class="delete-pending-order-btn" data-order-id="${order.id}">Delete Order</button>`
+          : "";
+        const lockCopy = approvedItems.length > 0
+          ? '<p class="order-change-lock">Approved items are locked. Only items still awaiting approval can be changed; contact staff for anything else.</p>'
+          : '<p class="order-change-lock">You can change or remove these items until staff approves them.</p>';
+        actionsMarkup = `<div class="orders-sheet-actions">
+            <button type="button" class="edit-order-btn" data-order-id="${order.id}">Edit Pending Items</button>
+            ${deleteButton}
+          </div>${lockCopy}`;
+      }
       return `<article class="orders-sheet-card">
         <div class="orders-sheet-head">
           <div class="orders-sheet-title">
@@ -1138,6 +1186,69 @@
     } catch (_) {}
   }
 
+  function replaceCart(lines) {
+    Object.keys(cart).forEach((key) => delete cart[key]);
+    (lines || []).forEach((line) => {
+      const menuItemId = Number(line.menu_item_id || 0);
+      const quantity = Math.max(1, Number(line.qty || line.quantity || 1));
+      const sizeLabel = line.size_label || "";
+      const isParcel = !!line.is_parcel;
+      const lineKey = `${menuItemId}:${isParcel ? 1 : 0}:${sizeLabel || "default"}`;
+      if (!menuItemId) return;
+      cart[lineKey] = {
+        line_key: lineKey,
+        menu_item_id: menuItemId,
+        name: String(line.name || "Item"),
+        price: Number(line.unit_price ?? line.price ?? 0),
+        quantity,
+        is_parcel: isParcel,
+        size_label: sizeLabel || null,
+      };
+    });
+    renderCart();
+  }
+
+  function finishEditingOrder({ restorePreviousCart = false } = {}) {
+    editingOrderId = null;
+    if (restorePreviousCart && cartBeforeEditing) {
+      replaceCart(cartBeforeEditing);
+    }
+    cartBeforeEditing = null;
+    cartEditingNote?.classList.add("hidden");
+    if (cartPlaceOrderBtn) cartPlaceOrderBtn.textContent = "Place Order";
+  }
+
+  function beginEditingOrder(orderId) {
+    const order = liveOrders.get(Number(orderId));
+    const pendingItems = (order?.items || []).filter(
+      (item) => (item.approval_status || "pending") === "pending"
+    );
+    if (!order || order.status !== "pending_approval" || pendingItems.length < 1) {
+      alert("These items have already been approved. Please contact staff if you need any changes.");
+      return;
+    }
+    if (editingOrderId === null) {
+      cartBeforeEditing = Object.values(cart).map((line) => ({ ...line }));
+    }
+    editingOrderId = Number(orderId);
+    replaceCart(pendingItems);
+    if (cartEditingTitle) {
+      cartEditingTitle.textContent = `Editing pending items in Order #${order.pickup_no_compact || order.id}`;
+    }
+    const approvedCount = (order.items || []).filter(
+      (item) => !["pending", "rejected"].includes(item.approval_status || "pending")
+    ).length;
+    if (cartEditingCopy) {
+      cartEditingCopy.textContent = approvedCount > 0
+        ? "Approved items are locked. Changes here apply only to items still awaiting approval."
+        : "Change quantities or remove items, then save before staff approves the order.";
+    }
+    cartEditingNote?.classList.remove("hidden");
+    if (cartPlaceOrderBtn) cartPlaceOrderBtn.textContent = "Save Changes";
+    showOrdering();
+    showGuestView("cart");
+  }
+
   function isSubsequence(needle, haystack) {
     let j = 0;
     for (let i = 0; i < haystack.length && j < needle.length; i += 1) {
@@ -1333,6 +1444,10 @@
     ordersBackToMenu?.addEventListener("click", () => showGuestView("menu"));
     billBackToMenu?.addEventListener("click", () => showGuestView("menu"));
     cartContinueBtn?.addEventListener("click", () => showGuestView("menu"));
+    cartCancelEditBtn?.addEventListener("click", () => {
+      finishEditingOrder({ restorePreviousCart: true });
+      showGuestView("orders");
+    });
     billReceiptGenerate?.addEventListener("click", (event) => {
       if (billReceiptGenerate.getAttribute("aria-disabled") !== "true") return;
       event.preventDefault();
@@ -1346,13 +1461,18 @@
         event.preventDefault();
         return;
       }
-      if (Object.keys(cart).length < 1) {
+      if (Object.keys(cart).length < 1 && !editingOrderId) {
         event.preventDefault();
         alert("Please add at least one item to cart.");
         return;
       }
       if (editingOrderId) {
         event.preventDefault();
+        orderSubmitLocked = true;
+        if (cartPlaceOrderBtn) {
+          cartPlaceOrderBtn.disabled = true;
+          cartPlaceOrderBtn.textContent = "Saving...";
+        }
         const form = document.createElement("form");
         form.method = "post";
         form.action = `/cafe/table-order/${editingOrderId}/edit`;
@@ -1367,6 +1487,7 @@
         form.appendChild(slugInput);
         form.appendChild(payloadInput);
         document.body.appendChild(form);
+        try { window.sessionStorage.removeItem(CART_STORAGE_KEY); } catch (_) {}
         form.submit();
         return;
       }
@@ -1383,15 +1504,25 @@
     });
 
     document.addEventListener("click", (event) => {
-      const btn = event.target.closest(".edit-order-btn");
-      if (!btn) return;
-      const orderId = Number(btn.dataset.orderId);
-      const row = document.querySelector(`tr[data-order-id="${orderId}"]`);
-      if (!row) return;
-      editingOrderId = orderId;
-      showOrdering();
-      showGuestView("cart");
-      alert(`Editing order #${orderId}. Update the cart and click Place Order.`);
+      const editButton = event.target.closest(".edit-order-btn");
+      if (editButton) {
+        beginEditingOrder(Number(editButton.dataset.orderId));
+        return;
+      }
+      const deleteButton = event.target.closest(".delete-pending-order-btn");
+      if (!deleteButton) return;
+      const orderId = Number(deleteButton.dataset.orderId);
+      if (!window.confirm("Delete this entire pending order? This is available only before staff approval.")) return;
+      const form = document.createElement("form");
+      form.method = "post";
+      form.action = `/cafe/table-order/${orderId}/delete`;
+      const slugInput = document.createElement("input");
+      slugInput.type = "hidden";
+      slugInput.name = "slug";
+      slugInput.value = "{{ table.qr_slug }}";
+      form.appendChild(slugInput);
+      document.body.appendChild(form);
+      form.submit();
     });
   }
 
@@ -1404,6 +1535,9 @@
     if (["paid", "cancelled"].includes(order.status)) {
       if (row) row.remove();
       liveOrders.delete(order.id);
+      if (editingOrderId === Number(order.id)) {
+        finishEditingOrder({ restorePreviousCart: true });
+      }
       renderOrdersSheet();
       updateSettlementEstimate();
       syncDockState();
@@ -1438,6 +1572,18 @@
     }
     row.innerHTML = rowHtml;
     liveOrders.set(order.id, order);
+    if (editingOrderId === Number(order.id)) {
+      const pendingItems = (order.items || []).filter(
+        (item) => (item.approval_status || "pending") === "pending"
+      );
+      if (order.status === "pending_approval" && pendingItems.length > 0) {
+        beginEditingOrder(order.id);
+      } else {
+        finishEditingOrder({ restorePreviousCart: true });
+        showGuestView("orders");
+        alert("Staff has approved these items, so they can no longer be changed from the table. Please contact staff for help.");
+      }
+    }
     clearStoredReceiptAccess();
     renderReceiptAccess(null);
     renderOrdersSheet();

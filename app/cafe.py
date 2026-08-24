@@ -1512,8 +1512,10 @@ def _serialize_order(order: CafeOrder):
         "items": [
             {
                 "id": item.id,
+                "menu_item_id": item.menu_item_id,
                 "name": item.menu_item.name if item.menu_item else "-",
                 "qty": item.quantity,
+                "unit_price": round(float(item.unit_price or 0), 2),
                 "size_label": item.size_label,
                 "is_parcel": bool(item.is_parcel),
                 "prep_station": item.menu_item.prep_station if item.menu_item else "kitchen",
@@ -4859,13 +4861,24 @@ def delete_pending_table_order(order_id):
         flash("Invalid table QR.", "error")
         return redirect(url_for("main.table_qr_page", slug=slug))
     order = CafeOrder.query.get_or_404(order_id)
-    if order.table_id != table.id or order.status != "pending_approval":
-        flash("Only pending approval orders can be deleted.", "error")
+    active_items = [
+        item for item in order.order_items
+        if (item.approval_status or "pending") != "rejected"
+    ]
+    all_items_pending = bool(active_items) and all(
+        (item.approval_status or "pending") == "pending" for item in active_items
+    )
+    if order.table_id != table.id or order.status != "pending_approval" or not all_items_pending:
+        flash("Only orders with no approved items can be deleted. Please contact staff for approved items.", "error")
         return redirect(url_for("main.table_qr_page", slug=slug))
+    payload = _serialize_order(order)
+    payload["status"] = "cancelled"
     for oi in list(order.order_items):
         db.session.delete(oi)
     db.session.delete(order)
     db.session.commit()
+    socketio.emit("order_updated", payload, namespace="/kitchen")
+    socketio.emit("order_updated", payload, namespace="/table")
     flash("Pending order deleted.", "success")
     return redirect(url_for("main.table_qr_page", slug=slug))
 
@@ -4878,14 +4891,15 @@ def edit_pending_table_order(order_id):
         flash("Invalid table QR.", "error")
         return redirect(url_for("main.table_qr_page", slug=slug))
     order = CafeOrder.query.get_or_404(order_id)
-    if order.table_id != table.id or order.status != "pending_approval":
-        flash("Only pending approval orders can be edited.", "error")
+    pending_items = [
+        item for item in order.order_items
+        if (item.approval_status or "pending") == "pending"
+    ]
+    if order.table_id != table.id or order.status != "pending_approval" or not pending_items:
+        flash("Only items awaiting approval can be edited. Please contact staff for approved items.", "error")
         return redirect(url_for("main.table_qr_page", slug=slug))
     line_items = _parse_line_items_from_request()
-    if not line_items:
-        flash("Please add at least one menu item in cart.", "error")
-        return redirect(url_for("main.table_qr_page", slug=slug))
-    for oi in list(order.order_items):
+    for oi in pending_items:
         db.session.delete(oi)
     for row in line_items:
         menu_item, qty, is_parcel, size_label, unit_price = row if len(row) == 5 else (*row, None, None)  # type: ignore
@@ -4903,13 +4917,18 @@ def edit_pending_table_order(order_id):
             )
         )
     db.session.flush()
-    _recalculate_order_totals(order)
-    _refresh_order_status_from_items(order)
+    db.session.expire(order, ["order_items"])
+    remaining_items = list(order.order_items)
+    if not any((item.approval_status or "pending") != "rejected" for item in remaining_items):
+        order.status = "cancelled"
+    else:
+        _recalculate_order_totals(order)
+        _refresh_order_status_from_items(order)
     db.session.commit()
     payload = _serialize_order(order)
     socketio.emit("order_updated", payload, namespace="/kitchen")
     socketio.emit("order_updated", payload, namespace="/table")
-    flash("Pending order updated.", "success")
+    flash("Pending items updated. Approved items were left unchanged.", "success")
     return redirect(url_for("main.table_qr_page", slug=slug))
 
 
