@@ -29,11 +29,27 @@
     const clearButton = options.clearButton || null;
     const emptyResults = options.emptyResults || null;
     const itemSelector = options.itemSelector;
+    const scrollCue = root.querySelector("[data-menu-scroll-cue]");
+    const submenuRows = Array.from(root.querySelectorAll("[data-menu-submenu]"));
     let activeGroup = root.dataset.defaultGroup || "food";
     let activeSection = root.dataset.defaultSection || "starters";
+    let scrollCueFrame = null;
 
     function currentToken() {
       return `${activeGroup}:${activeSection}`;
+    }
+
+    function syncScrollCue() {
+      scrollCueFrame = null;
+      const activeRow = submenuRows.find((row) => row.dataset.menuSubmenu === activeGroup);
+      if (!activeRow || !scrollCue) return;
+      const remaining = activeRow.scrollWidth - activeRow.clientWidth - activeRow.scrollLeft;
+      scrollCue.classList.toggle("is-visible", remaining > 6);
+    }
+
+    function requestScrollCueSync() {
+      if (scrollCueFrame !== null) window.cancelAnimationFrame(scrollCueFrame);
+      scrollCueFrame = window.requestAnimationFrame(syncScrollCue);
     }
 
     function syncButtons() {
@@ -53,6 +69,7 @@
         button.classList.toggle("active", active);
         button.setAttribute("aria-pressed", active ? "true" : "false");
       });
+      requestScrollCueSync();
     }
 
     function syncSearchClear() {
@@ -101,6 +118,13 @@
       applyFilters();
       searchInput.focus();
     });
+    submenuRows.forEach((row) => row.addEventListener("scroll", requestScrollCueSync, { passive: true }));
+    window.addEventListener("resize", requestScrollCueSync, { passive: true });
+    if (window.ResizeObserver) {
+      const observer = new ResizeObserver(requestScrollCueSync);
+      observer.observe(root);
+      submenuRows.forEach((row) => observer.observe(row));
+    }
 
     syncButtons();
     syncSearchClear();

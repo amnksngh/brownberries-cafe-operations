@@ -564,11 +564,46 @@ body.cashier-rail-resizing {
   scrollbar-width: thin;
 }
 
+.menu-nav-secondary-shell,
 .menu-nav-secondary {
+  position: relative;
   min-height: 2.25rem;
   min-width: 0;
   max-width: 100%;
   overflow: hidden;
+}
+
+.menu-nav-scroll-cue {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0.2rem;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.16rem;
+  width: 4.8rem;
+  padding-right: 0.3rem;
+  background: linear-gradient(90deg, rgba(255, 253, 249, 0), #fffdf9 42%);
+  color: var(--primary);
+  font-size: 0.7rem;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateX(0.3rem);
+  transition: opacity 0.16s ease, transform 0.16s ease;
+}
+
+.menu-nav-scroll-cue b {
+  font-size: 1.25rem;
+  line-height: 1;
+}
+
+.menu-nav-scroll-cue.is-visible {
+  opacity: 1;
+  transform: translateX(0);
 }
 
 .menu-nav-secondary-row[hidden] {
