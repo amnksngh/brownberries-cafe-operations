@@ -165,6 +165,7 @@ class MenuItem(TimestampMixin, db.Model):
     prep_station = db.Column(db.String(40), nullable=False, default="kitchen")
     chef_user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=True)
     available = db.Column(db.Boolean, default=True, nullable=False)
+    is_brownberries_special = db.Column(db.Boolean, default=False, nullable=False)
     is_deleted = db.Column(db.Boolean, default=False, nullable=False)
     category = db.relationship("MenuCategory", backref="items")
     subcategory = db.relationship("MenuSubcategory", backref="items")

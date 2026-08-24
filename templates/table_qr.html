@@ -378,13 +378,8 @@
       </div>
     </div>
     <div id="menu-only-controls" class="qr-menu-only-controls">
-      <div class="qr-category-bar" id="qr-category-bar">
-        <button type="button" class="qr-cat-pill active" data-cat="all">All</button>
-        <button type="button" class="qr-cat-pill" data-cat="most-loved">Most Loved</button>
-        {% for c in categories %}
-        <button type="button" class="qr-cat-pill" data-cat="{{ c.name|lower }}">{{ c.name }}</button>
-        {% endfor %}
-      </div>
+      {% set menu_navigation_id = "qr-category-bar" %}
+      {% include "_menu_navigation.html" %}
       <div class="qr-search-wrap">
         <input id="qr-search" class="qr-search" placeholder="Search dosa, coffee, pizza..." />
         <button type="button" class="search-clear-btn hidden" id="qr-search-clear" aria-label="Clear search">×</button>
@@ -414,6 +409,7 @@
         {% set sizes = item_size_map.get(item.id, []) %}
         <article
           class="item-card qr-item-card"
+          data-menu-nav="{{ menu_navigation.item_tokens.get(item.id, [])|join('|') }}"
           data-cats="{{ item_cats|map('lower')|join('|') }}"
           data-name="{{ item.name|lower }}"
           data-short="{{ (item.short_description or item.description or '')|lower }}"
@@ -421,18 +417,16 @@
           data-featured="{{ '1' if loop.index <= 10 else '0' }}"
         >
           <div class="item-card-topline">
-            {% if loop.index <= 5 %}
-            <span class="item-tag item-tag-featured">♥ Most Loved</span>
-            {% elif loop.index <= 10 %}
-            <span class="item-tag">🔥 Popular</span>
-            {% endif %}
+            {% for badge in menu_navigation.item_badges.get(item.id, []) %}
+            <span class="item-tag{% if badge == 'Brownberries Special' %} item-tag-featured{% endif %}">{{ badge }}</span>
+            {% endfor %}
             {% if item.item_type %}
             <span class="item-tag item-tag-muted">{{ item.item_type }}</span>
             {% endif %}
           </div>
           <h4 class="item-name">{{ item.name }}</h4>
           {% if item.image_url %}
-          <img src="{{ item.image_url }}" alt="{{ item.name }}" class="item-image qr-click-image" />
+          <img src="{{ item.image_url }}" alt="{{ item.name }}" class="item-image qr-click-image" loading="lazy" />
           {% else %}
           <div class="item-image placeholder">No Image</div>
           {% endif %}
@@ -660,6 +654,7 @@
 </div>
 
 <script src="{{ url_for('static', filename='js/socket.io.min.js') }}"></script>
+<script src="{{ url_for('static', filename='js/menu-navigation.js') }}"></script>
 <script>
   const isPreview = {{ "true" if is_preview else "false" }};
   const initialQrSuccessToast = {{ qr_success_toast|tojson if qr_success_toast else "null" }};
@@ -730,7 +725,13 @@
   let orderSubmitLocked = false;
   let toastTimer = null;
   let celebrationTimer = null;
-  let activeCat = "all";
+  const qrMenuNavigation = window.BrownberriesMenuNavigation?.create({
+    root: categoryBar,
+    itemSelector: ".qr-item-card",
+    searchInput,
+    clearButton: searchClearBtn,
+    emptyResults,
+  });
   let dockPulseTimer = null;
   let activeGuestView = "menu";
   const liveOrders = new Map();
@@ -1095,23 +1096,11 @@
   }
 
   function applyFilters() {
-    const q = (searchInput?.value || "").trim().toLowerCase();
-    let visibleCount = 0;
-    document.querySelectorAll(".qr-item-card").forEach((card) => {
-      const cats = (card.dataset.cats || "").split("|").filter(Boolean);
-      const blob = `${card.dataset.name || ""} ${card.dataset.short || ""} ${card.dataset.type || ""} ${cats.join(" ")}`;
-      const featured = (card.dataset.featured || "0") === "1";
-      const catOk = activeCat === "all" ? true : (activeCat === "most-loved" ? featured : cats.includes(activeCat));
-      const qOk = fuzzyMatch(q, blob);
-      const show = catOk && qOk;
-      card.style.display = show ? "" : "none";
-      if (show) visibleCount += 1;
-    });
-    emptyResults?.classList.toggle("hidden", visibleCount > 0);
+    qrMenuNavigation?.applyFilters();
   }
 
   function syncSearchClear() {
-    searchClearBtn?.classList.toggle("hidden", !(searchInput?.value || "").trim());
+    qrMenuNavigation?.syncSearchClear();
   }
 
   function setupAutoCompactHeader(header) {
@@ -1260,25 +1249,6 @@
   imageClose?.addEventListener("click", () => imageModal?.classList.add("hidden"));
   imageModal?.addEventListener("click", (event) => {
     if (event.target === imageModal) imageModal.classList.add("hidden");
-  });
-
-  searchInput?.addEventListener("input", () => {
-    syncSearchClear();
-    applyFilters();
-  });
-  searchClearBtn?.addEventListener("click", () => {
-    searchInput.value = "";
-    syncSearchClear();
-    applyFilters();
-    searchInput.focus();
-  });
-  categoryBar?.addEventListener("click", (event) => {
-    const btn = event.target.closest(".qr-cat-pill");
-    if (!btn) return;
-    activeCat = btn.dataset.cat || "all";
-    document.querySelectorAll(".qr-cat-pill").forEach((x) => x.classList.remove("active"));
-    btn.classList.add("active");
-    applyFilters();
   });
 
   if (!isPreview) {

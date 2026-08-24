@@ -42,6 +42,7 @@ from .leave_logic import (
     validate_leave_request,
 )
 from .menu_schedule import menu_item_window_is_open
+from .menu_navigation import build_menu_navigation, recent_paid_item_frequency
 from .models import (
     CafeFeedback,
     CafeOrder,
@@ -2059,27 +2060,14 @@ def table_qr_page():
     all_category_rows = MenuCategory.query.order_by(MenuCategory.name.asc()).all()
     all_category_name_by_id = {c.id: c.name for c in all_category_rows}
     category_name_by_id = {c.id: c.name for c in categories}
-    frequency_subq = (
-        db.session.query(
-            CafeOrderItem.menu_item_id.label("menu_item_id"),
-            db.func.coalesce(db.func.sum(CafeOrderItem.quantity), 0).label("order_qty"),
-        )
-        .group_by(CafeOrderItem.menu_item_id)
-        .subquery()
-    )
-    ranked_query = (
-        MenuItem.query.filter_by(available=True, is_deleted=False).outerjoin(frequency_subq, MenuItem.id == frequency_subq.c.menu_item_id)
+    item_frequency = recent_paid_item_frequency()
+    menu_items = (
+        MenuItem.query.filter_by(available=True, is_deleted=False)
         .options(joinedload(MenuItem.category), joinedload(MenuItem.subcategory))
-        .add_columns(db.func.coalesce(frequency_subq.c.order_qty, 0).label("order_qty"))
-        .order_by(db.desc(db.func.coalesce(frequency_subq.c.order_qty, 0)), MenuItem.name.asc())
+        .all()
     )
-    ranked_rows = ranked_query.all()
-    menu_items = [row[0] for row in ranked_rows if _is_public_menu_item(row[0], all_category_name_by_id)]
-    item_frequency = {
-        row[0].id: int(row[1] or 0)
-        for row in ranked_rows
-        if _is_public_menu_item(row[0], all_category_name_by_id)
-    }
+    menu_items = [item for item in menu_items if _is_public_menu_item(item, all_category_name_by_id)]
+    menu_items.sort(key=lambda item: (-item_frequency.get(item.id, 0), item.name.lower()))
     item_size_map = {}
     item_category_names_map = {}
     for item in menu_items:
@@ -2095,6 +2083,7 @@ def table_qr_page():
                 sizes = []
         item_size_map[item.id] = sizes
         item_category_names_map[item.id] = _get_item_category_names(item, category_name_by_id, include_protected=False)
+    menu_navigation = build_menu_navigation(menu_items, item_category_names_map, item_frequency)
 
     table_orders = []
     staff_call_cooldown_remaining = 0
@@ -2125,6 +2114,7 @@ def table_qr_page():
         item_frequency=item_frequency,
         item_size_map=item_size_map,
         item_category_names_map=item_category_names_map,
+        menu_navigation=menu_navigation,
         staff_call_cooldown_remaining=staff_call_cooldown_remaining,
         service_charge_rate=service_charge_rate,
         service_charge_enabled=not bool(getattr(table, "service_charge_opt_out_requested", False)),

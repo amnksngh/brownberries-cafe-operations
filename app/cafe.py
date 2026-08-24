@@ -49,6 +49,7 @@ from .menu_schedule import (
     menu_item_window_is_open,
     workstation_schedule_map,
 )
+from .menu_navigation import build_menu_navigation, recent_paid_item_frequency
 from .models import (
     CafeFeedback,
     CafeFeedbackItem,
@@ -924,6 +925,7 @@ def _menu_form_state_from_request():
         "calories": form.get("calories", "").strip(),
         "price": form.get("price", "").strip(),
         "has_size_variants": True if form.get("has_size_variants") else False,
+        "is_brownberries_special": True if form.get("is_brownberries_special") else False,
         "size_rows": size_rows,
         "available": True if form.get("available") else False,
     }
@@ -942,6 +944,7 @@ def _default_menu_form_state():
         "calories": "",
         "price": "",
         "has_size_variants": False,
+        "is_brownberries_special": False,
         "size_rows": [{"size": "", "price": ""}, {"size": "", "price": ""}],
         "available": True,
     }
@@ -1699,6 +1702,7 @@ def _apply_menu_item_form_values(item: MenuItem, form, files, prefix: str = "") 
             return f"Please select a valid preparation responsibility for {item.name}."
 
     item.available = _menu_form_has(form, "available", prefix)
+    item.is_brownberries_special = _menu_form_has(form, "is_brownberries_special", prefix)
     return None
 
 
@@ -2830,6 +2834,7 @@ def menu():
             prep_station=_normalize_prep_station(request.form.get("prep_station")),
             chef_user_id=chef_user.id if chef_user else None,
             available=True if request.form.get("available") else False,
+            is_brownberries_special=True if request.form.get("is_brownberries_special") else False,
             is_deleted=False,
         )
         if item.has_size_variants:
@@ -3334,15 +3339,7 @@ def _render_orders_view(kiosk_mode: bool = False, access_key: str = ""):
         menu_query = menu_query.filter(MenuItem.item_type == item_type)
     filtered_items = menu_query.all()
 
-    frequency_rows = (
-        db.session.query(
-            CafeOrderItem.menu_item_id,
-            db.func.coalesce(db.func.sum(CafeOrderItem.quantity), 0).label("order_qty"),
-        )
-        .group_by(CafeOrderItem.menu_item_id)
-        .all()
-    )
-    item_frequency = {row.menu_item_id: int(row.order_qty) for row in frequency_rows}
+    item_frequency = recent_paid_item_frequency()
     menu_items = sorted(
         filtered_items,
         key=lambda item: (-item_frequency.get(item.id, 0), item.name.lower()),
@@ -3366,6 +3363,7 @@ def _render_orders_view(kiosk_mode: bool = False, access_key: str = ""):
     item_category_names_map = {
         item.id: _get_item_category_names(item, category_name_by_id) for item in menu_items
     }
+    menu_navigation = build_menu_navigation(menu_items, item_category_names_map, item_frequency)
     item_types = [
         row[0]
         for row in db.session.query(MenuItem.item_type)
@@ -3392,6 +3390,7 @@ def _render_orders_view(kiosk_mode: bool = False, access_key: str = ""):
         item_frequency=item_frequency,
         item_size_map=item_size_map,
         item_category_names_map=item_category_names_map,
+        menu_navigation=menu_navigation,
         selected_table_id=table_id,
         table_orders=CafeOrder.query.filter(
             CafeOrder.table_id == table_id,

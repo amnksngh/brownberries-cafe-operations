@@ -53,6 +53,7 @@ def _ensure_sqlite_schema_columns():
             "size_pricing_json": "TEXT",
             "short_description": "TEXT",
             "is_deleted": "BOOLEAN NOT NULL DEFAULT 0",
+            "is_brownberries_special": "BOOLEAN NOT NULL DEFAULT 0",
             "chef_user_id": "INTEGER",
         },
         "staff_profile": {

@@ -19,13 +19,8 @@
       <span class="staff-table-current">Selected: {{ selected_table_name }}</span>
     </form>
   </div>
-  <div class="qr-category-bar" id="staff-category-bar">
-    <button type="button" class="qr-cat-pill active" data-cat="all">All</button>
-    <button type="button" class="qr-cat-pill" data-cat="most-loved">Most Loved</button>
-    {% for c in categories %}
-    <button type="button" class="qr-cat-pill" data-cat="{{ c.name|lower }}">{{ c.name }}</button>
-    {% endfor %}
-  </div>
+  {% set menu_navigation_id = "staff-category-bar" %}
+  {% include "_menu_navigation.html" %}
   <div class="qr-search-wrap">
     <input id="staff-search" class="qr-search" placeholder="Search dosa, coffee, pizza..." />
     <button type="button" class="search-clear-btn hidden" id="staff-search-clear" aria-label="Clear search">×</button>
@@ -49,6 +44,7 @@
       {% set item_cats = item_category_names_map.get(item.id, []) %}
       <article
         class="item-card staff-item-card"
+        data-menu-nav="{{ menu_navigation.item_tokens.get(item.id, [])|join('|') }}"
         data-cats="{{ item_cats|map('lower')|join('|') }}"
         data-name="{{ item.name|lower }}"
         data-short="{{ (item.short_description or item.description or '')|lower }}"
@@ -56,18 +52,16 @@
         data-featured="{{ '1' if loop.index <= 10 else '0' }}"
       >
         <div class="item-card-topline">
-          {% if loop.index <= 5 %}
-          <span class="item-tag item-tag-featured">♥ Most Loved</span>
-          {% elif loop.index <= 10 %}
-          <span class="item-tag">🔥 Popular</span>
-          {% endif %}
+          {% for badge in menu_navigation.item_badges.get(item.id, []) %}
+          <span class="item-tag{% if badge == 'Brownberries Special' %} item-tag-featured{% endif %}">{{ badge }}</span>
+          {% endfor %}
           {% if item.item_type %}
           <span class="item-tag item-tag-muted">{{ item.item_type }}</span>
           {% endif %}
         </div>
         <h4 class="item-name">{{ item.name }}</h4>
         {% if item.image_url %}
-        <img src="{{ item.image_url }}" alt="{{ item.name }}" class="item-image" />
+        <img src="{{ item.image_url }}" alt="{{ item.name }}" class="item-image" loading="lazy" />
         {% else %}
         <div class="item-image placeholder">No Image</div>
         {% endif %}
@@ -217,6 +211,7 @@
   </table>
 </section>
 
+<script src="{{ url_for('static', filename='js/menu-navigation.js') }}"></script>
 <script>
   const cart = {};
   const cartLines = document.getElementById("cart-lines");
@@ -241,7 +236,13 @@
   const cartToast = document.getElementById("cart-toast");
   const emptyResults = document.getElementById("staff-empty-results");
   let toastTimer = null;
-  let activeStaffCat = "all";
+  const staffMenuNavigation = window.BrownberriesMenuNavigation?.create({
+    root: staffCategoryBar,
+    itemSelector: ".staff-item-card",
+    searchInput: staffSearchInput,
+    clearButton: staffSearchClear,
+    emptyResults,
+  });
   let orderSubmitLocked = false;
 
   function normalizeQty(value) {
@@ -450,23 +451,11 @@
   });
 
   function applyStaffFilters() {
-    const q = (staffSearchInput?.value || "").trim().toLowerCase();
-    let visibleCount = 0;
-    document.querySelectorAll(".staff-item-card").forEach((card) => {
-      const cats = (card.dataset.cats || "").split("|").filter(Boolean);
-      const blob = `${card.dataset.name || ""} ${card.dataset.short || ""} ${card.dataset.type || ""} ${cats.join(" ")}`;
-      const featured = (card.dataset.featured || "0") === "1";
-      const catOk = activeStaffCat === "all" ? true : (activeStaffCat === "most-loved" ? featured : cats.includes(activeStaffCat));
-      const qOk = fuzzyMatch(q, blob);
-      const show = catOk && qOk;
-      card.style.display = show ? "" : "none";
-      if (show) visibleCount += 1;
-    });
-    emptyResults?.classList.toggle("hidden", visibleCount > 0);
+    staffMenuNavigation?.applyFilters();
   }
 
   function syncStaffSearchClear() {
-    staffSearchClear?.classList.toggle("hidden", !(staffSearchInput?.value || "").trim());
+    staffMenuNavigation?.syncSearchClear();
   }
 
   function setupAutoCompactHeader(header) {
@@ -528,25 +517,6 @@
     staffSearchInput.addEventListener("blur", deactivate);
     if (document.activeElement === staffSearchInput) activate();
   }
-  staffSearchInput?.addEventListener("input", () => {
-    syncStaffSearchClear();
-    applyStaffFilters();
-  });
-  staffSearchClear?.addEventListener("click", () => {
-    staffSearchInput.value = "";
-    syncStaffSearchClear();
-    applyStaffFilters();
-    staffSearchInput.focus();
-  });
-  staffCategoryBar?.addEventListener("click", (event) => {
-    const btn = event.target.closest(".qr-cat-pill");
-    if (!btn) return;
-    activeStaffCat = btn.dataset.cat || "all";
-    staffCategoryBar.querySelectorAll(".qr-cat-pill").forEach((x) => x.classList.remove("active"));
-    btn.classList.add("active");
-    applyStaffFilters();
-  });
-
   function makeDraggable(el) {
     if (!el) return;
     let dragging = false;

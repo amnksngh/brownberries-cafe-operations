@@ -214,6 +214,7 @@
           <button type="button" class="add-size-row-btn" style="margin-top:0.5rem;">Add 1 Serving Size</button>
         </div>
         <label><input type="checkbox" name="available" {% if add_form.available %}checked{% endif %} /> Available</label>
+        <label><input type="checkbox" name="is_brownberries_special" {% if add_form.is_brownberries_special %}checked{% endif %} /> Brownberries Special</label>
         <button type="submit">Add Item</button>
       </form>
     </section>
@@ -303,6 +304,7 @@
                   <button type="button" class="add-size-row-btn" style="margin-top:0.5rem;">Add 1 Serving Size</button>
                 </div>
                 <label><input type="checkbox" name="available" {% if item.available %}checked{% endif %} /> Available</label>
+                <label><input type="checkbox" name="is_brownberries_special" {% if item.is_brownberries_special %}checked{% endif %} /> Brownberries Special</label>
                 <button type="submit">Save</button>
               </form>
             </details>

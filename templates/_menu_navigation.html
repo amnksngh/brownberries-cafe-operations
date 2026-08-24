@@ -1,0 +1,38 @@
+<div
+  id="{{ menu_navigation_id }}"
+  class="qr-category-bar menu-navigation"
+  data-default-group="{{ menu_navigation.default_group }}"
+  data-default-section="{{ menu_navigation.default_section }}"
+>
+  <div class="menu-nav-primary" role="tablist" aria-label="Main menu categories">
+    {% for group in menu_navigation.groups %}
+    <button
+      type="button"
+      class="qr-cat-pill menu-nav-main-pill{% if group.key == menu_navigation.default_group %} active{% endif %}"
+      data-menu-group="{{ group.key }}"
+      data-default-section="{{ group.default_section }}"
+      role="tab"
+      aria-selected="{{ 'true' if group.key == menu_navigation.default_group else 'false' }}"
+    >{{ group.label }}</button>
+    {% endfor %}
+  </div>
+  <div class="menu-nav-secondary" aria-label="Menu subcategories">
+    {% for group in menu_navigation.groups %}
+    <div
+      class="menu-nav-secondary-row{% if group.key == menu_navigation.default_group %} active{% endif %}"
+      data-menu-submenu="{{ group.key }}"
+      {% if group.key != menu_navigation.default_group %}hidden{% endif %}
+    >
+      {% for section in group.sections %}
+      <button
+        type="button"
+        class="qr-cat-pill menu-nav-section-pill{% if section.key == group.default_section %} active{% endif %}"
+        data-menu-section="{{ section.key }}"
+        data-menu-section-group="{{ group.key }}"
+        aria-pressed="{{ 'true' if section.key == group.default_section else 'false' }}"
+      >{{ section.label }}{% if section.count %}<span class="menu-nav-count">{{ section.count }}</span>{% endif %}</button>
+      {% endfor %}
+    </div>
+    {% endfor %}
+  </div>
+</div>
