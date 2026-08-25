@@ -509,6 +509,203 @@ def sop_contribution(item: OperationalItem, include_components: bool = True, _de
     }
 
 
+def named_responsibility_summary(item: OperationalItem | None, fallback_user=None) -> dict:
+    """Return the live-ticket responsibility view from approved versions only.
+
+    Standard labour is attributed to primary/supervisor/approver assignments.
+    Backup and emergency assignments are shown separately and receive no
+    scheduled percentage until an execution-level substitution is recorded.
+    """
+
+    contributors = defaultdict(
+        lambda: {"name": "", "seconds": 0.0, "roles": set(), "sources": set()}
+    )
+    item_primary_seconds = defaultdict(float)
+    backups = defaultdict(lambda: {"name": "", "roles": set(), "sources": set()})
+    approved_versions = set()
+    unattributed_seconds = 0.0
+    has_approved_sop = False
+
+    def collect(profile, quantity_factor=1.0, depth=0, visited=None):
+        nonlocal unattributed_seconds, has_approved_sop
+        if not profile or depth > 4:
+            return
+        visited = set(visited or set())
+        if profile.id in visited:
+            return
+        visited.add(profile.id)
+        sop = current_sop(profile, include_draft=False)
+        if sop:
+            has_approved_sop = True
+            approved_versions.add(f"{profile.name} SOP v{sop.version_number}")
+            plan = current_plan(sop, include_draft=False)
+            assignment_map = defaultdict(list)
+            if plan:
+                now = datetime.utcnow()
+                for assignment in plan.assignments:
+                    if assignment.effective_from and assignment.effective_from > now:
+                        continue
+                    if assignment.effective_to and assignment.effective_to <= now:
+                        continue
+                    assignment_map[assignment.step_role_requirement_id].append(assignment)
+            for stage in sop.stages:
+                for step in stage.steps:
+                    for requirement in step.role_requirements:
+                        effort = (
+                            max(0, step.active_time_seconds)
+                            * max(0, requirement.participation_factor)
+                            * max(1, requirement.headcount)
+                            * max(0, quantity_factor)
+                        )
+                        assignments = assignment_map.get(requirement.id, [])
+                        active_people = [
+                            row
+                            for row in assignments
+                            if row.assignment_type in {"primary", "supervisor", "approver"}
+                        ]
+                        if active_people:
+                            per_person = effort / len(active_people)
+                            for assignment in active_people:
+                                detail = contributors[assignment.employee_id]
+                                detail["name"] = assignment.employee.full_name
+                                detail["seconds"] += per_person
+                                detail["roles"].add(requirement.role_name)
+                                detail["sources"].add(profile.name)
+                                if depth == 0 and assignment.assignment_type == "primary":
+                                    item_primary_seconds[assignment.employee_id] += per_person
+                        else:
+                            unattributed_seconds += effort
+                        for assignment in assignments:
+                            if assignment.assignment_type not in {"backup", "emergency"}:
+                                continue
+                            detail = backups[assignment.employee_id]
+                            detail["name"] = assignment.employee.full_name
+                            detail["roles"].add(requirement.role_name)
+                            detail["sources"].add(profile.name)
+
+        recipe = current_recipe(profile, include_draft=False)
+        if not recipe or depth >= 4:
+            return
+        for line in recipe.lines:
+            component = line.input_item
+            if not component or component.id in visited:
+                continue
+            component_sop = current_sop(component, include_draft=False)
+            component_yield = (
+                max(float(component_sop.yield_quantity or 1), 0.000001)
+                if component_sop
+                else 1.0
+            )
+            consumed_factor = max(0.0, float(line.quantity or 0)) / component_yield
+            loss_factor = 1 + max(0.0, float(line.yield_loss_percent or 0)) / 100
+            collect(
+                component,
+                quantity_factor * consumed_factor * loss_factor,
+                depth + 1,
+                visited,
+            )
+
+    collect(item)
+    named_total = sum(row["seconds"] for row in contributors.values())
+    total_seconds = named_total + unattributed_seconds
+
+    if not has_approved_sop and total_seconds <= 0 and fallback_user:
+        return {
+            "status": "assigned",
+            "primary": {
+                "employee_id": fallback_user.id,
+                "name": fallback_user.full_name,
+                "percentage": 100.0,
+            },
+            "contributors": [
+                {
+                    "employee_id": fallback_user.id,
+                    "name": fallback_user.full_name,
+                    "seconds": 0.0,
+                    "percentage": 100.0,
+                    "roles": ["Legacy menu responsibility"],
+                    "sources": [item.name if item else "Menu item"],
+                }
+            ],
+            "backups": [],
+            "unassigned_percentage": 0.0,
+            "total_labour_seconds": 0.0,
+            "basis": "Legacy menu responsibility (no approved operational SOP yet)",
+            "approved_versions": [],
+            "profile_item_id": item.id if item else None,
+        }
+
+    contributor_rows = []
+    for employee_id, detail in contributors.items():
+        contributor_rows.append(
+            {
+                "employee_id": employee_id,
+                "name": detail["name"],
+                "seconds": round(detail["seconds"], 2),
+                "percentage": round(detail["seconds"] * 100 / total_seconds, 2)
+                if total_seconds
+                else 0.0,
+                "roles": sorted(role.replace("_", " ").title() for role in detail["roles"]),
+                "sources": sorted(detail["sources"]),
+            }
+        )
+    contributor_rows.sort(key=lambda row: (-row["seconds"], row["name"].lower()))
+    backup_rows = [
+        {
+            "employee_id": employee_id,
+            "name": detail["name"],
+            "roles": sorted(role.replace("_", " ").title() for role in detail["roles"]),
+            "sources": sorted(detail["sources"]),
+        }
+        for employee_id, detail in backups.items()
+    ]
+    backup_rows.sort(key=lambda row: row["name"].lower())
+    contributor_by_employee = {
+        row["employee_id"]: row for row in contributor_rows
+    }
+    primary_employee_id = (
+        min(
+            item_primary_seconds,
+            key=lambda employee_id: (
+                -item_primary_seconds[employee_id],
+                contributors[employee_id]["name"].lower(),
+            ),
+        )
+        if item_primary_seconds
+        else None
+    )
+    primary = (
+        contributor_by_employee.get(primary_employee_id)
+        if primary_employee_id is not None
+        else (contributor_rows[0] if contributor_rows else None)
+    )
+    return {
+        "status": "assigned" if primary else "unassigned",
+        "primary": (
+            {
+                "employee_id": primary["employee_id"],
+                "name": primary["name"],
+                "percentage": primary["percentage"],
+            }
+            if primary
+            else None
+        ),
+        "contributors": contributor_rows,
+        "backups": backup_rows,
+        "unassigned_percentage": round(unattributed_seconds * 100 / total_seconds, 2)
+        if total_seconds
+        else 100.0,
+        "total_labour_seconds": round(total_seconds, 2),
+        "basis": (
+            "Approved operational SOP standard labour"
+            if has_approved_sop
+            else "No approved responsibility profile"
+        ),
+        "approved_versions": sorted(approved_versions),
+        "profile_item_id": item.id if item else None,
+    }
+
+
 def responsibility_assignments_for(sop: OperationalSopVersion | None):
     plan = current_plan(sop, include_draft=True)
     grouped = defaultdict(list)

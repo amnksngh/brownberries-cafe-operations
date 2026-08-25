@@ -137,6 +137,23 @@
   </aside>
 </section>
 
+<div id="kds-responsibility-modal" class="desc-modal hidden" role="dialog" aria-modal="true" aria-labelledby="kds-responsibility-title">
+  <div class="desc-dialog kds-responsibility-dialog">
+    <div class="split-head">
+      <div>
+        <p class="eyebrow">Item Responsibility</p>
+        <h3 id="kds-responsibility-title">Responsibility & Contribution</h3>
+        <p id="kds-responsibility-subtitle" class="muted"></p>
+      </div>
+      <button type="button" id="kds-responsibility-close" aria-label="Close responsibility details">×</button>
+    </div>
+    <div id="kds-responsibility-primary" class="kds-responsibility-primary"></div>
+    <div id="kds-responsibility-contributors" class="kds-responsibility-contributors"></div>
+    <div id="kds-responsibility-backups" class="kds-responsibility-backups"></div>
+    <p id="kds-responsibility-basis" class="muted kds-responsibility-basis"></p>
+  </div>
+</div>
+
 <script id="kds-order-cards-payload" type="application/json">{{ order_cards|tojson }}</script>
 <script id="kds-sop-library-payload" type="application/json">{{ sop_library|tojson }}</script>
 <script src="{{ url_for('static', filename='js/socket.io.min.js') }}"></script>
@@ -191,6 +208,14 @@
   const sopLibraryCount = document.getElementById("kds-library-count");
   const trainingWrap = document.getElementById("kds-training-wrap");
   const trainingList = document.getElementById("kds-training-list");
+  const responsibilityModal = document.getElementById("kds-responsibility-modal");
+  const responsibilityClose = document.getElementById("kds-responsibility-close");
+  const responsibilityTitle = document.getElementById("kds-responsibility-title");
+  const responsibilitySubtitle = document.getElementById("kds-responsibility-subtitle");
+  const responsibilityPrimary = document.getElementById("kds-responsibility-primary");
+  const responsibilityContributors = document.getElementById("kds-responsibility-contributors");
+  const responsibilityBackups = document.getElementById("kds-responsibility-backups");
+  const responsibilityBasis = document.getElementById("kds-responsibility-basis");
   const trainingModeKey = `kds_training_mode_v1:${station}`;
   const notifs = [];
   let announcementBusy = false;
@@ -411,6 +436,82 @@
     return `${orderId || "library"}:${itemId || ""}:${sizeLabel || ""}`;
   }
 
+  function responsibilityBadge(item, orderId) {
+    const responsibility = item?.responsibility || {};
+    const primary = responsibility.primary || null;
+    const label = primary?.name || "Unassigned";
+    const stateClass = primary ? "assigned" : "unassigned";
+    return `
+      <button
+        type="button"
+        class="kds-responsibility-badge ${stateClass}"
+        data-responsibility-order-id="${escapeHtml(String(orderId || ""))}"
+        data-responsibility-item-id="${Number(item?.id || 0)}"
+        aria-label="View responsibility and contribution for ${escapeHtml(item?.name || "this item")}"
+        title="View responsibility and contribution"
+      ><span aria-hidden="true">👤</span><span>${escapeHtml(label)}</span></button>`;
+  }
+
+  function boardItem(orderId, itemId) {
+    const card = orderCards.find((row) => String(row.id) === String(orderId));
+    const item = card?.items?.find((row) => Number(row.id) === Number(itemId));
+    return { card, item };
+  }
+
+  function closeResponsibilityModal() {
+    responsibilityModal?.classList.add("hidden");
+  }
+
+  function openResponsibilityModal(card, item) {
+    if (!item || !responsibilityModal) return;
+    const responsibility = item.responsibility || {};
+    const primary = responsibility.primary || null;
+    const contributors = Array.isArray(responsibility.contributors) ? responsibility.contributors : [];
+    const backups = Array.isArray(responsibility.backups) ? responsibility.backups : [];
+    const unassigned = Number(responsibility.unassigned_percentage || 0);
+    responsibilityTitle.textContent = `${item.name || "Item"} Responsibility`;
+    responsibilitySubtitle.textContent = `${card?.table_name || "Table"} • ${item.size_label || "Standard"} • x ${Number(item.qty || 0)}`;
+    responsibilityPrimary.innerHTML = primary
+      ? `<span>Primary responsible</span><strong>${escapeHtml(primary.name)}</strong><b>${Number(primary.percentage || 0).toFixed(2)}%</b>`
+      : `<span>Primary responsible</span><strong>Unassigned</strong><b>—</b>`;
+
+    const contributorRows = contributors.map((person) => `
+      <div class="kds-contributor-row">
+        <div><strong>${escapeHtml(person.name || "Unassigned")}</strong><small>${escapeHtml((person.roles || []).join(", ") || "Responsible person")}</small><small>${escapeHtml((person.sources || []).join(", ") || item.name || "Item")}</small></div>
+        <span>${Number(person.percentage || 0).toFixed(2)}%</span>
+      </div>`);
+    if (unassigned > 0) {
+      contributorRows.push(`
+        <div class="kds-contributor-row unassigned">
+          <div><strong>Unassigned</strong><small>Standard effort without a named primary person</small></div>
+          <span>${unassigned.toFixed(2)}%</span>
+        </div>`);
+    }
+    responsibilityContributors.innerHTML = `
+      <div class="split-head"><strong>Standard labour contribution</strong><span>${Number(responsibility.total_labour_seconds || 0).toFixed(0)} sec</span></div>
+      ${contributorRows.join("") || '<p class="muted">No approved responsibility contribution has been configured.</p>'}`;
+    responsibilityBackups.innerHTML = backups.length
+      ? `<strong>Backups</strong><div class="kds-backup-list">${backups.map((person) => `<span title="${escapeHtml((person.roles || []).join(", "))}">${escapeHtml(person.name)}</span>`).join("")}</div><p class="muted">Backups receive no standard share unless they substitute during actual production.</p>`
+      : '<strong>Backups</strong><p class="muted">No backup employees assigned.</p>';
+    const versions = Array.isArray(responsibility.approved_versions) && responsibility.approved_versions.length
+      ? ` • ${responsibility.approved_versions.join(" • ")}`
+      : "";
+    responsibilityBasis.textContent = `${responsibility.basis || "No approved responsibility profile"}${versions}`;
+    responsibilityModal.classList.remove("hidden");
+    responsibilityClose?.focus();
+  }
+
+  function bindResponsibilityBadges() {
+    board.querySelectorAll(".kds-responsibility-badge").forEach((button) => {
+      button.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        const match = boardItem(button.dataset.responsibilityOrderId, button.dataset.responsibilityItemId);
+        openResponsibilityModal(match.card, match.item);
+      });
+    });
+  }
+
   function renderGroupedBoard() {
     board.classList.add("grouped-kitchen-grid");
     board.style.setProperty("--kds-group-count", String(Math.max(1, groupedWorkstations.length)));
@@ -440,6 +541,7 @@
         const awaitingApproval = item.approval_status === "pending";
         return `
           <div class="kds-item-shell ${selectedSopKey === sopKey ? "active" : ""} ${awaitingApproval ? "approval-pending" : "approval-approved"} ${item.prep_status === "served" ? "item-served" : ""} ${escapeHtml(item.priority_class || "")} ">
+            ${responsibilityBadge(item, card.id)}
             <button type="button" class="kds-item-row" data-order-id="${card.id}" data-item-id="${item.id}">
               <div class="kds-item-main">
                 <strong>${escapeHtml(item.name)}</strong>
@@ -512,6 +614,7 @@
         renderBoard();
       });
     });
+    bindResponsibilityBadges();
 
     board.querySelectorAll(".kds-card-toggle").forEach((btn) => {
       btn.addEventListener("click", (event) => {
@@ -554,6 +657,7 @@
         const awaitingApproval = item.approval_status === "pending";
         return `
           <div class="kds-item-shell ${selectedSopKey === sopKey ? "active" : ""} ${awaitingApproval ? "approval-pending" : "approval-approved"} ${item.prep_status === "served" ? "item-served" : ""} ${escapeHtml(item.priority_class || "")} ">
+            ${responsibilityBadge(item, card.id)}
             <button type="button" class="kds-item-row" data-order-id="${card.id}" data-item-id="${item.id}">
               <div class="kds-item-main">
                 <strong>${escapeHtml(item.name)}</strong>
@@ -620,6 +724,7 @@
         renderBoard();
       });
     });
+    bindResponsibilityBadges();
 
     board.querySelectorAll(".kds-card-toggle").forEach((btn) => {
       btn.addEventListener("click", (event) => {
@@ -790,6 +895,15 @@
   }
 
   notifBell?.addEventListener("click", () => notifPanel.classList.toggle("hidden"));
+  responsibilityClose?.addEventListener("click", closeResponsibilityModal);
+  responsibilityModal?.addEventListener("click", (event) => {
+    if (event.target === responsibilityModal) closeResponsibilityModal();
+  });
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && !responsibilityModal?.classList.contains("hidden")) {
+      closeResponsibilityModal();
+    }
+  });
   document.getElementById("kds-card-backdrop")?.addEventListener("click", () => {
     expandedCardId = "";
     document.body.classList.remove("kds-card-expanded");

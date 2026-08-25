@@ -10,6 +10,8 @@ from app.models import (
     OperationalItem,
     OperationalRecipeLine,
     OperationalRecipeVersion,
+    OperationalResponsibilityAssignment,
+    OperationalResponsibilityPlanVersion,
     OperationalSopStage,
     OperationalSopStep,
     OperationalSopVersion,
@@ -19,8 +21,10 @@ from app.models import (
 )
 from app.operational_responsibility import (
     approve_sop,
+    approve_recipe,
     clone_sop,
     ensure_operational_items_seeded,
+    named_responsibility_summary,
     recipe_input_is_valid,
     sop_contribution,
 )
@@ -214,6 +218,150 @@ class OperationalResponsibilityTests(unittest.TestCase):
 
         self.assertFalse(recipe_input_is_valid(parent.id, component.id))
         self.assertFalse(recipe_input_is_valid(parent.id, parent.id))
+
+    def test_named_ticket_responsibility_inherits_component_effort(self):
+        admin = User(
+            full_name="Approving Admin",
+            email="approver@example.test",
+            password_hash="x",
+            role="admin",
+            active=True,
+        )
+        pasta_chef = User(
+            full_name="Pasta Chef",
+            email="pasta@example.test",
+            password_hash="x",
+            role="staff",
+            active=True,
+        )
+        prep_chef = User(
+            full_name="Prep Chef",
+            email="prep@example.test",
+            password_hash="x",
+            role="staff",
+            active=True,
+        )
+        backup = User(
+            full_name="Backup Chef",
+            email="backup@example.test",
+            password_hash="x",
+            role="staff",
+            active=True,
+        )
+        db.session.add_all([admin, pasta_chef, prep_chef, backup])
+        db.session.flush()
+        sauce = self._item("COMP-SAUCE-LIVE", "Live Sauce", "prepared_component")
+        pasta = self._item("MENU-PASTA-LIVE", "Live Pasta", "composite_item")
+        sauce_sop = self._sop_with_role(sauce, "prep_chef", 6000, yield_quantity=5000)
+        pasta_sop = self._sop_with_role(pasta, "pasta_chef", 300, yield_quantity=1)
+
+        sauce_requirement = sauce_sop.stages[0].steps[0].role_requirements[0]
+        pasta_requirement = pasta_sop.stages[0].steps[0].role_requirements[0]
+        sauce_plan = OperationalResponsibilityPlanVersion(
+            sop_version_id=sauce_sop.id, version_number=1, status="draft"
+        )
+        pasta_plan = OperationalResponsibilityPlanVersion(
+            sop_version_id=pasta_sop.id, version_number=1, status="draft"
+        )
+        db.session.add_all([sauce_plan, pasta_plan])
+        db.session.flush()
+        db.session.add_all(
+            [
+                OperationalResponsibilityAssignment(
+                    plan_version_id=sauce_plan.id,
+                    step_role_requirement_id=sauce_requirement.id,
+                    employee_id=prep_chef.id,
+                    assignment_type="primary",
+                ),
+                OperationalResponsibilityAssignment(
+                    plan_version_id=sauce_plan.id,
+                    step_role_requirement_id=sauce_requirement.id,
+                    employee_id=backup.id,
+                    assignment_type="backup",
+                ),
+                OperationalResponsibilityAssignment(
+                    plan_version_id=pasta_plan.id,
+                    step_role_requirement_id=pasta_requirement.id,
+                    employee_id=pasta_chef.id,
+                    assignment_type="primary",
+                ),
+            ]
+        )
+        recipe = OperationalRecipeVersion(
+            item_id=pasta.id,
+            version_number=1,
+            yield_quantity=1,
+            yield_unit="portion",
+            status="draft",
+        )
+        db.session.add(recipe)
+        db.session.flush()
+        db.session.add(
+            OperationalRecipeLine(
+                recipe_version_id=recipe.id,
+                input_item_id=sauce.id,
+                quantity=100,
+                unit="g",
+                yield_loss_percent=0,
+                preparation_timing="advance_batch",
+            )
+        )
+        approve_sop(sauce_sop, admin.id)
+        approve_sop(pasta_sop, admin.id)
+        approve_recipe(recipe, admin.id)
+        db.session.commit()
+
+        result = named_responsibility_summary(pasta)
+        by_name = {row["name"]: row for row in result["contributors"]}
+        self.assertEqual(result["primary"]["name"], "Pasta Chef")
+        self.assertEqual(result["total_labour_seconds"], 420)
+        self.assertEqual(by_name["Pasta Chef"]["seconds"], 300)
+        self.assertEqual(by_name["Pasta Chef"]["percentage"], 71.43)
+        self.assertEqual(by_name["Prep Chef"]["seconds"], 120)
+        self.assertEqual(by_name["Prep Chef"]["percentage"], 28.57)
+        self.assertEqual([row["name"] for row in result["backups"]], ["Backup Chef"])
+        self.assertEqual(result["unassigned_percentage"], 0)
+
+    def test_ticket_responsibility_uses_legacy_owner_until_sop_is_approved(self):
+        legacy_owner = User(
+            full_name="Legacy Barista",
+            email="legacy@example.test",
+            password_hash="x",
+            role="staff",
+            active=True,
+        )
+        item = self._item("LATTE-LEGACY", "Latte Legacy")
+        db.session.add(legacy_owner)
+        db.session.commit()
+
+        result = named_responsibility_summary(item, fallback_user=legacy_owner)
+
+        self.assertEqual(result["status"], "assigned")
+        self.assertEqual(result["primary"]["name"], "Legacy Barista")
+        self.assertEqual(result["contributors"][0]["percentage"], 100)
+        self.assertIn("Legacy menu responsibility", result["basis"])
+
+    def test_approved_unassigned_work_is_explicitly_unattributed(self):
+        admin = User(
+            full_name="Admin",
+            email="unassigned-admin@example.test",
+            password_hash="x",
+            role="admin",
+            active=True,
+        )
+        item = self._item("UNASSIGNED", "Unassigned Dish")
+        db.session.add(admin)
+        db.session.flush()
+        sop = self._sop_with_role(item, "chef", 90)
+        approve_sop(sop, admin.id)
+        db.session.commit()
+
+        result = named_responsibility_summary(item, fallback_user=admin)
+
+        self.assertEqual(result["status"], "unassigned")
+        self.assertIsNone(result["primary"])
+        self.assertEqual(result["contributors"], [])
+        self.assertEqual(result["unassigned_percentage"], 100)
 
 
 if __name__ == "__main__":

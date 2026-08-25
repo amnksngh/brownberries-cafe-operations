@@ -76,6 +76,7 @@ from .models import (
     MenuNavGroup,
     MenuNavSection,
     MenuType,
+    OperationalItem,
     StaffAttendance,
     StaffDocument,
     UserType,
@@ -92,6 +93,7 @@ from .models import (
     Workstation,
     WorkstationGroup,
 )
+from .operational_responsibility import named_responsibility_summary
 from .sms_gateway import send_sms_from_config
 from .staff_lifecycle import retire_staff_account
 from .rulebook import ensure_rulebook_default, next_rulebook_version
@@ -5063,6 +5065,30 @@ def _render_kitchen_display(
         .all()
     )
     recipe_map = {recipe.menu_item_id: recipe for recipe in recipes}
+    ticket_menu_items = {
+        order_item.menu_item_id: order_item.menu_item
+        for order in orders
+        for order_item in order.order_items
+        if order_item.menu_item
+        and (order_item.menu_item.prep_station or "").strip().lower() in station_slugs
+    }
+    operational_profiles = (
+        OperationalItem.query.filter(
+            OperationalItem.menu_item_id.in_(list(ticket_menu_items))
+        ).all()
+        if ticket_menu_items
+        else []
+    )
+    profile_by_menu_item_id = {
+        profile.menu_item_id: profile for profile in operational_profiles if profile.menu_item_id
+    }
+    responsibility_map = {
+        menu_item_id: named_responsibility_summary(
+            profile_by_menu_item_id.get(menu_item_id),
+            fallback_user=menu_item.chef,
+        )
+        for menu_item_id, menu_item in ticket_menu_items.items()
+    }
     table_cards_map = {}
     prep_minutes = []
     status_changed = False
@@ -5134,6 +5160,10 @@ def _render_kitchen_display(
                     "ordered_at": _format_ist(order.created_at, "%I:%M:%S %p"),
                     "priority_sort": created_local.isoformat() if created_local else "",
                     "sop": sop,
+                    "responsibility": responsibility_map.get(oi.menu_item_id)
+                    or named_responsibility_summary(
+                        None, fallback_user=oi.menu_item.chef
+                    ),
                 }
             )
         card["expected_minutes"] = max(int(card["expected_minutes"] or 0), order_expected)
