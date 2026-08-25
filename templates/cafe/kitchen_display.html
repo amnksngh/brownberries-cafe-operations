@@ -151,11 +151,39 @@
     <div id="kds-responsibility-contributors" class="kds-responsibility-contributors"></div>
     <div id="kds-responsibility-backups" class="kds-responsibility-backups"></div>
     <p id="kds-responsibility-basis" class="muted kds-responsibility-basis"></p>
+    <section id="kds-responsibility-editor" class="kds-responsibility-editor hidden">
+      <div class="split-head">
+        <strong>Change today’s ownership</strong>
+        <span class="tag">Operational override</span>
+      </div>
+      <p id="kds-responsibility-scope" class="muted"></p>
+      <div id="kds-responsibility-candidates" class="kds-responsibility-candidates"></div>
+      <div class="kds-responsibility-allocation-total">
+        <span>Selected contribution</span>
+        <strong id="kds-responsibility-total">0.00%</strong>
+      </div>
+      <div class="kds-responsibility-fields">
+        <label>Reason
+          <select id="kds-responsibility-reason"></select>
+        </label>
+        <label>Note
+          <input id="kds-responsibility-note" maxlength="500" placeholder="Optional shift note" />
+        </label>
+      </div>
+      <p id="kds-responsibility-editor-status" class="muted" role="status"></p>
+      <div class="kds-responsibility-actions">
+        <button type="button" id="kds-responsibility-apply" class="primary">Apply to this ticket + new orders today</button>
+        <button type="button" id="kds-responsibility-restore">Restore default for this ticket + new orders</button>
+      </div>
+      <p class="muted kds-responsibility-history-note">Tickets already created under an earlier assignment retain it as their historical operational owner.</p>
+    </section>
   </div>
 </div>
 
 <script id="kds-order-cards-payload" type="application/json">{{ order_cards|tojson }}</script>
 <script id="kds-sop-library-payload" type="application/json">{{ sop_library|tojson }}</script>
+<script id="kds-responsibility-candidates-payload" type="application/json">{{ responsibility_candidates|tojson }}</script>
+<script id="kds-responsibility-reasons-payload" type="application/json">{{ responsibility_reasons|tojson }}</script>
 <script src="{{ url_for('static', filename='js/socket.io.min.js') }}"></script>
 <script>
   const notifSoundUrl = "{{ url_for('static', filename='sounds/notification.wav') }}";
@@ -175,6 +203,8 @@
   const currentPageUrl = {{ current_page_url|tojson }};
   const statusUpdateUrlTemplate = {{ status_update_url_template|tojson }};
   const itemStatusUpdateUrlTemplate = {{ item_status_update_url_template|tojson }};
+  const responsibilityUpdateUrlTemplate = {{ responsibility_update_url_template|tojson }};
+  const responsibilityCanEdit = {{ 'true' if responsibility_can_edit else 'false' }};
   const kioskMode = {{ 'true' if kiosk_mode else 'false' }};
   const socketState = document.getElementById("socket-state");
   const soundVolumeInput = document.getElementById("sound-volume");
@@ -216,6 +246,15 @@
   const responsibilityContributors = document.getElementById("kds-responsibility-contributors");
   const responsibilityBackups = document.getElementById("kds-responsibility-backups");
   const responsibilityBasis = document.getElementById("kds-responsibility-basis");
+  const responsibilityEditor = document.getElementById("kds-responsibility-editor");
+  const responsibilityScope = document.getElementById("kds-responsibility-scope");
+  const responsibilityCandidates = document.getElementById("kds-responsibility-candidates");
+  const responsibilityTotal = document.getElementById("kds-responsibility-total");
+  const responsibilityReason = document.getElementById("kds-responsibility-reason");
+  const responsibilityNote = document.getElementById("kds-responsibility-note");
+  const responsibilityEditorStatus = document.getElementById("kds-responsibility-editor-status");
+  const responsibilityApply = document.getElementById("kds-responsibility-apply");
+  const responsibilityRestore = document.getElementById("kds-responsibility-restore");
   const trainingModeKey = `kds_training_mode_v1:${station}`;
   const notifs = [];
   let announcementBusy = false;
@@ -229,6 +268,9 @@
   let boardRefreshInFlight = false;
   let boardRefreshPending = false;
   let expandedCardId = "";
+  let activeResponsibilityContext = null;
+  const responsibilityCandidatesByItem = loadJsonScript("kds-responsibility-candidates-payload", {});
+  const responsibilityReasons = loadJsonScript("kds-responsibility-reasons-payload", []);
 
   const soundPrefKey = `kitchen_sound_enabled_v1:${station}`;
   const soundVolumeKey = `kitchen_sound_volume_v1:${station}`;
@@ -460,6 +502,126 @@
 
   function closeResponsibilityModal() {
     responsibilityModal?.classList.add("hidden");
+    activeResponsibilityContext = null;
+  }
+
+  function responsibilityAllocationRows() {
+    return Array.from(responsibilityCandidates?.querySelectorAll(".kds-owner-option") || []);
+  }
+
+  function updateResponsibilityAllocationTotal() {
+    const rows = responsibilityAllocationRows();
+    const selected = rows.filter((row) => row.querySelector('input[type="checkbox"]')?.checked);
+    const total = selected.reduce((sum, row) => sum + Number(row.querySelector('input[type="number"]')?.value || 0), 0);
+    responsibilityTotal.textContent = `${total.toFixed(2)}%`;
+    responsibilityTotal.classList.toggle("invalid", Math.abs(total - 100) > 0.05);
+    responsibilityApply.disabled = !selected.length || Math.abs(total - 100) > 0.05;
+  }
+
+  function distributeResponsibilityEvenly() {
+    const rows = responsibilityAllocationRows();
+    const selected = rows.filter((row) => row.querySelector('input[type="checkbox"]')?.checked);
+    rows.forEach((row) => {
+      const percentage = row.querySelector('input[type="number"]');
+      const checked = row.querySelector('input[type="checkbox"]')?.checked;
+      percentage.disabled = !checked;
+      if (!checked) percentage.value = "0.00";
+    });
+    if (selected.length) {
+      const equal = Math.floor((10000 / selected.length)) / 100;
+      let assigned = 0;
+      selected.forEach((row, index) => {
+        const value = index === selected.length - 1 ? Number((100 - assigned).toFixed(2)) : equal;
+        row.querySelector('input[type="number"]').value = value.toFixed(2);
+        assigned += value;
+      });
+    }
+    updateResponsibilityAllocationTotal();
+  }
+
+  function renderResponsibilityEditor(card, item, responsibility) {
+    if (!responsibilityCanEdit) {
+      responsibilityEditor.classList.add("hidden");
+      return;
+    }
+    const candidates = responsibilityCandidatesByItem[String(item.menu_item_id || "")] || [];
+    const contributors = Array.isArray(responsibility.contributors) ? responsibility.contributors : [];
+    const selectedById = new Map(contributors.map((person) => [Number(person.employee_id), Number(person.percentage || 0)]));
+    const backupIds = new Set((responsibility.default_backups || responsibility.backups || []).map((person) => Number(person.employee_id)));
+    const defaultPrimaryId = Number((responsibility.default_primary || responsibility.primary || {}).employee_id || 0);
+    const override = responsibility.override || null;
+    activeResponsibilityContext = { card, item };
+    responsibilityEditor.classList.remove("hidden");
+    responsibilityScope.textContent = override
+      ? `${override.reason_label || "Temporary coverage"} is active for this ticket${override.active_for_future ? " and new orders today" : " only"}. Default primary: ${responsibility.default_primary?.name || "Unassigned"}.`
+      : `The approved/default responsibility is active. A change covers this ticket and new ${item.name || "item"} orders for the rest of today.`;
+    responsibilityCandidates.innerHTML = candidates.length
+      ? candidates.map((person) => {
+          const selectedPercentage = selectedById.get(Number(person.id));
+          const checked = selectedPercentage !== undefined;
+          const planLabel = Number(person.id) === defaultPrimaryId
+            ? " • Default primary"
+            : (backupIds.has(Number(person.id)) ? " • Default backup" : "");
+          return `
+            <label class="kds-owner-option">
+              <input type="checkbox" value="${Number(person.id)}" ${checked ? "checked" : ""} />
+              <span><strong>${escapeHtml(person.name)}</strong><small>${escapeHtml(person.roles || "Staff")}${escapeHtml(planLabel)}</small></span>
+              <input type="number" min="0.01" max="100" step="0.01" value="${checked ? selectedPercentage.toFixed(2) : "0.00"}" ${checked ? "" : "disabled"} aria-label="${escapeHtml(person.name)} contribution percentage" />
+              <b>%</b>
+            </label>`;
+        }).join("")
+      : '<p class="muted">No active production employees are available for selection.</p>';
+    responsibilityReason.innerHTML = responsibilityReasons.map((row) => `<option value="${escapeHtml(row.value)}">${escapeHtml(row.label)}</option>`).join("");
+    responsibilityReason.value = override?.reason || "temporary_coverage";
+    responsibilityNote.value = override?.note || "";
+    responsibilityEditorStatus.textContent = "";
+    responsibilityEditorStatus.classList.remove("error", "success");
+    responsibilityAllocationRows().forEach((row) => {
+      row.querySelector('input[type="checkbox"]')?.addEventListener("change", distributeResponsibilityEvenly);
+      row.querySelector('input[type="number"]')?.addEventListener("input", updateResponsibilityAllocationTotal);
+    });
+    updateResponsibilityAllocationTotal();
+  }
+
+  async function submitResponsibilityChange(action) {
+    const context = activeResponsibilityContext;
+    if (!context?.item) return;
+    const formData = new FormData();
+    formData.set("action", action);
+    if (action === "assign") {
+      const allocations = responsibilityAllocationRows()
+        .filter((row) => row.querySelector('input[type="checkbox"]')?.checked)
+        .map((row) => ({
+          employee_id: Number(row.querySelector('input[type="checkbox"]').value),
+          percentage: Number(row.querySelector('input[type="number"]').value || 0),
+        }));
+      formData.set("allocations_json", JSON.stringify(allocations));
+      formData.set("reason", responsibilityReason.value || "temporary_coverage");
+      formData.set("note", responsibilityNote.value || "");
+    }
+    responsibilityApply.disabled = true;
+    responsibilityRestore.disabled = true;
+    responsibilityEditorStatus.textContent = action === "restore" ? "Restoring default…" : "Applying ownership…";
+    responsibilityEditorStatus.classList.remove("error", "success");
+    try {
+      const response = await fetch(
+        responsibilityUpdateUrlTemplate.replace("/0/responsibility", `/${context.item.id}/responsibility`),
+        { method: "POST", body: formData, credentials: "same-origin" },
+      );
+      const payload = await response.json();
+      if (!response.ok || !payload.ok) throw new Error(payload.message || `Update failed with ${response.status}`);
+      context.item.responsibility = payload.responsibility || context.item.responsibility;
+      renderBoard();
+      openResponsibilityModal(context.card, context.item);
+      responsibilityEditorStatus.textContent = payload.message || "Responsibility updated.";
+      responsibilityEditorStatus.classList.add("success");
+    } catch (error) {
+      responsibilityEditorStatus.textContent = error.message || "Responsibility could not be updated.";
+      responsibilityEditorStatus.classList.add("error");
+      updateResponsibilityAllocationTotal();
+    } finally {
+      responsibilityRestore.disabled = false;
+    }
   }
 
   function openResponsibilityModal(card, item) {
@@ -497,6 +659,7 @@
       ? ` • ${responsibility.approved_versions.join(" • ")}`
       : "";
     responsibilityBasis.textContent = `${responsibility.basis || "No approved responsibility profile"}${versions}`;
+    renderResponsibilityEditor(card, item, responsibility);
     responsibilityModal.classList.remove("hidden");
     responsibilityClose?.focus();
   }
@@ -896,6 +1059,8 @@
 
   notifBell?.addEventListener("click", () => notifPanel.classList.toggle("hidden"));
   responsibilityClose?.addEventListener("click", closeResponsibilityModal);
+  responsibilityApply?.addEventListener("click", () => submitResponsibilityChange("assign"));
+  responsibilityRestore?.addEventListener("click", () => submitResponsibilityChange("restore"));
   responsibilityModal?.addEventListener("click", (event) => {
     if (event.target === responsibilityModal) closeResponsibilityModal();
   });

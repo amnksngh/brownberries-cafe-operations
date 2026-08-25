@@ -172,6 +172,8 @@ def _ensure_sqlite_schema_columns():
             "approval_status": "TEXT NOT NULL DEFAULT 'pending'",
             "is_parcel": "BOOLEAN NOT NULL DEFAULT 0",
             "prep_status": "TEXT NOT NULL DEFAULT 'pending'",
+            "responsibility_override_id": "INTEGER",
+            "responsibility_assignment_mode": "TEXT NOT NULL DEFAULT 'default'",
         },
         "cash_counter_entry": {
             "is_deleted": "BOOLEAN NOT NULL DEFAULT 0",
@@ -338,6 +340,9 @@ def _ensure_sqlite_schema_columns():
     )
     db.session.execute(
         text("CREATE INDEX IF NOT EXISTS idx_cafe_order_item_prep_status ON cafe_order_item (prep_status)")
+    )
+    db.session.execute(
+        text("CREATE INDEX IF NOT EXISTS idx_cafe_order_item_responsibility_override ON cafe_order_item (responsibility_override_id)")
     )
     db.session.execute(
         text("CREATE INDEX IF NOT EXISTS idx_cash_counter_entry_occurred ON cash_counter_entry (occurred_at)")

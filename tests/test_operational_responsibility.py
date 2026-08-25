@@ -1,12 +1,16 @@
-from datetime import datetime
+from datetime import date, datetime
 import unittest
 
 from flask import Flask
 
 from app.extensions import db
 from app.models import (
+    CafeOrder,
+    CafeOrderItem,
+    CafeTable,
     MenuCategory,
     MenuItem,
+    OperationalDailyOwnershipOverride,
     OperationalItem,
     OperationalRecipeLine,
     OperationalRecipeVersion,
@@ -20,6 +24,8 @@ from app.models import (
     Workstation,
 )
 from app.operational_responsibility import (
+    active_daily_ownership_override,
+    apply_daily_ownership_override,
     approve_sop,
     approve_recipe,
     clone_sop,
@@ -27,6 +33,9 @@ from app.operational_responsibility import (
     named_responsibility_summary,
     recipe_input_is_valid,
     sop_contribution,
+    restore_default_daily_ownership,
+    set_daily_ownership_override,
+    snapshot_active_daily_ownership,
 )
 
 
@@ -362,6 +371,157 @@ class OperationalResponsibilityTests(unittest.TestCase):
         self.assertIsNone(result["primary"])
         self.assertEqual(result["contributors"], [])
         self.assertEqual(result["unassigned_percentage"], 100)
+
+    def test_daily_override_covers_clicked_and_future_tickets_then_restores_default(self):
+        category = MenuCategory(name="Beverages")
+        table = CafeTable(name="T01", qr_slug="t01-test", seating_capacity=2)
+        primary = User(
+            full_name="Default Barista",
+            email="default-barista@example.test",
+            password_hash="x",
+            role="barista",
+            active=True,
+        )
+        backup = User(
+            full_name="Backup Barista",
+            email="backup-barista@example.test",
+            password_hash="x",
+            role="barista",
+            active=True,
+        )
+        second = User(
+            full_name="Second Barista",
+            email="second-barista@example.test",
+            password_hash="x",
+            role="barista",
+            active=True,
+        )
+        db.session.add_all([category, table, primary, backup, second])
+        db.session.flush()
+        menu_item = MenuItem(
+            category_id=category.id,
+            item_type="Coffee",
+            name="Classic Cold Coffee",
+            price=150,
+            prep_station="barista",
+            chef_user_id=primary.id,
+        )
+        db.session.add(menu_item)
+        db.session.flush()
+        order = CafeOrder(
+            table_id=table.id,
+            ordered_by_user_id=primary.id,
+            status="open",
+        )
+        db.session.add(order)
+        db.session.flush()
+        clicked = CafeOrderItem(
+            order_id=order.id,
+            menu_item_id=menu_item.id,
+            quantity=1,
+            unit_price=150,
+            approval_status="approved",
+            prep_status="pending",
+        )
+        db.session.add(clicked)
+        db.session.flush()
+        service_date = date.today()
+
+        first_override = set_daily_ownership_override(
+            clicked,
+            service_date,
+            [(backup, 100)],
+            reason="leave",
+            actor_id=primary.id,
+        )
+        db.session.commit()
+        self.assertEqual(clicked.responsibility_assignment_mode, "override")
+        self.assertEqual(active_daily_ownership_override(menu_item.id, service_date).id, first_override.id)
+
+        later_order = CafeOrder(
+            table_id=table.id,
+            ordered_by_user_id=primary.id,
+            status="open",
+        )
+        db.session.add(later_order)
+        db.session.flush()
+        later_ticket = CafeOrderItem(
+            order_id=later_order.id,
+            menu_item_id=menu_item.id,
+            quantity=1,
+            unit_price=150,
+        )
+        db.session.add(later_ticket)
+        snapshot_active_daily_ownership(later_ticket, service_date)
+        db.session.flush()
+        self.assertEqual(later_ticket.responsibility_override_id, first_override.id)
+
+        shared_override = set_daily_ownership_override(
+            clicked,
+            service_date,
+            [(backup, 60), (second, 40)],
+            reason="multiple_staff",
+            actor_id=primary.id,
+        )
+        db.session.commit()
+        self.assertIsNotNone(first_override.effective_to)
+        self.assertEqual(later_ticket.responsibility_override_id, first_override.id)
+        base = named_responsibility_summary(None, fallback_user=primary)
+        summary = apply_daily_ownership_override(base, shared_override)
+        self.assertEqual(summary["primary"]["name"], "Backup Barista")
+        self.assertEqual(
+            [(row["name"], row["percentage"]) for row in summary["contributors"]],
+            [("Backup Barista", 60), ("Second Barista", 40)],
+        )
+
+        latest_order = CafeOrder(
+            table_id=table.id,
+            ordered_by_user_id=primary.id,
+            status="open",
+        )
+        db.session.add(latest_order)
+        db.session.flush()
+        latest_ticket = CafeOrderItem(
+            order_id=latest_order.id,
+            menu_item_id=menu_item.id,
+            quantity=1,
+            unit_price=150,
+        )
+        db.session.add(latest_ticket)
+        snapshot_active_daily_ownership(latest_ticket, service_date)
+        db.session.flush()
+        self.assertEqual(latest_ticket.responsibility_override_id, shared_override.id)
+
+        restore_default_daily_ownership(
+            clicked,
+            service_date,
+            actor_id=primary.id,
+        )
+        db.session.commit()
+        self.assertEqual(clicked.responsibility_assignment_mode, "default")
+        self.assertEqual(clicked.responsibility_override_id, shared_override.id)
+        self.assertIsNone(active_daily_ownership_override(menu_item.id, service_date))
+        self.assertEqual(latest_ticket.responsibility_assignment_mode, "override")
+        self.assertEqual(OperationalDailyOwnershipOverride.query.count(), 2)
+
+        after_restore_order = CafeOrder(
+            table_id=table.id,
+            ordered_by_user_id=primary.id,
+            status="open",
+        )
+        db.session.add(after_restore_order)
+        db.session.flush()
+        after_restore_ticket = CafeOrderItem(
+            order_id=after_restore_order.id,
+            menu_item_id=menu_item.id,
+            quantity=1,
+            unit_price=150,
+        )
+        db.session.add(after_restore_ticket)
+        snapshot_active_daily_ownership(after_restore_ticket, service_date)
+        db.session.flush()
+        self.assertEqual(after_restore_ticket.responsibility_assignment_mode, "default")
+        self.assertIsNone(after_restore_ticket.responsibility_override_id)
 
 
 if __name__ == "__main__":

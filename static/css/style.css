@@ -2966,7 +2966,7 @@ th {
 }
 
 .kds-responsibility-dialog {
-  width: min(620px, 95vw);
+  width: min(680px, 95vw);
   max-height: min(82vh, 760px);
   overflow-y: auto;
 }
@@ -3053,6 +3053,126 @@ th {
   padding-top: 0.65rem;
   border-top: 1px solid var(--line);
   font-size: 0.76rem;
+}
+
+.kds-responsibility-editor {
+  margin-top: 0.9rem;
+  padding: 0.82rem;
+  border: 1px solid rgba(84, 104, 67, 0.2);
+  border-radius: 11px;
+  background: #fbfcf8;
+}
+
+.kds-responsibility-editor > .muted {
+  margin: 0.38rem 0 0.65rem;
+}
+
+.kds-responsibility-candidates {
+  display: grid;
+  gap: 0.35rem;
+  max-height: 230px;
+  overflow-y: auto;
+  padding-right: 0.2rem;
+}
+
+.kds-owner-option {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) 5.4rem auto;
+  align-items: center;
+  gap: 0.48rem;
+  padding: 0.48rem 0.55rem;
+  border: 1px solid rgba(111, 74, 53, 0.13);
+  border-radius: 9px;
+  background: #fff;
+}
+
+.kds-owner-option > input[type="checkbox"] {
+  width: 1rem;
+  height: 1rem;
+}
+
+.kds-owner-option span,
+.kds-owner-option small {
+  min-width: 0;
+}
+
+.kds-owner-option small {
+  display: block;
+  margin-top: 0.1rem;
+  color: var(--muted);
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.kds-owner-option input[type="number"] {
+  width: 100%;
+  min-width: 0;
+  padding: 0.34rem 0.4rem;
+}
+
+.kds-owner-option b {
+  color: var(--muted);
+}
+
+.kds-responsibility-allocation-total {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-top: 0.52rem;
+  padding: 0.42rem 0.2rem;
+}
+
+.kds-responsibility-allocation-total strong {
+  color: #216b3f;
+}
+
+.kds-responsibility-allocation-total strong.invalid {
+  color: #b64d32;
+}
+
+.kds-responsibility-fields {
+  display: grid;
+  grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.2fr);
+  gap: 0.6rem;
+}
+
+.kds-responsibility-fields label {
+  display: grid;
+  gap: 0.24rem;
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+.kds-responsibility-fields select,
+.kds-responsibility-fields input {
+  width: 100%;
+}
+
+.kds-responsibility-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.48rem;
+  margin-top: 0.58rem;
+}
+
+.kds-responsibility-actions button {
+  flex: 1 1 15rem;
+}
+
+.kds-responsibility-editor-status.error {
+  color: #b64d32;
+}
+
+.kds-responsibility-editor-status.success {
+  color: #216b3f;
+  font-weight: 700;
+}
+
+.kds-responsibility-history-note {
+  margin-bottom: 0 !important;
+  font-size: 0.72rem;
 }
 
 .kds-item-main strong {

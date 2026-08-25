@@ -76,6 +76,8 @@ from .models import (
     MenuNavGroup,
     MenuNavSection,
     MenuType,
+    OperationalDailyOwnershipOverride,
+    OperationalDailyOwnershipParticipant,
     OperationalItem,
     StaffAttendance,
     StaffDocument,
@@ -93,7 +95,16 @@ from .models import (
     Workstation,
     WorkstationGroup,
 )
-from .operational_responsibility import named_responsibility_summary
+from .operational_responsibility import (
+    DAILY_OWNERSHIP_REASON_LABELS,
+    DAILY_OWNERSHIP_REASONS,
+    active_daily_ownership_override,
+    apply_daily_ownership_override,
+    named_responsibility_summary,
+    restore_default_daily_ownership,
+    set_daily_ownership_override,
+    snapshot_active_daily_ownership,
+)
 from .sms_gateway import send_sms_from_config
 from .staff_lifecycle import retire_staff_account
 from .rulebook import ensure_rulebook_default, next_rulebook_version
@@ -2312,18 +2323,18 @@ def create_cafe_order(
             size_label = None
             unit_price = None
         price_to_use = float(unit_price) if unit_price is not None else float(menu_item.price)
-        db.session.add(
-            CafeOrderItem(
-                order_id=order.id,
-                menu_item_id=menu_item.id,
-                quantity=qty,
-                unit_price=price_to_use,
-                size_label=size_label,
-                is_parcel=bool(is_parcel),
-                approval_status="pending" if status == "pending_approval" else "approved",
-                prep_status="pending",
-            )
+        order_item = CafeOrderItem(
+            order_id=order.id,
+            menu_item_id=menu_item.id,
+            quantity=qty,
+            unit_price=price_to_use,
+            size_label=size_label,
+            is_parcel=bool(is_parcel),
+            approval_status="pending" if status == "pending_approval" else "approved",
+            prep_status="pending",
         )
+        db.session.add(order_item)
+        snapshot_active_daily_ownership(order_item, today)
 
     delivery_distance_km = 0.0
     delivery_charge = 0.0
@@ -5017,6 +5028,151 @@ def reception_kiosk_settlement_feedback(access_key, order_id):
     return _render_feedback_form(order, source="offline", kiosk_mode=True, kiosk_access_key=access_key)
 
 
+def _responsibility_candidate_users(menu_item: MenuItem | None) -> list[User]:
+    station = (menu_item.prep_station if menu_item else "").strip().lower()
+    production_roles = {"owner", "admin", "manager"}
+    production_roles.update(
+        {"barista"} if station == "barista" else {"chef", "staff"}
+    )
+    excluded_names = {"qr guest", "delivery guest"}
+    users = [
+        user
+        for user in User.query.filter_by(active=True).order_by(User.full_name.asc()).all()
+        if (user.full_name or "").strip().lower() not in excluded_names
+        and production_roles.intersection(user.assigned_roles())
+    ]
+    preferred_role = "barista" if station == "barista" else "chef"
+    users.sort(
+        key=lambda user: (
+            preferred_role not in user.assigned_roles(),
+            user.full_name.lower(),
+        )
+    )
+    return users
+
+
+def _ticket_responsibility_summary(order_item: CafeOrderItem) -> dict:
+    profile = OperationalItem.query.filter_by(menu_item_id=order_item.menu_item_id).first()
+    base = named_responsibility_summary(
+        profile,
+        fallback_user=order_item.menu_item.chef if order_item.menu_item else None,
+    )
+    override = (
+        order_item.responsibility_override
+        if (order_item.responsibility_assignment_mode or "default") == "override"
+        else None
+    )
+    return apply_daily_ownership_override(base, override)
+
+
+def _parse_daily_ownership_allocations(menu_item: MenuItem):
+    try:
+        rows = json.loads(request.form.get("allocations_json") or "[]")
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return None, "The responsibility allocation could not be read."
+    if not isinstance(rows, list) or not rows:
+        return None, "Choose at least one responsible person."
+    candidate_map = {
+        user.id: user for user in _responsibility_candidate_users(menu_item)
+    }
+    allocations = []
+    seen = set()
+    for row in rows:
+        if not isinstance(row, dict):
+            return None, "Each responsibility allocation must be a person and percentage."
+        try:
+            employee_id = int(row.get("employee_id"))
+            percentage = round(float(row.get("percentage")), 2)
+        except (TypeError, ValueError):
+            return None, "Every selected person needs a valid percentage."
+        if employee_id in seen or employee_id not in candidate_map:
+            return None, "One or more selected employees are invalid or duplicated."
+        if percentage <= 0 or percentage > 100:
+            return None, "Every contribution must be greater than 0% and at most 100%."
+        seen.add(employee_id)
+        allocations.append((candidate_map[employee_id], percentage))
+    if abs(sum(percentage for _, percentage in allocations) - 100) > 0.05:
+        return None, "Selected contribution percentages must total exactly 100%."
+    return allocations, ""
+
+
+def _update_order_item_responsibility_impl(
+    item_id: int,
+    *,
+    actor: User | None,
+    created_via: str,
+):
+    order_item = CafeOrderItem.query.options(
+        joinedload(CafeOrderItem.order),
+        joinedload(CafeOrderItem.menu_item),
+        joinedload(CafeOrderItem.responsibility_override)
+        .joinedload(OperationalDailyOwnershipOverride.participants)
+        .joinedload(OperationalDailyOwnershipParticipant.employee),
+    ).get_or_404(item_id)
+    service_date = _order_local_date(order_item.order)
+    today_ist = datetime.now(IST_TZ).date()
+    if service_date != today_ist:
+        return jsonify({"ok": False, "message": "Only today's tickets can be reassigned from the display."}), 422
+    if (order_item.order.status or "").strip().lower() not in {
+        "pending_approval",
+        "open",
+        "preparing",
+        "ready",
+        "served",
+    }:
+        return jsonify({"ok": False, "message": "Only active order tickets can be reassigned."}), 422
+    if (order_item.approval_status or "pending") == "rejected":
+        return jsonify({"ok": False, "message": "Rejected items cannot be reassigned."}), 422
+
+    action = (request.form.get("action") or "assign").strip().lower()
+    if action == "restore":
+        restore_default_daily_ownership(
+            order_item,
+            service_date,
+            actor_id=actor.id if actor else None,
+        )
+        message = (
+            f"{order_item.menu_item.name} restored to its default responsibility for this "
+            "ticket and new orders today."
+        )
+    elif action == "assign":
+        allocations, error = _parse_daily_ownership_allocations(order_item.menu_item)
+        if error:
+            return jsonify({"ok": False, "message": error}), 422
+        reason = (request.form.get("reason") or "temporary_coverage").strip().lower()
+        if reason not in DAILY_OWNERSHIP_REASON_LABELS:
+            return jsonify({"ok": False, "message": "Choose a valid reassignment reason."}), 422
+        override = set_daily_ownership_override(
+            order_item,
+            service_date,
+            allocations,
+            reason=reason,
+            note=(request.form.get("note") or "").strip()[:500],
+            actor_id=actor.id if actor else None,
+            created_via=created_via,
+        )
+        names = ", ".join(row.employee.full_name for row in override.participants)
+        message = (
+            f"{order_item.menu_item.name} assigned to {names} for this ticket and new "
+            "orders today."
+        )
+    else:
+        return jsonify({"ok": False, "message": "Invalid responsibility action."}), 422
+
+    db.session.commit()
+    responsibility = _ticket_responsibility_summary(order_item)
+    payload = _serialize_order(order_item.order)
+    socketio.emit("order_updated", payload, namespace="/kitchen")
+    return jsonify(
+        {
+            "ok": True,
+            "message": message,
+            "order_item_id": order_item.id,
+            "responsibility": responsibility,
+        }
+    )
+
+
 def _render_kitchen_display(
     station: str = "kitchen",
     kiosk_mode: bool = False,
@@ -5053,6 +5209,10 @@ def _render_kitchen_display(
         .options(
             joinedload(CafeOrder.table),
             joinedload(CafeOrder.order_items).joinedload(CafeOrderItem.menu_item),
+            joinedload(CafeOrder.order_items)
+            .joinedload(CafeOrderItem.responsibility_override)
+            .joinedload(OperationalDailyOwnershipOverride.participants)
+            .joinedload(OperationalDailyOwnershipParticipant.employee),
         )
         .distinct()
         .order_by(CafeOrder.created_at.asc())
@@ -5143,6 +5303,7 @@ def _render_kitchen_display(
             card["items"].append(
                 {
                     "id": oi.id,
+                    "menu_item_id": oi.menu_item_id,
                     "name": oi.menu_item.name,
                     "qty": int(oi.quantity or 0),
                     "prep_station": (oi.menu_item.prep_station or "").strip().lower(),
@@ -5160,9 +5321,15 @@ def _render_kitchen_display(
                     "ordered_at": _format_ist(order.created_at, "%I:%M:%S %p"),
                     "priority_sort": created_local.isoformat() if created_local else "",
                     "sop": sop,
-                    "responsibility": responsibility_map.get(oi.menu_item_id)
-                    or named_responsibility_summary(
-                        None, fallback_user=oi.menu_item.chef
+                    "responsibility": apply_daily_ownership_override(
+                        responsibility_map.get(oi.menu_item_id)
+                        or named_responsibility_summary(
+                            None, fallback_user=oi.menu_item.chef
+                        ),
+                        oi.responsibility_override
+                        if (oi.responsibility_assignment_mode or "default")
+                        == "override"
+                        else None,
                     ),
                 }
             )
@@ -5247,6 +5414,17 @@ def _render_kitchen_display(
         for recipe in sorted(recipes, key=lambda r: (r.menu_item.name.lower() if r.menu_item else ""))
     ]
     avg_ticket_minutes = round(sum(prep_minutes) / len(prep_minutes), 1) if prep_minutes else 0
+    responsibility_candidates = {
+        str(menu_item_id): [
+            {
+                "id": user.id,
+                "name": user.full_name,
+                "roles": user.display_roles(),
+            }
+            for user in _responsibility_candidate_users(menu_item)
+        ]
+        for menu_item_id, menu_item in ticket_menu_items.items()
+    }
     return render_template(
         "cafe/kitchen_display.html",
         orders=orders,
@@ -5266,6 +5444,22 @@ def _render_kitchen_display(
         active_orders=len(order_cards),
         avg_ticket_minutes=avg_ticket_minutes,
         sop_library=sop_library,
+        responsibility_candidates=responsibility_candidates,
+        responsibility_reasons=[
+            {"value": value, "label": label}
+            for value, label in DAILY_OWNERSHIP_REASONS
+        ],
+        responsibility_can_edit=(
+            kiosk_mode
+            or user_has_any_role(
+                getattr(g, "current_user", None),
+                "admin",
+                "manager",
+                "staff",
+                "barista",
+                "chef",
+            )
+        ),
         kiosk_mode=kiosk_mode,
         kiosk_access_key=access_key,
         current_page_url=(
@@ -5286,6 +5480,15 @@ def _render_kitchen_display(
             url_for("cafe.kiosk_update_order_item_status", access_key=access_key, item_id=0)
             if kiosk_mode and access_key
             else url_for("cafe.update_order_item_status", item_id=0)
+        ),
+        responsibility_update_url_template=(
+            url_for(
+                "cafe.kiosk_update_order_item_responsibility",
+                access_key=access_key,
+                item_id=0,
+            )
+            if kiosk_mode and access_key
+            else url_for("cafe.update_order_item_responsibility", item_id=0)
         ),
         hide_staff_nav=kiosk_mode,
     )
@@ -5315,6 +5518,30 @@ def kiosk_display(access_key, station="kitchen"):
     if not _has_valid_kiosk_access(access_key):
         return Response("Invalid kiosk access key.", status=403)
     return _render_kitchen_display(station=station, kiosk_mode=True, access_key=access_key)
+
+
+@bp.route("/order-items/<int:item_id>/responsibility", methods=["POST"])
+@roles_required("admin", "manager", "staff", "barista", "chef")
+def update_order_item_responsibility(item_id):
+    return _update_order_item_responsibility_impl(
+        item_id,
+        actor=g.current_user,
+        created_via="staff_display",
+    )
+
+
+@bp.route(
+    "/display/<string:access_key>/order-items/<int:item_id>/responsibility",
+    methods=["POST"],
+)
+def kiosk_update_order_item_responsibility(access_key, item_id):
+    if not _has_valid_kiosk_access(access_key):
+        return jsonify({"ok": False, "message": "Invalid kiosk access key."}), 403
+    return _update_order_item_responsibility_impl(
+        item_id,
+        actor=None,
+        created_via="kiosk_display",
+    )
 
 
 @bp.route("/barista")

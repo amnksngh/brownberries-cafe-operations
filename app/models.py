@@ -293,8 +293,20 @@ class CafeOrderItem(TimestampMixin, db.Model):
     is_parcel = db.Column(db.Boolean, nullable=False, default=False)
     approval_status = db.Column(db.String(20), nullable=False, default="pending")
     prep_status = db.Column(db.String(20), nullable=False, default="pending")
+    responsibility_override_id = db.Column(
+        db.Integer,
+        db.ForeignKey("operational_daily_ownership_override.id"),
+        nullable=True,
+    )
+    responsibility_assignment_mode = db.Column(
+        db.String(20), nullable=False, default="default"
+    )
     order = db.relationship("CafeOrder", backref="order_items")
     menu_item = db.relationship("MenuItem")
+    responsibility_override = db.relationship(
+        "OperationalDailyOwnershipOverride",
+        foreign_keys=[responsibility_override_id],
+    )
 
 
 class CafeFeedback(TimestampMixin, db.Model):
@@ -723,6 +735,68 @@ class OperationalResponsibilityAssignment(TimestampMixin, db.Model):
     effective_to = db.Column(db.DateTime, nullable=True)
     plan_version = db.relationship("OperationalResponsibilityPlanVersion", back_populates="assignments")
     step_role_requirement = db.relationship("OperationalStepRoleRequirement")
+    employee = db.relationship("User")
+
+
+class OperationalDailyOwnershipOverride(TimestampMixin, db.Model):
+    """Effective-dated service ownership without changing the approved plan."""
+
+    __tablename__ = "operational_daily_ownership_override"
+    __table_args__ = (
+        db.Index(
+            "idx_daily_ownership_item_date_effective",
+            "menu_item_id",
+            "service_date",
+            "effective_from",
+            "effective_to",
+        ),
+    )
+
+    id = db.Column(db.Integer, primary_key=True)
+    menu_item_id = db.Column(db.Integer, db.ForeignKey("menu_item.id"), nullable=False)
+    service_date = db.Column(db.Date, nullable=False)
+    # Deliberately retained as an audit reference without an FK: CafeOrderItem
+    # already points to this override, and a second FK in the opposite direction
+    # creates a schema cycle on SQLite deployments.
+    source_order_item_id = db.Column(db.Integer, nullable=True)
+    reason = db.Column(db.String(40), nullable=False, default="temporary_coverage")
+    note = db.Column(db.String(500), nullable=True)
+    effective_from = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
+    effective_to = db.Column(db.DateTime, nullable=True)
+    created_by_user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=True)
+    ended_by_user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=True)
+    created_via = db.Column(db.String(30), nullable=False, default="staff_display")
+    menu_item = db.relationship("MenuItem")
+    created_by = db.relationship("User", foreign_keys=[created_by_user_id])
+    ended_by = db.relationship("User", foreign_keys=[ended_by_user_id])
+    participants = db.relationship(
+        "OperationalDailyOwnershipParticipant",
+        back_populates="override",
+        cascade="all, delete-orphan",
+        order_by="OperationalDailyOwnershipParticipant.display_order, OperationalDailyOwnershipParticipant.id",
+    )
+
+
+class OperationalDailyOwnershipParticipant(TimestampMixin, db.Model):
+    __tablename__ = "operational_daily_ownership_participant"
+    __table_args__ = (
+        db.UniqueConstraint(
+            "override_id", "employee_id", name="uq_daily_ownership_employee"
+        ),
+    )
+
+    id = db.Column(db.Integer, primary_key=True)
+    override_id = db.Column(
+        db.Integer,
+        db.ForeignKey("operational_daily_ownership_override.id"),
+        nullable=False,
+    )
+    employee_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False)
+    percentage = db.Column(db.Float, nullable=False, default=100)
+    display_order = db.Column(db.Integer, nullable=False, default=1)
+    override = db.relationship(
+        "OperationalDailyOwnershipOverride", back_populates="participants"
+    )
     employee = db.relationship("User")
 
 

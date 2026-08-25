@@ -12,9 +12,12 @@ from datetime import date, datetime
 
 from .extensions import db
 from .models import (
+    CafeOrderItem,
     EmployeeOperationalSkill,
     InventoryItem,
     MenuItem,
+    OperationalDailyOwnershipOverride,
+    OperationalDailyOwnershipParticipant,
     OperationalItem,
     OperationalItemVariant,
     OperationalRecipeLine,
@@ -85,6 +88,16 @@ ASSIGNMENT_TYPES = (
     ("approver", "Approver"),
     ("emergency", "Emergency"),
 )
+
+DAILY_OWNERSHIP_REASONS = (
+    ("temporary_coverage", "Temporary coverage"),
+    ("leave", "Primary person on leave"),
+    ("temporarily_away", "Primary person temporarily away"),
+    ("workload_balance", "Workload balancing"),
+    ("multiple_staff", "Multiple staff at workstation"),
+    ("other", "Other"),
+)
+DAILY_OWNERSHIP_REASON_LABELS = dict(DAILY_OWNERSHIP_REASONS)
 
 SOP_STAGE_SUGGESTIONS = (
     "Mise en place",
@@ -704,6 +717,189 @@ def named_responsibility_summary(item: OperationalItem | None, fallback_user=Non
         "approved_versions": sorted(approved_versions),
         "profile_item_id": item.id if item else None,
     }
+
+
+def active_daily_ownership_override(
+    menu_item_id: int, service_date: date
+) -> OperationalDailyOwnershipOverride | None:
+    return (
+        OperationalDailyOwnershipOverride.query.filter_by(
+            menu_item_id=menu_item_id,
+            service_date=service_date,
+        )
+        .filter(OperationalDailyOwnershipOverride.effective_to.is_(None))
+        .order_by(
+            OperationalDailyOwnershipOverride.effective_from.desc(),
+            OperationalDailyOwnershipOverride.id.desc(),
+        )
+        .first()
+    )
+
+
+def set_daily_ownership_override(
+    order_item: CafeOrderItem,
+    service_date: date,
+    allocations: list[tuple[object, float]],
+    *,
+    reason: str,
+    note: str = "",
+    actor_id: int | None = None,
+    created_via: str = "staff_display",
+) -> OperationalDailyOwnershipOverride:
+    """Assign the clicked ticket and orders created later during today's override."""
+
+    if not allocations:
+        raise ValueError("Choose at least one responsible person.")
+    now = datetime.utcnow()
+    for existing in OperationalDailyOwnershipOverride.query.filter_by(
+        menu_item_id=order_item.menu_item_id,
+        service_date=service_date,
+    ).filter(OperationalDailyOwnershipOverride.effective_to.is_(None)):
+        existing.effective_to = now
+        existing.ended_by_user_id = actor_id
+
+    override = OperationalDailyOwnershipOverride(
+        menu_item_id=order_item.menu_item_id,
+        service_date=service_date,
+        source_order_item_id=order_item.id,
+        reason=reason,
+        note=(note or "").strip() or None,
+        effective_from=now,
+        created_by_user_id=actor_id,
+        created_via=created_via,
+    )
+    db.session.add(override)
+    db.session.flush()
+    for index, (employee, percentage) in enumerate(allocations, start=1):
+        db.session.add(
+            OperationalDailyOwnershipParticipant(
+                override_id=override.id,
+                employee_id=employee.id,
+                percentage=round(float(percentage), 2),
+                display_order=index,
+            )
+        )
+    order_item.responsibility_override = override
+    order_item.responsibility_assignment_mode = "override"
+    db.session.flush()
+    return override
+
+
+def restore_default_daily_ownership(
+    order_item: CafeOrderItem,
+    service_date: date,
+    *,
+    actor_id: int | None = None,
+) -> None:
+    """Restore the clicked ticket and stop the daily override for later orders."""
+
+    now = datetime.utcnow()
+    for existing in OperationalDailyOwnershipOverride.query.filter_by(
+        menu_item_id=order_item.menu_item_id,
+        service_date=service_date,
+    ).filter(OperationalDailyOwnershipOverride.effective_to.is_(None)):
+        existing.effective_to = now
+        existing.ended_by_user_id = actor_id
+    # Keep responsibility_override_id as a historical pointer.  The mode is
+    # the authoritative current choice for this ticket.
+    order_item.responsibility_assignment_mode = "default"
+    db.session.flush()
+
+
+def snapshot_active_daily_ownership(
+    order_item: CafeOrderItem, service_date: date
+) -> OperationalDailyOwnershipOverride | None:
+    """Freeze today's active ownership onto a newly created order item."""
+
+    override = active_daily_ownership_override(order_item.menu_item_id, service_date)
+    if override:
+        order_item.responsibility_override = override
+        order_item.responsibility_assignment_mode = "override"
+    else:
+        order_item.responsibility_assignment_mode = "default"
+    return override
+
+
+def apply_daily_ownership_override(
+    base_summary: dict,
+    override: OperationalDailyOwnershipOverride | None,
+) -> dict:
+    if not override:
+        result = dict(base_summary)
+        result["override"] = None
+        result["default_primary"] = base_summary.get("primary")
+        result["default_backups"] = base_summary.get("backups", [])
+        return result
+
+    participants = sorted(
+        override.participants,
+        key=lambda row: (row.display_order, row.id),
+    )
+    total_seconds = float(base_summary.get("total_labour_seconds") or 0)
+    contributor_rows = []
+    for participant in participants:
+        percentage = round(float(participant.percentage or 0), 2)
+        contributor_rows.append(
+            {
+                "employee_id": participant.employee_id,
+                "name": participant.employee.full_name,
+                "seconds": round(total_seconds * percentage / 100, 2),
+                "percentage": percentage,
+                "roles": ["Daily operational owner"],
+                "sources": [override.menu_item.name if override.menu_item else "Menu item"],
+            }
+        )
+    ranked = sorted(
+        contributor_rows,
+        key=lambda row: (-row["percentage"], row["name"].lower()),
+    )
+    primary = ranked[0] if ranked else None
+    selected_ids = {row["employee_id"] for row in contributor_rows}
+    result = dict(base_summary)
+    result.update(
+        {
+            "status": "assigned" if primary else "unassigned",
+            "primary": (
+                {
+                    "employee_id": primary["employee_id"],
+                    "name": primary["name"],
+                    "percentage": primary["percentage"],
+                }
+                if primary
+                else None
+            ),
+            "contributors": contributor_rows,
+            "backups": [
+                row
+                for row in base_summary.get("backups", [])
+                if row.get("employee_id") not in selected_ids
+            ],
+            "unassigned_percentage": 0.0 if primary else 100.0,
+            "basis": "Daily operational ownership override",
+            "default_primary": base_summary.get("primary"),
+            "default_backups": base_summary.get("backups", []),
+            "override": {
+                "id": override.id,
+                "service_date": override.service_date.isoformat(),
+                "reason": override.reason,
+                "reason_label": DAILY_OWNERSHIP_REASON_LABELS.get(
+                    override.reason, override.reason.replace("_", " ").title()
+                ),
+                "note": override.note or "",
+                "active_for_future": override.effective_to is None,
+                "effective_from": override.effective_from.isoformat()
+                if override.effective_from
+                else "",
+                "effective_to": override.effective_to.isoformat()
+                if override.effective_to
+                else "",
+                "created_by": override.created_by.full_name
+                if override.created_by
+                else "Workstation display",
+            },
+        }
+    )
+    return result
 
 
 def responsibility_assignments_for(sop: OperationalSopVersion | None):
