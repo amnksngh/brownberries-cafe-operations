@@ -1,0 +1,303 @@
+{% extends "base.html" %}
+{% block content %}
+<style>
+  .ops-layout { display:grid; grid-template-columns:minmax(250px, 0.75fr) minmax(0, 2.25fr); gap:1rem; align-items:start; }
+  .ops-sidebar { position:sticky; top:1rem; max-height:calc(100vh - 2rem); overflow:auto; }
+  .ops-item-link { display:block; padding:0.7rem; border:1px solid #eadfd6; border-radius:10px; margin:0.45rem 0; color:inherit; text-decoration:none; background:#fffaf6; }
+  .ops-item-link.active { border-color:#65a578; background:#e4f5e9; }
+  .ops-item-link small { display:block; margin-top:0.2rem; color:#6f655d; }
+  .ops-jump { display:flex; flex-wrap:wrap; gap:0.45rem; margin:0.75rem 0; }
+  .ops-jump a { padding:0.35rem 0.6rem; border-radius:999px; border:1px solid #d9c7b8; text-decoration:none; }
+  .ops-flags { display:flex; flex-wrap:wrap; gap:0.5rem; }
+  .ops-flag { border-radius:999px; padding:0.25rem 0.55rem; background:#f3eee8; font-size:0.88rem; }
+  .ops-flag.on { background:#def1e3; color:#245c35; }
+  .ops-message { padding:0.65rem 0.8rem; border-left:4px solid #899; background:#f6f6f6; margin:0.45rem 0; }
+  .ops-message.error { border-color:#b64949; background:#fff0f0; }
+  .ops-message.warning { border-color:#c78b25; background:#fff8e7; }
+  .ops-message.ok { border-color:#4a9562; background:#edf8f0; }
+  .ops-version { display:inline-block; border-radius:999px; padding:0.2rem 0.55rem; background:#eee6df; }
+  .ops-version.approved { background:#dff2e4; color:#245c35; }
+  .ops-step { border:1px solid #e2d5ca; border-radius:12px; padding:0.8rem; margin:0.7rem 0; background:#fffdfb; }
+  .ops-step-head { display:flex; justify-content:space-between; gap:1rem; align-items:start; }
+  .ops-matrix { overflow-x:auto; }
+  .ops-matrix table { min-width:980px; }
+  .ops-note { padding:0.8rem; background:#eef7f0; border:1px solid #bcd8c4; border-radius:10px; }
+  @media(max-width:900px) { .ops-layout { grid-template-columns:1fr; } .ops-sidebar { position:static; max-height:none; } }
+</style>
+
+<section class="panel">
+  <h2>Operational Items & Responsibility Profiles <span class="tag">Experimental</span></h2>
+  <p class="muted">Recipe defines what goes into an item; SOP defines how it is made; the responsibility plan defines who should perform it. Approved versions remain immutable.</p>
+  <div class="ops-note"><strong>Customer visibility is isolated.</strong> Only Menu Management controls what customers see. Creating a sauce, dough, raw ingredient, or other internal operational item here will never publish it to QR ordering, staff-assisted ordering, or menu browsing.</div>
+</section>
+
+<section class="stats">
+  <article class="metric"><h3>Operational Profiles</h3><p>{{ all_profile_count }}</p></article>
+  <article class="metric"><h3>Ready</h3><p>{{ readiness.ready }}</p></article>
+  <article class="metric"><h3>Needs Attention</h3><p>{{ readiness.warning }}</p></article>
+  <article class="metric"><h3>Blocked</h3><p>{{ readiness.error }}</p></article>
+</section>
+
+<section class="panel">
+  <details>
+    <summary><strong>Create an internal component or product</strong></summary>
+    <p class="muted">Use this for sauces, gravies, dough, chutney, purchased products, or other internal records that do not already exist in Menu or Inventory Management.</p>
+    <form method="post" action="{{ url_for('operations.create_item') }}" class="grid grid-4">
+      <label>Internal Code <input name="internal_code" required placeholder="COMP-SAUCE-01" /></label>
+      <label>Name <input name="name" required placeholder="Continental White Sauce" /></label>
+      <label>Item Type
+        <select name="item_type">{% for value, label in item_types %}<option value="{{ value }}" {% if value == 'prepared_component' %}selected{% endif %}>{{ label }}</option>{% endfor %}</select>
+      </label>
+      <label>Production Type
+        <select name="production_type">{% for value, label in production_types if value != 'unclassified' %}<option value="{{ value }}" {% if value == 'prepared_component' %}selected{% endif %}>{{ label }}</option>{% endfor %}</select>
+      </label>
+      <label>Production Route
+        <select name="production_route">{% for value, label in production_routes %}<option value="{{ value }}" {% if value == 'batch_prepare' %}selected{% endif %}>{{ label }}</option>{% endfor %}</select>
+      </label>
+      <button type="submit">Create Internal Item</button>
+    </form>
+  </details>
+</section>
+
+<div class="ops-layout">
+  <aside class="panel ops-sidebar">
+    <h3>Items</h3>
+    <form method="get">
+      <label>Search <input name="q" value="{{ query_text }}" placeholder="Name or internal code" /></label>
+      <label>Production Type
+        <select name="production_type">
+          <option value="">All</option>
+          {% for value, label in production_types %}<option value="{{ value }}" {% if production_filter == value %}selected{% endif %}>{{ label }}</option>{% endfor %}
+        </select>
+      </label>
+      <button type="submit">Filter</button>
+    </form>
+    {% for item in items %}
+      <a class="ops-item-link {% if selected_item and selected_item.id == item.id %}active{% endif %}" href="{{ url_for('operations.index', item_id=item.id, q=query_text, production_type=production_filter) }}">
+        <strong>{{ item.name }}</strong>
+        <small>{{ item.internal_code }} · {{ item.production_type.replace('_', ' ').title() }}</small>
+        <small>{% if item.menu_item_id %}Linked Menu Item{% else %}Internal only{% endif %}{% if item.inventory_item_id %} · Inventory linked{% endif %}</small>
+      </a>
+    {% else %}<p class="muted">No matching operational items.</p>{% endfor %}
+  </aside>
+
+  <main>
+  {% if selected_item %}
+    <section class="panel">
+      <h2>{{ selected_item.name }}</h2>
+      <p class="muted">{{ selected_item.internal_code }} · {{ selected_item.production_type.replace('_', ' ').title() }}</p>
+      <div class="ops-flags">
+        <span class="ops-flag {% if selected_item.sellable %}on{% endif %}">Sellable</span>
+        <span class="ops-flag {% if selected_item.purchasable %}on{% endif %}">Purchasable</span>
+        <span class="ops-flag {% if selected_item.internally_produced %}on{% endif %}">Prepared internally</span>
+        <span class="ops-flag {% if selected_item.menu_item_id %}on{% endif %}">{% if selected_item.menu_item_id %}Menu-linked{% else %}Not customer-exposed{% endif %}</span>
+        <span class="ops-flag {% if selected_item.inventory_item_id %}on{% endif %}">{% if selected_item.inventory_item_id %}Inventory-linked{% else %}No inventory link{% endif %}</span>
+      </div>
+      <nav class="ops-jump" aria-label="Operational item sections">
+        <a href="#overview">Overview</a><a href="#variants">Variants</a><a href="#recipe">Recipe</a><a href="#sop">SOP</a><a href="#responsibilities">Responsibilities</a><a href="#contribution">Contribution</a><a href="#validation">Validation</a><a href="#history">Version History</a><a href="#capabilities">Skills</a>
+      </nav>
+      <a class="button-link" href="{{ url_for('operations.item_profile_json', item_id=selected_item.id) }}" target="_blank">Open Profile JSON</a>
+    </section>
+
+    <section class="panel" id="overview">
+      <h3>Overview</h3>
+      <form method="post" action="{{ url_for('operations.update_item', item_id=selected_item.id) }}" class="grid grid-4">
+        <label>Internal Code <input name="internal_code" value="{{ selected_item.internal_code }}" required /></label>
+        <label>Name <input name="name" value="{{ selected_item.name }}" required /></label>
+        <label>Item Type <select name="item_type">{% for value, label in item_types %}<option value="{{ value }}" {% if selected_item.item_type == value %}selected{% endif %}>{{ label }}</option>{% endfor %}</select></label>
+        <label>Production Type <select name="production_type">{% for value, label in production_types %}<option value="{{ value }}" {% if selected_item.production_type == value %}selected{% endif %}>{{ label }}</option>{% endfor %}</select></label>
+        <label>Production Route <select name="production_route">{% for value, label in production_routes %}<option value="{{ value }}" {% if selected_item.production_route == value %}selected{% endif %}>{{ label }}</option>{% endfor %}</select></label>
+        <label>Stock Tracking <select name="stock_tracking">{% for value, label in stock_tracking_options %}<option value="{{ value }}" {% if selected_item.stock_tracking == value %}selected{% endif %}>{{ label }}</option>{% endfor %}</select></label>
+        <label>Default Workstation <select name="default_workstation_id"><option value="">Unassigned</option>{% for ws in workstations %}<option value="{{ ws.id }}" {% if selected_item.default_workstation_id == ws.id %}selected{% endif %}>{{ ws.name }}</option>{% endfor %}</select></label>
+        <label>Active From <input type="date" name="active_from" value="{{ selected_item.active_from.isoformat() if selected_item.active_from else '' }}" /></label>
+        <label>Active Until <input type="date" name="active_to" value="{{ selected_item.active_to.isoformat() if selected_item.active_to else '' }}" /></label>
+        <label><input type="checkbox" name="sellable" {% if selected_item.sellable %}checked{% endif %} /> Sellable operationally</label>
+        <label><input type="checkbox" name="purchasable" {% if selected_item.purchasable %}checked{% endif %} /> Purchasable</label>
+        <label><input type="checkbox" name="internally_produced" {% if selected_item.internally_produced %}checked{% endif %} /> Prepared internally</label>
+        <label><input type="checkbox" name="active" {% if selected_item.active %}checked{% endif %} /> Active</label>
+        <label class="full">Internal Notes <textarea name="notes" rows="3">{{ selected_item.notes or '' }}</textarea></label>
+        <button type="submit">Save Overview</button>
+      </form>
+      <p class="muted">Linked Menu Item: <strong>{{ selected_item.menu_item.name if selected_item.menu_item else 'None — internal only' }}</strong>. Inventory Item: <strong>{{ selected_item.inventory_item.name if selected_item.inventory_item else 'None' }}</strong>.</p>
+    </section>
+
+    <section class="panel" id="variants">
+      <h3>Serving Sizes / Variants</h3>
+      <table><tr><th>Name</th><th>Standard Quantity</th><th>Unit</th><th>Status</th><th>Action</th></tr>
+        {% for variant in selected_item.variants %}<tr><td>{{ variant.name }}</td><td>{{ variant.serving_quantity }}</td><td>{{ variant.serving_unit }}</td><td>{{ 'Active' if variant.active else 'Archived' }}</td><td>{% if variant.active %}<form method="post" action="{{ url_for('operations.archive_variant', variant_id=variant.id) }}"><button type="submit">Archive</button></form>{% else %}-{% endif %}</td></tr>{% endfor %}
+      </table>
+      <form method="post" action="{{ url_for('operations.add_variant', item_id=selected_item.id) }}" class="grid grid-4">
+        <label>Variant Name <input name="name" required placeholder="Large / 500 g batch" /></label>
+        <label>Serving / Yield Quantity <input type="number" min="0.0001" step="0.0001" name="serving_quantity" value="1" required /></label>
+        <label>Unit <input name="serving_unit" value="portion" required /></label>
+        <button type="submit">Add Variant</button>
+      </form>
+    </section>
+
+    <section class="panel" id="recipe">
+      <h3>Recipe / Component Structure</h3>
+      {% if not recipe %}
+        <p>No recipe version yet.</p><form method="post" action="{{ url_for('operations.start_recipe', item_id=selected_item.id) }}"><button type="submit">Start Draft Recipe</button></form>
+      {% else %}
+        <p>Version <strong>{{ recipe.version_number }}</strong> <span class="ops-version {{ recipe.status }}">{{ recipe.status.title() }}</span></p>
+        {% if recipe.status == 'draft' %}
+        <form method="post" action="{{ url_for('operations.update_recipe', recipe_id=recipe.id) }}" class="grid grid-4">
+          <label>Variant <select name="variant_id"><option value="">General</option>{% for variant in selected_item.variants if variant.active %}<option value="{{ variant.id }}" {% if recipe.variant_id == variant.id %}selected{% endif %}>{{ variant.name }}</option>{% endfor %}</select></label>
+          <label>Yield Quantity <input type="number" min="0.0001" step="0.0001" name="yield_quantity" value="{{ recipe.yield_quantity }}" /></label>
+          <label>Yield Unit <input name="yield_unit" value="{{ recipe.yield_unit }}" /></label>
+          <label class="full">Notes <textarea name="notes">{{ recipe.notes or '' }}</textarea></label>
+          <button type="submit">Save Recipe Header</button>
+        </form>
+        {% endif %}
+        <div class="ops-matrix"><table><tr><th>Input</th><th>Quantity</th><th>Loss</th><th>Timing</th><th>Component Version</th><th>Substitution</th><th>Action</th></tr>
+          {% for line in recipe.lines %}<tr><td>{{ line.input_item.name }}{% if line.input_variant %} · {{ line.input_variant.name }}{% endif %}</td><td>{{ line.quantity }} {{ line.unit }}</td><td>{{ line.yield_loss_percent }}%</td><td>{{ line.preparation_timing.replace('_', ' ').title() }}</td><td>{% if line.required_component_version %}v{{ line.required_component_version.version_number }}{% else %}Standard / none{% endif %}</td><td>{{ 'Allowed' if line.substitution_allowed else 'No' }}</td><td>{% if recipe.status == 'draft' %}<form method="post" action="{{ url_for('operations.delete_recipe_line', line_id=line.id) }}"><button type="submit">Remove</button></form>{% else %}Locked{% endif %}</td></tr>{% else %}<tr><td colspan="7">No recipe inputs yet.</td></tr>{% endfor %}
+        </table></div>
+        {% if recipe.status == 'draft' %}
+        <details><summary><strong>Add recipe input or prepared component</strong></summary>
+          <form method="post" action="{{ url_for('operations.add_recipe_line', recipe_id=recipe.id) }}" class="grid grid-4">
+            <label>Input Item <select name="input_item_id" required><option value="">Choose</option>{% for component in operational_items if component.id != selected_item.id %}<option value="{{ component.id }}">{{ component.name }} · {{ component.internal_code }}</option>{% endfor %}</select></label>
+            <label>Quantity <input type="number" min="0" step="0.0001" name="quantity" required /></label>
+            <label>Unit <input name="unit" placeholder="g / ml / piece" required /></label>
+            <label>Yield Loss % <input type="number" min="0" max="100" step="0.1" name="yield_loss_percent" value="0" /></label>
+            <label>Production Timing <select name="preparation_timing">{% for value, label in preparation_timings %}<option value="{{ value }}">{{ label }}</option>{% endfor %}</select></label>
+            <label><input type="checkbox" name="substitution_allowed" /> Approved substitution allowed</label>
+            <button type="submit">Add Input</button>
+          </form>
+        </details>
+        <form method="post" action="{{ url_for('operations.approve_recipe_route', recipe_id=recipe.id) }}" class="inline"><button type="submit">Approve & Lock Recipe v{{ recipe.version_number }}</button></form>
+        {% else %}<form method="post" action="{{ url_for('operations.revise_recipe', recipe_id=recipe.id) }}"><button type="submit">Create New Draft Revision</button></form>{% endif %}
+      {% endif %}
+    </section>
+
+    <section class="panel" id="sop">
+      <h3>Standard Operating Procedure</h3>
+      {% if not sop %}
+        <p>No SOP version yet.</p><form method="post" action="{{ url_for('operations.start_sop', item_id=selected_item.id) }}"><button type="submit">Start Draft SOP</button></form>
+      {% else %}
+        <p>Version <strong>{{ sop.version_number }}</strong> <span class="ops-version {{ sop.status }}">{{ sop.status.title() }}</span> · {{ sop.standard_duration_seconds }} sec duration · {{ sop.standard_labour_seconds }} labour-sec</p>
+        {% if sop.status == 'draft' %}
+        <form method="post" action="{{ url_for('operations.update_sop', sop_id=sop.id) }}" class="grid grid-4">
+          <label>SOP Name <input name="name" value="{{ sop.name }}" required /></label>
+          <label>Production Mode <select name="production_mode">{% for value, label in production_routes %}<option value="{{ value }}" {% if sop.production_mode == value %}selected{% endif %}>{{ label }}</option>{% endfor %}</select></label>
+          <label>Variant <select name="variant_id"><option value="">General</option>{% for variant in selected_item.variants if variant.active %}<option value="{{ variant.id }}" {% if sop.variant_id == variant.id %}selected{% endif %}>{{ variant.name }}</option>{% endfor %}</select></label>
+          <label>Recipe Version <select name="recipe_version_id"><option value="">Not linked</option>{% for rv in selected_item.recipe_versions|sort(attribute='version_number', reverse=true) %}<option value="{{ rv.id }}" {% if sop.recipe_version_id == rv.id %}selected{% endif %}>v{{ rv.version_number }} · {{ rv.status }}</option>{% endfor %}</select></label>
+          <label>Yield Quantity <input type="number" min="0.0001" step="0.0001" name="yield_quantity" value="{{ sop.yield_quantity }}" /></label>
+          <label>Yield Unit <input name="yield_unit" value="{{ sop.yield_unit }}" /></label>
+          <label>Required Equipment <input name="required_equipment" value="{{ sop.required_equipment or '' }}" /></label>
+          <label class="full">Notes <textarea name="notes">{{ sop.notes or '' }}</textarea></label>
+          <button type="submit">Save SOP Header</button>
+        </form>
+        {% endif %}
+
+        {% for stage in sop.stages %}
+          <h4>{{ stage.sequence }}. {{ stage.name }}</h4>
+          {% for step in stage.steps %}
+          <article class="ops-step">
+            <div class="ops-step-head"><div><strong>Step {{ step.sequence }}:</strong> {{ step.instruction }}<p class="muted">Active {{ step.active_time_seconds }} sec · Passive {{ step.passive_time_seconds }} sec · {{ step.workstation.name if step.workstation else 'No workstation' }}{% if step.skill %} · {{ step.skill.name }} L{{ step.minimum_skill_level }}{% endif %}{% if step.is_critical %} · Critical ×{{ step.criticality_weight }}{% endif %}</p></div>{% if sop.status == 'draft' %}<form method="post" action="{{ url_for('operations.delete_sop_step', step_id=step.id) }}"><button type="submit">Delete Step</button></form>{% endif %}</div>
+            {% if step.quality_checkpoint %}<p><strong>Quality checkpoint:</strong> {{ step.quality_checkpoint }} · Evidence: {{ step.evidence_required }}</p>{% endif %}
+            <p><strong>Role requirements:</strong> {% for req in step.role_requirements %}{{ req.role_name.replace('_', ' ').title() }} ({{ req.responsibility_type }}, {{ req.headcount }} × {{ req.participation_factor }}){% if not loop.last %}; {% endif %}{% else %}<span class="muted">None yet</span>{% endfor %}</p>
+            {% if sop.status == 'draft' %}
+            <details><summary>Add another responsible / assisting / supervising role</summary><form method="post" action="{{ url_for('operations.add_requirement', step_id=step.id) }}" class="grid grid-4">
+              <label>Role <input name="role_name" list="role-options" required /></label>
+              <label>Responsibility <select name="responsibility_type">{% for value, label in responsibility_types %}<option value="{{ value }}">{{ label }}</option>{% endfor %}</select></label>
+              <label>Headcount <input type="number" min="1" name="headcount" value="1" /></label>
+              <label>Participation Factor <input type="number" min="0" step="0.05" name="participation_factor" value="1" /></label>
+              <label>Skill Weight <input type="number" min="0" step="0.05" name="skill_weight" value="1" /></label>
+              <button type="submit">Add Role</button>
+            </form></details>
+            {% endif %}
+          </article>
+          {% endfor %}
+        {% else %}<p class="muted">No SOP steps yet.</p>{% endfor %}
+
+        {% if sop.status == 'draft' %}
+        <details open><summary><strong>Add SOP step</strong></summary>
+          <form method="post" action="{{ url_for('operations.add_sop_step', sop_id=sop.id) }}" class="grid grid-4">
+            <label>Stage <input name="stage_name" list="stage-options" value="Preparation" required /></label>
+            <label class="full">Instruction <textarea name="instruction" required placeholder="Steam and texture the milk"></textarea></label>
+            <label>Active Time (seconds) <input type="number" min="0" name="active_time_seconds" value="60" /></label>
+            <label>Passive Time (seconds) <input type="number" min="0" name="passive_time_seconds" value="0" /></label>
+            <label>Required Skill <select name="skill_id"><option value="">None</option>{% for skill in skills if skill.active %}<option value="{{ skill.id }}">{{ skill.name }}</option>{% endfor %}</select></label>
+            <label>Minimum Skill Level <input type="number" min="1" max="5" name="minimum_skill_level" value="1" /></label>
+            <label>Workstation <select name="workstation_id"><option value="">Default / none</option>{% for ws in workstations if ws.active %}<option value="{{ ws.id }}" {% if selected_item.default_workstation_id == ws.id %}selected{% endif %}>{{ ws.name }}</option>{% endfor %}</select></label>
+            <label>Responsible Role <input name="role_name" list="role-options" placeholder="barista" /></label>
+            <label>Responsibility Type <select name="responsibility_type">{% for value, label in responsibility_types %}<option value="{{ value }}">{{ label }}</option>{% endfor %}</select></label>
+            <label>Headcount <input type="number" min="1" name="headcount" value="1" /></label>
+            <label>Participation Factor <input type="number" min="0" step="0.05" name="participation_factor" value="1" /></label>
+            <label>Skill Weight <input type="number" min="0" step="0.05" name="skill_weight" value="1" /></label>
+            <label><input type="checkbox" name="is_critical" /> Critical step</label>
+            <label>Criticality Weight <input type="number" min="0.1" step="0.05" name="criticality_weight" value="1" /></label>
+            <label><input type="checkbox" name="can_run_parallel" /> Can run in parallel</label>
+            <label>Quality Checkpoint <input name="quality_checkpoint" /></label>
+            <label>Evidence <select name="evidence_required"><option value="none">None</option><option value="photo">Photo</option><option value="temperature">Temperature</option><option value="weight">Weight</option><option value="signoff">Named sign-off</option></select></label>
+            <button type="submit">Add Step</button>
+          </form>
+        </details>
+        <form method="post" action="{{ url_for('operations.approve_sop_route', sop_id=sop.id) }}"><button type="submit">Approve & Lock SOP + Responsibility Plan v{{ sop.version_number }}</button></form>
+        {% else %}<form method="post" action="{{ url_for('operations.revise_sop', sop_id=sop.id) }}"><button type="submit">Create New Draft SOP Revision</button></form>{% endif %}
+      {% endif %}
+    </section>
+
+    <section class="panel" id="responsibilities">
+      <h3>Responsibility Matrix</h3>
+      {% if sop %}
+      <p>Plan status: <span class="ops-version {{ plan.status if plan else '' }}">{{ plan.status.title() if plan else 'Not created' }}</span>. Named assignments are kept separate from required roles and skills.</p>
+      <div class="ops-matrix"><table><tr><th>Stage / Step</th><th>Required Role</th><th>Type</th><th>Standard Effort</th><th>Primary & Backups</th><th>Add Assignment</th><th>Role Action</th></tr>
+        {% for stage in sop.stages %}{% for step in stage.steps %}{% for req in step.role_requirements %}
+        <tr>
+          <td>{{ stage.name }} · {{ step.sequence }}<br /><small>{{ step.instruction[:70] }}</small></td>
+          <td>{{ req.role_name.replace('_', ' ').title() }}{% if step.skill %}<br /><small>{{ step.skill.name }} L{{ step.minimum_skill_level }}</small>{% endif %}</td>
+          <td>{{ req.responsibility_type.title() }}<br /><small>{{ req.headcount }} × factor {{ req.participation_factor }}</small></td>
+          <td>{{ (step.active_time_seconds * req.participation_factor * req.headcount)|round(1) }} sec<br /><small>Weighted {{ (step.active_time_seconds * req.participation_factor * req.headcount * req.skill_weight * step.criticality_weight)|round(1) }}</small></td>
+          <td>{% for assignment in assignments.get(req.id, []) %}<div>{{ assignment.assignment_type.title() }} {{ assignment.priority }}: <strong>{{ assignment.employee.full_name }}</strong>{% if plan and plan.status == 'draft' %} <form method="post" action="{{ url_for('operations.delete_assignment', assignment_id=assignment.id) }}" class="inline"><button type="submit">×</button></form>{% endif %}</div>{% else %}<span class="muted">Unassigned</span>{% endfor %}</td>
+          <td>{% if sop.status == 'draft' %}<form method="post" action="{{ url_for('operations.add_assignment', requirement_id=req.id) }}">
+            <select name="employee_id" required><option value="">Employee</option>{% for employee in staff %}<option value="{{ employee.id }}">{{ employee.full_name }} · {{ employee.display_roles() }}</option>{% endfor %}</select>
+            <select name="assignment_type">{% for value, label in assignment_types %}<option value="{{ value }}">{{ label }}</option>{% endfor %}</select>
+            <input type="number" min="1" name="priority" value="1" aria-label="Priority" />
+            <button type="submit">Assign</button>
+          </form>{% else %}Locked{% endif %}</td>
+          <td>{% if sop.status == 'draft' %}<form method="post" action="{{ url_for('operations.delete_requirement', requirement_id=req.id) }}"><button type="submit">Remove Role</button></form>{% else %}Historical{% endif %}</td>
+        </tr>
+        {% endfor %}{% endfor %}{% else %}<tr><td colspan="7">Add SOP steps and role requirements first.</td></tr>{% endfor %}
+      </table></div>
+      {% else %}<p>Create an SOP before assigning responsibilities.</p>{% endif %}
+    </section>
+
+    <section class="panel" id="contribution">
+      <h3>Derived Contribution</h3>
+      <p class="muted">Calculated from active SOP-step time × participation × headcount. Weighted contribution also applies skill and criticality weights. Prepared-component effort is inherited in proportion to recipe quantity and component yield.</p>
+      <p><strong>Total labour:</strong> {{ contribution.labour_seconds }} sec · <strong>Weighted:</strong> {{ contribution.weighted_seconds }} units</p>
+      <table><tr><th>Role</th><th>Source</th><th>Labour</th><th>Labour %</th><th>Weighted</th><th>Weighted %</th></tr>
+        {% for row in contribution.rows %}<tr><td>{{ row.role_name }}</td><td>{{ row.source }}</td><td>{{ row.labour_seconds }} sec</td><td>{{ row.labour_percent }}%</td><td>{{ row.weighted_seconds }}</td><td>{{ row.weighted_percent }}%</td></tr>{% else %}<tr><td colspan="6">Add SOP role requirements to calculate contribution.</td></tr>{% endfor %}
+      </table>
+    </section>
+
+    <section class="panel" id="validation">
+      <h3>Validation & Coverage</h3>
+      {% for message in validation %}<div class="ops-message {{ message.level }}"><strong>{{ message.level.title() }}:</strong> {{ message.text }}</div>{% endfor %}
+    </section>
+
+    <section class="panel" id="history">
+      <h3>Immutable Version History</h3>
+      <div class="grid grid-2">
+        <div><h4>Recipe Versions</h4><table><tr><th>Version</th><th>Status</th><th>Effective</th><th>Action</th></tr>{% for row in selected_item.recipe_versions|sort(attribute='version_number', reverse=true) %}<tr><td>v{{ row.version_number }}</td><td>{{ row.status }}</td><td>{{ row.effective_from.strftime('%Y-%m-%d %H:%M') if row.effective_from else 'Draft' }}{% if row.effective_to %}<br />to {{ row.effective_to.strftime('%Y-%m-%d %H:%M') }}{% endif %}</td><td>{% if row.status == 'approved' %}<form method="post" action="{{ url_for('operations.revise_recipe', recipe_id=row.id) }}"><button type="submit">Revise</button></form>{% else %}Editable draft{% endif %}</td></tr>{% else %}<tr><td colspan="4">None</td></tr>{% endfor %}</table></div>
+        <div><h4>SOP & Plan Versions</h4><table><tr><th>Version</th><th>Status</th><th>Effective</th><th>Action</th></tr>{% for row in selected_item.sop_versions|sort(attribute='version_number', reverse=true) %}<tr><td>v{{ row.version_number }}</td><td>{{ row.status }}</td><td>{{ row.effective_from.strftime('%Y-%m-%d %H:%M') if row.effective_from else 'Draft' }}{% if row.effective_to %}<br />to {{ row.effective_to.strftime('%Y-%m-%d %H:%M') }}{% endif %}</td><td>{% if row.status == 'approved' %}<form method="post" action="{{ url_for('operations.revise_sop', sop_id=row.id) }}"><button type="submit">Revise</button></form>{% else %}Editable draft{% endif %}</td></tr>{% else %}<tr><td colspan="4">None</td></tr>{% endfor %}</table></div>
+      </div>
+    </section>
+  {% else %}<section class="panel"><p>Select an operational item to begin.</p></section>{% endif %}
+
+    <section class="panel" id="capabilities">
+      <h3>Skills & Employee Certifications</h3>
+      <p class="muted">Roles describe the job responsibility; skills prove that a named employee can perform a specific technique or operate equipment.</p>
+      <div class="grid grid-2">
+        <div><h4>Add Skill</h4><form method="post" action="{{ url_for('operations.add_skill') }}"><label>Name <input name="name" required placeholder="Milk steaming" /></label><label>Description <textarea name="description"></textarea></label><button type="submit">Add Skill</button></form></div>
+        <div><h4>Certify Employee</h4><form method="post" action="{{ url_for('operations.add_certification') }}" class="grid grid-2"><label>Employee <select name="employee_id" required><option value="">Choose</option>{% for employee in staff %}<option value="{{ employee.id }}">{{ employee.full_name }}</option>{% endfor %}</select></label><label>Skill <select name="skill_id" required><option value="">Choose</option>{% for skill in skills if skill.active %}<option value="{{ skill.id }}">{{ skill.name }}</option>{% endfor %}</select></label><label>Competency Level <input type="number" min="1" max="5" name="competency_level" value="1" /></label><label>Valid From <input type="date" name="valid_from" value="{{ now_date if now_date is defined else '' }}" /></label><label>Valid Until <input type="date" name="valid_to" /></label><button type="submit">Save Certification</button></form></div>
+      </div>
+      <table><tr><th>Employee</th><th>Skill</th><th>Level</th><th>Validity</th><th>Status</th><th>Action</th></tr>{% for cert in certifications %}<tr><td>{{ cert.user.full_name }}</td><td>{{ cert.skill.name }}</td><td>{{ cert.competency_level }}</td><td>{{ cert.valid_from or '-' }} to {{ cert.valid_to or 'open' }}</td><td>{{ cert.status }}</td><td>{% if cert.status == 'active' %}<form method="post" action="{{ url_for('operations.end_certification', certification_id=cert.id) }}"><button type="submit">End</button></form>{% else %}Historical{% endif %}</td></tr>{% else %}<tr><td colspan="6">No certifications recorded.</td></tr>{% endfor %}</table>
+    </section>
+  </main>
+</div>
+
+<datalist id="stage-options">{% for name in stage_suggestions %}<option value="{{ name }}"></option>{% endfor %}</datalist>
+<datalist id="role-options">{% for role in role_options %}<option value="{{ role }}"></option>{% endfor %}</datalist>
+{% endblock %}

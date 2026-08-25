@@ -457,6 +457,275 @@ class InventoryRecipeItem(TimestampMixin, db.Model):
     inventory_item = db.relationship("InventoryItem", backref="recipe_links")
 
 
+class OperationalItem(TimestampMixin, db.Model):
+    """Internal master record for anything bought, prepared, stocked, or sold.
+
+    Customer visibility deliberately remains owned by MenuItem.  An operational
+    item can link to a menu item, an inventory item, both, or neither without
+    changing what appears in any customer-facing menu.
+    """
+
+    __tablename__ = "operational_item"
+    __table_args__ = (
+        db.CheckConstraint(
+            "stock_tracking IN ('none', 'unit', 'batch')",
+            name="ck_operational_item_stock_tracking",
+        ),
+    )
+
+    id = db.Column(db.Integer, primary_key=True)
+    internal_code = db.Column(db.String(50), nullable=False, unique=True)
+    name = db.Column(db.String(160), nullable=False)
+    item_type = db.Column(db.String(40), nullable=False, default="prepared_item")
+    production_type = db.Column(db.String(40), nullable=False, default="unclassified")
+    production_route = db.Column(db.String(50), nullable=False, default="prepare_on_order")
+    sellable = db.Column(db.Boolean, nullable=False, default=False)
+    purchasable = db.Column(db.Boolean, nullable=False, default=False)
+    internally_produced = db.Column(db.Boolean, nullable=False, default=False)
+    stock_tracking = db.Column(db.String(20), nullable=False, default="none")
+    menu_item_id = db.Column(db.Integer, db.ForeignKey("menu_item.id"), nullable=True, unique=True)
+    inventory_item_id = db.Column(db.Integer, db.ForeignKey("inventory_item.id"), nullable=True, unique=True)
+    default_workstation_id = db.Column(db.Integer, db.ForeignKey("workstation.id"), nullable=True)
+    active_from = db.Column(db.Date, nullable=True)
+    active_to = db.Column(db.Date, nullable=True)
+    active = db.Column(db.Boolean, nullable=False, default=True)
+    notes = db.Column(db.Text, nullable=True)
+    menu_item = db.relationship("MenuItem", backref=db.backref("operational_profile", uselist=False))
+    inventory_item = db.relationship("InventoryItem", backref=db.backref("operational_profile", uselist=False))
+    default_workstation = db.relationship("Workstation")
+    variants = db.relationship(
+        "OperationalItemVariant",
+        back_populates="item",
+        cascade="all, delete-orphan",
+        order_by="OperationalItemVariant.id",
+    )
+
+
+class OperationalItemVariant(TimestampMixin, db.Model):
+    __tablename__ = "operational_item_variant"
+    __table_args__ = (
+        db.UniqueConstraint("item_id", "name", name="uq_operational_variant_item_name"),
+    )
+
+    id = db.Column(db.Integer, primary_key=True)
+    item_id = db.Column(db.Integer, db.ForeignKey("operational_item.id"), nullable=False)
+    name = db.Column(db.String(100), nullable=False)
+    serving_quantity = db.Column(db.Float, nullable=False, default=1)
+    serving_unit = db.Column(db.String(30), nullable=False, default="portion")
+    active = db.Column(db.Boolean, nullable=False, default=True)
+    item = db.relationship("OperationalItem", back_populates="variants")
+
+
+class OperationalRecipeVersion(TimestampMixin, db.Model):
+    __tablename__ = "operational_recipe_version"
+    __table_args__ = (
+        db.UniqueConstraint("item_id", "version_number", name="uq_operational_recipe_item_version"),
+    )
+
+    id = db.Column(db.Integer, primary_key=True)
+    item_id = db.Column(db.Integer, db.ForeignKey("operational_item.id"), nullable=False)
+    variant_id = db.Column(db.Integer, db.ForeignKey("operational_item_variant.id"), nullable=True)
+    version_number = db.Column(db.Integer, nullable=False, default=1)
+    yield_quantity = db.Column(db.Float, nullable=False, default=1)
+    yield_unit = db.Column(db.String(30), nullable=False, default="portion")
+    status = db.Column(db.String(20), nullable=False, default="draft")
+    effective_from = db.Column(db.DateTime, nullable=True)
+    effective_to = db.Column(db.DateTime, nullable=True)
+    approved_by_user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=True)
+    notes = db.Column(db.Text, nullable=True)
+    item = db.relationship("OperationalItem", backref="recipe_versions")
+    variant = db.relationship("OperationalItemVariant")
+    approved_by = db.relationship("User")
+    lines = db.relationship(
+        "OperationalRecipeLine",
+        foreign_keys="OperationalRecipeLine.recipe_version_id",
+        back_populates="recipe_version",
+        cascade="all, delete-orphan",
+        order_by="OperationalRecipeLine.id",
+    )
+
+
+class OperationalRecipeLine(TimestampMixin, db.Model):
+    __tablename__ = "operational_recipe_line"
+
+    id = db.Column(db.Integer, primary_key=True)
+    recipe_version_id = db.Column(db.Integer, db.ForeignKey("operational_recipe_version.id"), nullable=False)
+    input_item_id = db.Column(db.Integer, db.ForeignKey("operational_item.id"), nullable=False)
+    input_variant_id = db.Column(db.Integer, db.ForeignKey("operational_item_variant.id"), nullable=True)
+    required_component_version_id = db.Column(db.Integer, db.ForeignKey("operational_recipe_version.id"), nullable=True)
+    quantity = db.Column(db.Float, nullable=False, default=0)
+    unit = db.Column(db.String(30), nullable=False, default="unit")
+    yield_loss_percent = db.Column(db.Float, nullable=False, default=0)
+    preparation_timing = db.Column(db.String(30), nullable=False, default="during_order")
+    substitution_allowed = db.Column(db.Boolean, nullable=False, default=False)
+    recipe_version = db.relationship(
+        "OperationalRecipeVersion",
+        foreign_keys=[recipe_version_id],
+        back_populates="lines",
+    )
+    input_item = db.relationship("OperationalItem")
+    input_variant = db.relationship("OperationalItemVariant")
+    required_component_version = db.relationship(
+        "OperationalRecipeVersion", foreign_keys=[required_component_version_id]
+    )
+
+
+class OperationalSkill(TimestampMixin, db.Model):
+    __tablename__ = "operational_skill"
+
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(100), nullable=False, unique=True)
+    description = db.Column(db.String(500), nullable=True)
+    active = db.Column(db.Boolean, nullable=False, default=True)
+
+
+class EmployeeOperationalSkill(TimestampMixin, db.Model):
+    __tablename__ = "employee_operational_skill"
+
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False)
+    skill_id = db.Column(db.Integer, db.ForeignKey("operational_skill.id"), nullable=False)
+    competency_level = db.Column(db.Integer, nullable=False, default=1)
+    status = db.Column(db.String(20), nullable=False, default="active")
+    valid_from = db.Column(db.Date, nullable=True)
+    valid_to = db.Column(db.Date, nullable=True)
+    certified_by_user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=True)
+    user = db.relationship("User", foreign_keys=[user_id], backref="operational_skills")
+    skill = db.relationship("OperationalSkill", backref="employee_certifications")
+    certified_by = db.relationship("User", foreign_keys=[certified_by_user_id])
+
+
+class OperationalSopVersion(TimestampMixin, db.Model):
+    __tablename__ = "operational_sop_version"
+    __table_args__ = (
+        db.UniqueConstraint("item_id", "version_number", name="uq_operational_sop_item_version"),
+    )
+
+    id = db.Column(db.Integer, primary_key=True)
+    item_id = db.Column(db.Integer, db.ForeignKey("operational_item.id"), nullable=False)
+    variant_id = db.Column(db.Integer, db.ForeignKey("operational_item_variant.id"), nullable=True)
+    recipe_version_id = db.Column(db.Integer, db.ForeignKey("operational_recipe_version.id"), nullable=True)
+    version_number = db.Column(db.Integer, nullable=False, default=1)
+    name = db.Column(db.String(180), nullable=False)
+    production_mode = db.Column(db.String(40), nullable=False, default="prepare_on_order")
+    yield_quantity = db.Column(db.Float, nullable=False, default=1)
+    yield_unit = db.Column(db.String(30), nullable=False, default="portion")
+    standard_duration_seconds = db.Column(db.Integer, nullable=False, default=0)
+    standard_labour_seconds = db.Column(db.Integer, nullable=False, default=0)
+    required_equipment = db.Column(db.String(500), nullable=True)
+    status = db.Column(db.String(20), nullable=False, default="draft")
+    effective_from = db.Column(db.DateTime, nullable=True)
+    effective_to = db.Column(db.DateTime, nullable=True)
+    approved_by_user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=True)
+    notes = db.Column(db.Text, nullable=True)
+    item = db.relationship("OperationalItem", backref="sop_versions")
+    variant = db.relationship("OperationalItemVariant")
+    recipe_version = db.relationship("OperationalRecipeVersion")
+    approved_by = db.relationship("User")
+    stages = db.relationship(
+        "OperationalSopStage",
+        back_populates="sop_version",
+        cascade="all, delete-orphan",
+        order_by="OperationalSopStage.sequence, OperationalSopStage.id",
+    )
+
+
+class OperationalSopStage(TimestampMixin, db.Model):
+    __tablename__ = "operational_sop_stage"
+
+    id = db.Column(db.Integer, primary_key=True)
+    sop_version_id = db.Column(db.Integer, db.ForeignKey("operational_sop_version.id"), nullable=False)
+    name = db.Column(db.String(100), nullable=False)
+    sequence = db.Column(db.Integer, nullable=False, default=1)
+    sop_version = db.relationship("OperationalSopVersion", back_populates="stages")
+    steps = db.relationship(
+        "OperationalSopStep",
+        back_populates="stage",
+        cascade="all, delete-orphan",
+        order_by="OperationalSopStep.sequence, OperationalSopStep.id",
+    )
+
+
+class OperationalSopStep(TimestampMixin, db.Model):
+    __tablename__ = "operational_sop_step"
+
+    id = db.Column(db.Integer, primary_key=True)
+    stage_id = db.Column(db.Integer, db.ForeignKey("operational_sop_stage.id"), nullable=False)
+    sequence = db.Column(db.Integer, nullable=False, default=1)
+    instruction = db.Column(db.Text, nullable=False)
+    active_time_seconds = db.Column(db.Integer, nullable=False, default=0)
+    passive_time_seconds = db.Column(db.Integer, nullable=False, default=0)
+    skill_id = db.Column(db.Integer, db.ForeignKey("operational_skill.id"), nullable=True)
+    minimum_skill_level = db.Column(db.Integer, nullable=False, default=1)
+    workstation_id = db.Column(db.Integer, db.ForeignKey("workstation.id"), nullable=True)
+    is_critical = db.Column(db.Boolean, nullable=False, default=False)
+    criticality_weight = db.Column(db.Float, nullable=False, default=1)
+    can_run_parallel = db.Column(db.Boolean, nullable=False, default=False)
+    quality_checkpoint = db.Column(db.String(500), nullable=True)
+    evidence_required = db.Column(db.String(30), nullable=False, default="none")
+    stage = db.relationship("OperationalSopStage", back_populates="steps")
+    skill = db.relationship("OperationalSkill")
+    workstation = db.relationship("Workstation")
+    role_requirements = db.relationship(
+        "OperationalStepRoleRequirement",
+        back_populates="step",
+        cascade="all, delete-orphan",
+        order_by="OperationalStepRoleRequirement.id",
+    )
+
+
+class OperationalStepRoleRequirement(TimestampMixin, db.Model):
+    __tablename__ = "operational_step_role_requirement"
+
+    id = db.Column(db.Integer, primary_key=True)
+    step_id = db.Column(db.Integer, db.ForeignKey("operational_sop_step.id"), nullable=False)
+    role_name = db.Column(db.String(80), nullable=False)
+    responsibility_type = db.Column(db.String(30), nullable=False, default="responsible")
+    participation_factor = db.Column(db.Float, nullable=False, default=1)
+    skill_weight = db.Column(db.Float, nullable=False, default=1)
+    headcount = db.Column(db.Integer, nullable=False, default=1)
+    step = db.relationship("OperationalSopStep", back_populates="role_requirements")
+
+
+class OperationalResponsibilityPlanVersion(TimestampMixin, db.Model):
+    __tablename__ = "operational_responsibility_plan_version"
+    __table_args__ = (
+        db.UniqueConstraint("sop_version_id", "version_number", name="uq_operational_plan_sop_version"),
+    )
+
+    id = db.Column(db.Integer, primary_key=True)
+    sop_version_id = db.Column(db.Integer, db.ForeignKey("operational_sop_version.id"), nullable=False)
+    version_number = db.Column(db.Integer, nullable=False, default=1)
+    status = db.Column(db.String(20), nullable=False, default="draft")
+    effective_from = db.Column(db.DateTime, nullable=True)
+    effective_to = db.Column(db.DateTime, nullable=True)
+    approved_by_user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=True)
+    sop_version = db.relationship("OperationalSopVersion", backref="responsibility_plans")
+    approved_by = db.relationship("User")
+    assignments = db.relationship(
+        "OperationalResponsibilityAssignment",
+        back_populates="plan_version",
+        cascade="all, delete-orphan",
+        order_by="OperationalResponsibilityAssignment.step_role_requirement_id, OperationalResponsibilityAssignment.priority",
+    )
+
+
+class OperationalResponsibilityAssignment(TimestampMixin, db.Model):
+    __tablename__ = "operational_responsibility_assignment"
+
+    id = db.Column(db.Integer, primary_key=True)
+    plan_version_id = db.Column(db.Integer, db.ForeignKey("operational_responsibility_plan_version.id"), nullable=False)
+    step_role_requirement_id = db.Column(db.Integer, db.ForeignKey("operational_step_role_requirement.id"), nullable=False)
+    employee_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False)
+    assignment_type = db.Column(db.String(30), nullable=False, default="primary")
+    priority = db.Column(db.Integer, nullable=False, default=1)
+    effective_from = db.Column(db.DateTime, nullable=True)
+    effective_to = db.Column(db.DateTime, nullable=True)
+    plan_version = db.relationship("OperationalResponsibilityPlanVersion", back_populates="assignments")
+    step_role_requirement = db.relationship("OperationalStepRoleRequirement")
+    employee = db.relationship("User")
+
+
 class InventoryWastage(TimestampMixin, db.Model):
     id = db.Column(db.Integer, primary_key=True)
     wastage_date = db.Column(db.Date, nullable=False, default=date.today)

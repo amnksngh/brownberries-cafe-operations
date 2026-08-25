@@ -13,6 +13,7 @@
     <a href="{{ url_for('cafe.menu', section='items') }}" class="{% if active_menu_section == 'items' %}active{% endif %}">Menu Items</a>
     <a href="{{ url_for('cafe.menu', section='availability') }}" class="{% if active_menu_section == 'availability' %}active{% endif %}">Items Availability</a>
     <a href="{{ url_for('cafe.menu', section='deleted_items') }}" class="{% if active_menu_section == 'deleted_items' %}active{% endif %}">Deleted Items</a>
+    <a href="{{ url_for('operations.index') }}">Operational Responsibilities <span class="tag">Experimental</span></a>
   </aside>
 
   <div class="library-content">

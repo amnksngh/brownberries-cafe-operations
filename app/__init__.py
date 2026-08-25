@@ -27,6 +27,8 @@ from .main import bp as main_bp
 from .menu_navigation import ensure_menu_navigation_seeded
 from .mobile_attendance import bp as mobile_attendance_bp
 from .mobile_staff import bp as mobile_staff_bp
+from .operations import bp as operations_bp
+from .operational_responsibility import ensure_operational_items_seeded
 from .rulebook import ensure_rulebook_default
 from .models import (
     CashCounterEntry,
@@ -410,6 +412,21 @@ def _ensure_sqlite_schema_columns():
         text("CREATE INDEX IF NOT EXISTS idx_job_application_mobile ON job_application (mobile)")
     )
     db.session.execute(
+        text("CREATE INDEX IF NOT EXISTS idx_operational_item_type_active ON operational_item (production_type, active)")
+    )
+    db.session.execute(
+        text("CREATE INDEX IF NOT EXISTS idx_operational_recipe_item_status ON operational_recipe_version (item_id, status, version_number)")
+    )
+    db.session.execute(
+        text("CREATE INDEX IF NOT EXISTS idx_operational_sop_item_status ON operational_sop_version (item_id, status, version_number)")
+    )
+    db.session.execute(
+        text("CREATE INDEX IF NOT EXISTS idx_operational_assignment_requirement ON operational_responsibility_assignment (step_role_requirement_id, assignment_type)")
+    )
+    db.session.execute(
+        text("CREATE INDEX IF NOT EXISTS idx_employee_operational_skill_active ON employee_operational_skill (skill_id, status, competency_level)")
+    )
+    db.session.execute(
         text("UPDATE user SET roles_json = json_array(lower(role)) WHERE (roles_json IS NULL OR trim(roles_json) = '') AND role IS NOT NULL AND trim(role) != ''")
     )
     db.session.commit()
@@ -532,6 +549,7 @@ def create_app():
         _backfill_order_codes()
         _backfill_paid_timestamps()
         _ensure_default_workstations()
+        ensure_operational_items_seeded()
         ensure_leave_defaults()
         run_leave_maintenance()
         ensure_rulebook_default()
@@ -571,6 +589,7 @@ def create_app():
     app.register_blueprint(library_bp)
     app.register_blueprint(mobile_attendance_bp)
     app.register_blueprint(mobile_staff_bp)
+    app.register_blueprint(operations_bp)
 
     @app.cli.command("init-db")
     def init_db():

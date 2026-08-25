@@ -16,6 +16,7 @@
   <div class="links">
     <a href="{{ url_for('cafe.tables') }}">Table Management</a>
     <a href="{{ url_for('cafe.menu') }}">Menu Management</a>
+    {% if user_has_any_role(g.current_user, "admin", "manager") %}<a href="{{ url_for('operations.index') }}">Operational Responsibilities <span class="tag">Experimental</span></a>{% endif %}
     <a href="{{ url_for('cafe.items_availability') }}">Items Availability</a>
     <a href="{{ url_for('cafe.orders') }}">Table Ordering</a>
     {% if user_has_any_role(g.current_user, "admin", "manager", "cashier") or user_has_permission(g.current_user, "can_manage_cashier") %}
