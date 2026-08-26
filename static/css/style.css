@@ -5002,6 +5002,7 @@ body.cashier-shell.cashier-tablet-portrait .cashier-selected-sections {
   display: grid;
   grid-template-columns: 220px 1fr;
   gap: 0.8rem;
+  min-width: 0;
 }
 
 .inventory-hero {
@@ -5051,6 +5052,13 @@ body.cashier-shell.cashier-tablet-portrait .cashier-selected-sections {
 .inventory-content {
   display: grid;
   gap: 0.8rem;
+  min-width: 0;
+}
+
+.inventory-layout > *,
+.inventory-content > *,
+.inventory-two-col > * {
+  min-width: 0;
 }
 
 .table-scroll {
@@ -5286,6 +5294,177 @@ body.cashier-shell.cashier-tablet-portrait .cashier-selected-sections {
   font-size: 0.84rem;
 }
 
+.inventory-type-fieldset {
+  border: 0;
+  padding: 0;
+  margin: 0;
+  min-width: 0;
+}
+
+.inventory-type-fieldset legend {
+  margin-bottom: 0.35rem;
+}
+
+.inventory-type-toggle {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  overflow: hidden;
+  background: #fff;
+}
+
+.inventory-type-toggle label {
+  display: block;
+  cursor: pointer;
+}
+
+.inventory-type-toggle label + label {
+  border-left: 1px solid var(--line);
+}
+
+.inventory-type-toggle input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.inventory-type-toggle span {
+  display: block;
+  padding: 0.58rem 0.45rem;
+  text-align: center;
+  font-size: 0.82rem;
+  font-weight: 700;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.inventory-type-toggle input:checked + span {
+  background: #2f1b0f;
+  color: #fff;
+}
+
+.inventory-type-toggle input:focus-visible + span {
+  outline: 3px solid rgba(106, 169, 200, 0.45);
+  outline-offset: -3px;
+}
+
+.inventory-type-badge {
+  display: inline-flex;
+  padding: 0.2rem 0.48rem;
+  border-radius: 999px;
+  font-size: 0.74rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.inventory-type-badge.perishable {
+  background: #fff0eb;
+  color: #9d3322;
+}
+
+.inventory-type-badge.non_perishable {
+  background: #edf8f0;
+  color: #1f6d3f;
+}
+
+.inventory-picker-trigger {
+  width: 100%;
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 0.55rem;
+  background: #fff;
+  color: var(--text);
+  border: 1px solid var(--line);
+  text-align: left;
+}
+
+.inventory-picker-glyph,
+.inventory-category-icon {
+  font-size: 1.25rem;
+  line-height: 1;
+}
+
+.inventory-color-preview {
+  width: 1.35rem;
+  height: 1.35rem;
+  border-radius: 999px;
+  border: 1px solid rgba(47, 27, 15, 0.2);
+}
+
+.inventory-picker-dialog {
+  width: min(92vw, 660px);
+  max-height: 82vh;
+  overflow: auto;
+  border: 1px solid #d8c0a7;
+  border-radius: 14px;
+  padding: 1rem;
+  color: var(--text);
+  background: #fffdfa;
+  box-shadow: 0 20px 60px rgba(47, 27, 15, 0.28);
+}
+
+.inventory-picker-dialog::backdrop {
+  background: rgba(34, 22, 14, 0.58);
+}
+
+.inventory-icon-grid,
+.inventory-color-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+  gap: 0.55rem;
+  margin-top: 0.8rem;
+}
+
+.inventory-icon-choice,
+.inventory-color-choice {
+  min-height: 82px;
+  display: grid;
+  place-items: center;
+  gap: 0.3rem;
+  padding: 0.6rem;
+  background: #fff;
+  color: var(--text);
+  border: 1px solid #e0d5c8;
+}
+
+.inventory-icon-choice:hover,
+.inventory-color-choice:hover {
+  background: #f5f0ea;
+  border-color: #8b5e3c;
+}
+
+.inventory-icon-choice span {
+  font-size: 1.7rem;
+}
+
+.inventory-icon-choice small,
+.inventory-color-choice small {
+  font-weight: 700;
+}
+
+.inventory-color-choice span {
+  width: 2rem;
+  height: 2rem;
+  border-radius: 999px;
+  border: 1px solid rgba(47, 27, 15, 0.2);
+}
+
+.inventory-custom-color {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 0.7rem;
+  margin-top: 1rem;
+  padding-top: 0.8rem;
+  border-top: 1px solid #e6dacd;
+}
+
+.inventory-custom-color label {
+  display: grid;
+  gap: 0.3rem;
+}
+
 @media (max-width: 900px) {
   .inventory-layout {
     grid-template-columns: 1fr;
@@ -5293,9 +5472,22 @@ body.cashier-shell.cashier-tablet-portrait .cashier-selected-sections {
   .inventory-sidebar {
     position: static;
     grid-template-columns: repeat(2, minmax(0, 1fr));
+    width: 100%;
   }
   .inventory-two-col {
     grid-template-columns: 1fr;
+  }
+  .inventory-content .panel {
+    max-width: 100%;
+    overflow-x: auto;
+  }
+  .inventory-filter-bar {
+    grid-template-columns: 1fr;
+    width: 100%;
+  }
+  .inventory-content .split-head {
+    align-items: stretch;
+    flex-direction: column;
   }
 }
 

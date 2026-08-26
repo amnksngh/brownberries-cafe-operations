@@ -5813,6 +5813,73 @@ INVENTORY_SETTINGS_DEFAULTS = {
     "audit_page_size": 300,
 }
 
+INVENTORY_ITEM_TYPE_OPTIONS = (
+    ("perishable", "Perishable"),
+    ("non_perishable", "Non-perishable"),
+)
+
+INVENTORY_CATEGORY_ICON_OPTIONS = (
+    ("package", "Package", "📦"),
+    ("leaf", "Fresh produce", "🌿"),
+    ("milk", "Dairy", "🥛"),
+    ("cup-soda", "Beverages", "🥤"),
+    ("coffee", "Coffee", "☕"),
+    ("cake-slice", "Bakery", "🍰"),
+    ("wheat", "Grains", "🌾"),
+    ("apple", "Fruit", "🍎"),
+    ("fish", "Seafood", "🐟"),
+    ("meat", "Meat", "🥩"),
+    ("snowflake", "Frozen", "❄️"),
+    ("droplets", "Water", "💧"),
+    ("utensils", "Kitchen", "🍴"),
+    ("sparkles", "Cleaning", "✨"),
+    ("box", "Storage", "🗃️"),
+    ("bolt", "Utility", "⚡"),
+    ("flame", "Fuel", "🔥"),
+    ("cog", "Equipment", "⚙️"),
+    ("armchair", "Interior", "🪑"),
+    ("bottle-wine", "Bottles", "🍾"),
+)
+
+INVENTORY_CATEGORY_COLOR_OPTIONS = (
+    ("#6cab7a", "Leaf green"),
+    ("#8b5e3c", "Coffee brown"),
+    ("#6ea8fe", "Dairy blue"),
+    ("#d49a89", "Bakery rose"),
+    ("#b08968", "Grocery tan"),
+    ("#d6a75b", "Utility gold"),
+    ("#9aa6b2", "Cleaning grey"),
+    ("#a17755", "Kitchen bronze"),
+    ("#de7c4a", "Fuel orange"),
+    ("#6aa9c8", "Water blue"),
+    ("#7c7f8a", "Equipment slate"),
+    ("#b2a39b", "Interior taupe"),
+)
+
+
+def _normalize_inventory_item_type(raw_value: str | None, default: str = "non_perishable") -> str:
+    value = (raw_value or "").strip().lower().replace("-", "_")
+    return value if value in {key for key, _ in INVENTORY_ITEM_TYPE_OPTIONS} else default
+
+
+def _inventory_item_category_name(item: InventoryItem) -> str | None:
+    """Hide legacy perishability labels now represented by item_type."""
+    value = (item.category_name or "").strip()
+    if value.lower() in {"perishable", "non-perishable"}:
+        return None
+    return value or None
+
+
+def _normalize_inventory_category_icon(raw_value: str | None) -> str:
+    value = (raw_value or "").strip().lower()
+    allowed = {key for key, _, _ in INVENTORY_CATEGORY_ICON_OPTIONS}
+    return value if value in allowed else "package"
+
+
+def _normalize_inventory_category_color(raw_value: str | None) -> str:
+    value = (raw_value or "").strip().lower()
+    return value if re.fullmatch(r"#[0-9a-f]{6}", value) else "#6cab7a"
+
 
 def _inventory_settings() -> dict:
     """Return validated Inventory OS preferences from the deployment config."""
@@ -5978,6 +6045,7 @@ def _inventory_filtered_items(
     search_text: str,
     area_filter: str,
     category_filter: str,
+    type_filter: str,
     status_filter: str,
     settings: dict | None = None,
 ):
@@ -5992,6 +6060,7 @@ def _inventory_filtered_items(
                     item.name or "",
                     item.item_code or "",
                     item.category_name or "",
+                    item.item_type or "",
                     item.subcategory_name or "",
                     item.storage_location or "",
                     item.selling_relation or "",
@@ -6002,6 +6071,8 @@ def _inventory_filtered_items(
         if area_filter != "all" and (item.area or "").lower() != area_filter:
             continue
         if category_filter != "all" and (item.category_name or "").strip().lower() != category_filter:
+            continue
+        if type_filter != "all" and _normalize_inventory_item_type(item.item_type) != type_filter:
             continue
         if status_filter != "all" and status_key != status_filter:
             continue
@@ -6426,6 +6497,7 @@ def inventory():
         if action == "add_item":
             item_name = (request.form.get("name") or "").strip()
             category_name = (request.form.get("category_name") or "").strip()
+            item_type = _normalize_inventory_item_type(request.form.get("item_type"))
             unit = (request.form.get("unit") or inventory_settings["default_unit"]).strip()
             storage_location = (request.form.get("storage_location") or "").strip() or None
             if not item_name:
@@ -6434,6 +6506,7 @@ def inventory():
             valid_category_names = {
                 row.name.strip().lower()
                 for row in InventoryCategory.query.filter_by(active=True).all()
+                if row.name.strip().lower() not in {"perishable", "non-perishable"}
             }
             if not category_name or category_name.lower() not in valid_category_names:
                 flash("Choose an active inventory category.", "error")
@@ -6447,6 +6520,7 @@ def inventory():
                 ),
                 name=item_name,
                 category_name=category_name,
+                item_type=item_type,
                 unit=unit,
                 storage_location=storage_location,
             )
@@ -6458,7 +6532,24 @@ def inventory():
 
         if action == "update_item":
             item = InventoryItem.query.get_or_404(_safe_int(request.form.get("item_id"), 0))
-            item.category_name = (request.form.get("category_name") or "").strip() or None
+            new_category_name = (request.form.get("category_name") or "").strip() or None
+            if new_category_name:
+                valid_category = InventoryCategory.query.filter(
+                    db.func.lower(InventoryCategory.name) == new_category_name.lower(),
+                    InventoryCategory.active.is_(True),
+                ).first()
+                if not valid_category or valid_category.name.strip().lower() in {
+                    "perishable",
+                    "non-perishable",
+                }:
+                    flash("Choose an active inventory category.", "error")
+                    return redirect(url_for("cafe.inventory", section="items_stock", edit_item_id=item.id))
+                new_category_name = valid_category.name
+            if new_category_name or _inventory_item_category_name(item):
+                item.category_name = new_category_name
+            item.item_type = _normalize_inventory_item_type(
+                request.form.get("item_type"), item.item_type or "non_perishable"
+            )
             item.subcategory_name = (request.form.get("subcategory_name") or "").strip() or None
             item.area = _normalize_inventory_area(request.form.get("area"), item.area)
             item.unit = (request.form.get("unit") or item.unit or "pcs").strip()
@@ -6521,7 +6612,7 @@ def inventory():
                 closing_raw = (request.form.get(f"closing_stock_{item_id}") or "").strip()
                 if closing_raw == "":
                     continue
-                closing_stock = _safe_float(closing_raw, 0)
+                closing_stock = max(0.0, _safe_float(closing_raw, 0))
                 prev_row = (
                     InventoryDailyClosing.query.filter(
                         InventoryDailyClosing.item_id == item_id,
@@ -6575,6 +6666,11 @@ def inventory():
             if not vendor.name:
                 flash("Vendor name is required.", "error")
                 return redirect(url_for("cafe.inventory", section="vendors"))
+            if InventoryVendor.query.filter(
+                db.func.lower(InventoryVendor.name) == vendor.name.lower()
+            ).first():
+                flash("A vendor with that name already exists.", "error")
+                return redirect(url_for("cafe.inventory", section="vendors"))
             db.session.add(vendor)
             db.session.commit()
             flash("Vendor added.", "success")
@@ -6582,7 +6678,15 @@ def inventory():
 
         if action == "update_vendor":
             vendor = InventoryVendor.query.get_or_404(_safe_int(request.form.get("vendor_id"), 0))
-            vendor.name = (request.form.get("name") or "").strip() or vendor.name
+            vendor_name = (request.form.get("name") or "").strip() or vendor.name
+            duplicate_vendor = InventoryVendor.query.filter(
+                db.func.lower(InventoryVendor.name) == vendor_name.lower(),
+                InventoryVendor.id != vendor.id,
+            ).first()
+            if duplicate_vendor:
+                flash("A vendor with that name already exists.", "error")
+                return redirect(url_for("cafe.inventory", section="vendors", edit_vendor_id=vendor.id))
+            vendor.name = vendor_name
             vendor.vendor_category = (request.form.get("vendor_category") or "").strip() or None
             vendor.contact_person = (request.form.get("contact_person") or "").strip() or None
             vendor.phone = (request.form.get("phone") or "").strip() or None
@@ -6597,48 +6701,55 @@ def inventory():
             return redirect(url_for("cafe.inventory", section="vendors", edit_vendor_id=vendor.id))
 
         if action == "add_purchase":
+            purchase_lines = []
+            item_ids = [int(v) for v in request.form.getlist("purchase_item_id") if str(v).isdigit()]
+            for item_id in item_ids:
+                item = InventoryItem.query.get(item_id)
+                qty = _safe_float(request.form.get(f"purchase_qty_{item_id}"), 0)
+                unit_price = max(0.0, _safe_float(request.form.get(f"purchase_price_{item_id}"), 0))
+                if item and qty > 0:
+                    purchase_lines.append((item, qty, unit_price))
+            if not purchase_lines:
+                flash("Select at least one item and enter a purchase quantity.", "error")
+                return redirect(url_for("cafe.inventory", section="purchases"))
+            payment_status = (request.form.get("payment_status") or "pending").strip().lower()
+            if payment_status not in {"pending", "paid", "partial"}:
+                payment_status = "pending"
             purchase = InventoryPurchase(
                 purchase_date=_inventory_date(request.form.get("purchase_date")),
-                vendor_id=int(request.form.get("vendor_id")) if request.form.get("vendor_id") else None,
+                vendor_id=_safe_int(request.form.get("vendor_id"), 0) or None,
                 invoice_number=(request.form.get("invoice_number") or "").strip() or None,
-                tax_amount=_safe_float(request.form.get("tax_amount"), 0),
-                payment_status=(request.form.get("payment_status") or "pending").strip(),
+                tax_amount=max(0.0, _safe_float(request.form.get("tax_amount"), 0)),
+                payment_status=payment_status,
                 note=(request.form.get("note") or "").strip() or None,
             )
             db.session.add(purchase)
             db.session.flush()
             subtotal = 0.0
-            item_ids = [int(v) for v in request.form.getlist("purchase_item_id") if str(v).isdigit()]
-            for item_id in item_ids:
-                qty = _safe_float(request.form.get(f"purchase_qty_{item_id}"), 0)
-                unit_price = _safe_float(request.form.get(f"purchase_price_{item_id}"), 0)
-                if qty <= 0:
-                    continue
+            for item, qty, unit_price in purchase_lines:
                 line_total = round(qty * unit_price, 2)
                 db.session.add(
                     InventoryPurchaseLine(
                         purchase_id=purchase.id,
-                        item_id=item_id,
+                        item_id=item.id,
                         quantity=qty,
                         unit_price=unit_price,
                         line_total=line_total,
                     )
                 )
-                item = InventoryItem.query.get(item_id)
-                if item:
-                    before = float(item.current_amount or 0)
-                    item.current_amount = round(before + qty, 3)
-                    if unit_price > 0:
-                        item.purchase_price = unit_price
-                    _record_inventory_movement(
-                        item,
-                        before=before,
-                        after=item.current_amount,
-                        movement_type="purchase",
-                        reason=f"Purchase #{purchase.id}",
-                        reference_type="purchase",
-                        reference_id=purchase.id,
-                    )
+                before = float(item.current_amount or 0)
+                item.current_amount = round(before + qty, 3)
+                if unit_price > 0:
+                    item.purchase_price = unit_price
+                _record_inventory_movement(
+                    item,
+                    before=before,
+                    after=item.current_amount,
+                    movement_type="purchase",
+                    reason=f"Purchase #{purchase.id}",
+                    reference_type="purchase",
+                    reference_id=purchase.id,
+                )
                 subtotal += line_total
             purchase.subtotal = round(subtotal, 2)
             purchase.total_amount = round(subtotal + float(purchase.tax_amount or 0), 2)
@@ -6647,7 +6758,7 @@ def inventory():
             return redirect(url_for("cafe.inventory", section="purchases"))
 
         if action == "add_wastage":
-            item_id = int(request.form.get("item_id") or 0)
+            item_id = _safe_int(request.form.get("item_id"), 0)
             qty = _safe_float(request.form.get("quantity"), 0)
             if item_id <= 0 or qty <= 0:
                 flash("Select item and quantity.", "error")
@@ -6692,8 +6803,8 @@ def inventory():
             db.session.add(
                 InventoryCategory(
                     name=name,
-                    icon=(request.form.get("icon") or "").strip() or None,
-                    color=(request.form.get("color") or "").strip() or None,
+                    icon=_normalize_inventory_category_icon(request.form.get("icon")),
+                    color=_normalize_inventory_category_color(request.form.get("color")),
                     active=True,
                 )
             )
@@ -6713,8 +6824,8 @@ def inventory():
                 flash("Another category already uses that name.", "error")
                 return redirect(url_for("cafe.inventory", section="items_stock", edit_category_id=category.id))
             category.name = new_name
-            category.icon = (request.form.get("icon") or "").strip() or None
-            category.color = (request.form.get("color") or "").strip() or None
+            category.icon = _normalize_inventory_category_icon(request.form.get("icon"))
+            category.color = _normalize_inventory_category_color(request.form.get("color"))
             category.active = True if request.form.get("active") else False
             if new_name.lower() != old_name.lower():
                 InventoryItem.query.filter(
@@ -6801,11 +6912,19 @@ def inventory():
     if inventory_area not in {row["value"] for row in inventory_area_options}:
         inventory_area = "all"
     inventory_category_filter = (request.args.get("category") or "all").strip().lower()
+    inventory_type_filter = (request.args.get("item_type") or "all").strip().lower().replace("-", "_")
+    if inventory_type_filter not in {"all", "perishable", "non_perishable"}:
+        inventory_type_filter = "all"
     inventory_status_filter = (request.args.get("status") or "all").strip().lower()
     if inventory_status_filter not in ["all", "healthy", "low", "overstock"]:
         inventory_status_filter = "all"
     inventory_categories_all = InventoryCategory.query.order_by(InventoryCategory.name.asc()).all()
     categories = [row for row in inventory_categories_all if row.active]
+    item_categories = [
+        row
+        for row in categories
+        if row.name.strip().lower() not in {"perishable", "non-perishable"}
+    ]
     vendors = InventoryVendor.query.filter_by(active=True).order_by(InventoryVendor.name.asc()).all()
     items = InventoryItem.query.order_by(InventoryItem.category_name.asc(), InventoryItem.name.asc()).all()
     expense_logs = (
@@ -6828,6 +6947,7 @@ def inventory():
         inventory_search,
         inventory_area,
         inventory_category_filter,
+        inventory_type_filter,
         inventory_status_filter,
         inventory_settings,
     )
@@ -6843,7 +6963,11 @@ def inventory():
 
     category_stats = []
     for cat in inventory_categories_all:
-        cat_items = [x for x in items if (x.category_name or "").strip().lower() == cat.name.lower()]
+        cat_items = [
+            x
+            for x in items
+            if (_inventory_item_category_name(x) or "").lower() == cat.name.lower()
+        ]
         stock_value = round(sum(float(x.current_amount or 0) * float(x.purchase_price or 0) for x in cat_items), 2)
         category_stats.append({"category": cat, "item_count": len(cat_items), "stock_value": stock_value})
 
@@ -6896,7 +7020,7 @@ def inventory():
         })
     daily_rows_grouped = {}
     for row in daily_rows:
-        key = row["item"].category_name or "Uncategorized"
+        key = _inventory_item_category_name(row["item"]) or "Uncategorized"
         daily_rows_grouped.setdefault(key, []).append(row)
 
     vendor_purchase_map = {}
@@ -7042,6 +7166,7 @@ def inventory():
         section=section,
         categories=categories,
         inventory_categories_all=inventory_categories_all,
+        item_categories=item_categories,
         category_stats=category_stats,
         vendors=vendors,
         items=items,
@@ -7071,8 +7196,14 @@ def inventory():
         inventory_area_name_map=inventory_area_name_map,
         inventory_category_filter=inventory_category_filter,
         inventory_status_filter=inventory_status_filter,
+        inventory_type_filter=inventory_type_filter,
+        inventory_item_type_options=INVENTORY_ITEM_TYPE_OPTIONS,
+        inventory_category_icon_options=INVENTORY_CATEGORY_ICON_OPTIONS,
+        inventory_category_icon_map={key: {"label": label, "glyph": glyph} for key, label, glyph in INVENTORY_CATEGORY_ICON_OPTIONS},
+        inventory_category_color_options=INVENTORY_CATEGORY_COLOR_OPTIONS,
         inventory_settings=inventory_settings,
         item_status_map=item_status_map,
+        item_category_display_map={x.id: _inventory_item_category_name(x) for x in items},
         top_stock_value_items=top_stock_value_items,
         top_consumption_rows=top_consumption_rows,
         vendor_purchase_map=vendor_purchase_map,

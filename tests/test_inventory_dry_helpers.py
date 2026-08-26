@@ -3,11 +3,15 @@ import unittest
 
 from flask import Flask
 
+from app import _normalize_inventory_item_types
 from app.cafe import (
     _clear_purchase_todos,
     _ensure_inventory_item_categories,
     _inventory_date,
     _inventory_item_status,
+    _normalize_inventory_category_color,
+    _normalize_inventory_category_icon,
+    _normalize_inventory_item_type,
     _normalize_inventory_section,
     _purchase_request_summaries,
     _remove_purchase_todo,
@@ -67,6 +71,15 @@ class InventoryDryHelperTests(unittest.TestCase):
             "healthy",
         )
 
+    def test_inventory_type_and_visual_category_values_are_normalized(self):
+        self.assertEqual(_normalize_inventory_item_type("Perishable"), "perishable")
+        self.assertEqual(_normalize_inventory_item_type("non-perishable"), "non_perishable")
+        self.assertEqual(_normalize_inventory_item_type("unknown"), "non_perishable")
+        self.assertEqual(_normalize_inventory_category_icon("leaf"), "leaf")
+        self.assertEqual(_normalize_inventory_category_icon("custom-script"), "package")
+        self.assertEqual(_normalize_inventory_category_color("#6CAB7A"), "#6cab7a")
+        self.assertEqual(_normalize_inventory_category_color("red"), "#6cab7a")
+
     def test_existing_item_categories_are_preserved_and_manageable(self):
         db.session.add(
             InventoryItem(
@@ -86,6 +99,29 @@ class InventoryDryHelperTests(unittest.TestCase):
         ).all()
         self.assertEqual(len(rows), 1)
         self.assertTrue(rows[0].active)
+
+    def test_legacy_perishability_category_is_migrated_without_losing_meaning(self):
+        category = InventoryCategory(
+            name="Perishable",
+            icon="box",
+            color="#8a735f",
+            active=True,
+        )
+        item = InventoryItem(
+            name="Fresh Cream",
+            area="cafe",
+            category_name="Perishable",
+            item_type="non_perishable",
+            unit="kg",
+        )
+        db.session.add_all([category, item])
+        db.session.commit()
+
+        _normalize_inventory_item_types()
+
+        self.assertEqual(item.item_type, "perishable")
+        self.assertEqual(item.category_name, "Perishable")
+        self.assertFalse(category.active)
 
     def test_purchase_summary_reuses_one_payload_for_all_views(self):
         active_rows = [

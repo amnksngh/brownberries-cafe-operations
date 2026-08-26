@@ -201,6 +201,7 @@ def _ensure_sqlite_schema_columns():
         "inventory_item": {
             "item_code": "TEXT",
             "category_name": "TEXT",
+            "item_type": "TEXT NOT NULL DEFAULT 'non_perishable'",
             "subcategory_name": "TEXT",
             "average_daily_usage": "FLOAT NOT NULL DEFAULT 0",
             "purchase_price": "FLOAT NOT NULL DEFAULT 0",
@@ -387,6 +388,9 @@ def _ensure_sqlite_schema_columns():
         text("CREATE INDEX IF NOT EXISTS idx_inventory_item_category_name ON inventory_item (category_name, name)")
     )
     db.session.execute(
+        text("CREATE INDEX IF NOT EXISTS idx_inventory_item_type_category ON inventory_item (item_type, category_name, name)")
+    )
+    db.session.execute(
         text("CREATE INDEX IF NOT EXISTS idx_inventory_daily_closing_item_date ON inventory_daily_closing (item_id, closing_date)")
     )
     db.session.execute(
@@ -466,6 +470,35 @@ def _normalize_inventory_categories():
         if alias.active:
             alias.active = False
             changed = True
+    if changed:
+        db.session.commit()
+
+
+def _normalize_inventory_item_types():
+    """Move the legacy perishable category flag into its dedicated item field."""
+    changed = False
+    for item in InventoryItem.query.all():
+        legacy_category = (item.category_name or "").strip().lower().replace("-", "_")
+        current_type = (item.item_type or "").strip().lower().replace("-", "_")
+        if legacy_category in {"perishable", "non_perishable"}:
+            item.item_type = legacy_category
+            changed = True
+        elif current_type not in {"perishable", "non_perishable"}:
+            item.item_type = "non_perishable"
+            changed = True
+
+    for category in InventoryCategory.query.filter(
+        db.func.lower(InventoryCategory.name).in_(["perishable", "non-perishable"])
+    ).all():
+        is_generated_legacy_category = (
+            (category.icon or "").strip().lower() == "box"
+            and (category.color or "").strip().lower() == "#8a735f"
+        )
+        has_expenses = InventoryExpenseLog.query.filter_by(category_id=category.id).first() is not None
+        if is_generated_legacy_category and not has_expenses and category.active:
+            category.active = False
+            changed = True
+
     if changed:
         db.session.commit()
 
@@ -578,6 +611,7 @@ def create_app():
                 db.session.add(InventoryCategory(name=name, icon=icon, color=color, active=True))
         db.session.commit()
         _normalize_inventory_categories()
+        _normalize_inventory_item_types()
         _ensure_other_inventory_vendor()
     app.before_request(load_current_user)
     @app.context_processor

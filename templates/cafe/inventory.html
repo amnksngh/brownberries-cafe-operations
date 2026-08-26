@@ -1,4 +1,21 @@
 {% extends "base.html" %}
+{% macro inventory_icon_picker(field_id, current_value) %}
+  {% set icon = inventory_category_icon_map.get(current_value or 'package', inventory_category_icon_map.get('package')) %}
+  <input type="hidden" id="{{ field_id }}" name="icon" value="{{ current_value or 'package' }}" />
+  <button type="button" class="inventory-picker-trigger" data-icon-picker-target="{{ field_id }}">
+    <span class="inventory-picker-glyph" data-icon-preview="{{ field_id }}">{{ icon.glyph }}</span>
+    <span data-icon-label="{{ field_id }}">{{ icon.label }}</span>
+    <span aria-hidden="true">▾</span>
+  </button>
+{% endmacro %}
+{% macro inventory_color_picker(field_id, current_value) %}
+  <input type="hidden" id="{{ field_id }}" name="color" value="{{ current_value or '#6cab7a' }}" />
+  <button type="button" class="inventory-picker-trigger" data-color-picker-target="{{ field_id }}">
+    <span class="inventory-color-preview" data-color-preview="{{ field_id }}" style="background:{{ current_value or '#6cab7a' }}"></span>
+    <span data-color-label="{{ field_id }}">{{ current_value or '#6cab7a' }}</span>
+    <span aria-hidden="true">▾</span>
+  </button>
+{% endmacro %}
 {% block content %}
 <section class="panel inventory-hero">
     <div class="split-head">
@@ -393,6 +410,12 @@
               {% for c in categories %}<option value="{{ c.name|lower }}" {% if inventory_category_filter == c.name|lower %}selected{% endif %}>{{ c.name }}</option>{% endfor %}
             </select>
           </label>
+          <label>Type
+            <select name="item_type">
+              <option value="all" {% if inventory_type_filter == 'all' %}selected{% endif %}>All</option>
+              {% for value, label in inventory_item_type_options %}<option value="{{ value }}" {% if inventory_type_filter == value %}selected{% endif %}>{{ label }}</option>{% endfor %}
+            </select>
+          </label>
           <label>Status
             <select name="status">
               <option value="all" {% if inventory_status_filter == 'all' %}selected{% endif %}>All</option>
@@ -415,9 +438,17 @@
           <label>Category
             <select name="category_name" required>
               <option value="">Select category</option>
-              {% for c in categories %}<option value="{{ c.name }}">{{ c.name }}</option>{% endfor %}
+              {% for c in item_categories %}<option value="{{ c.name }}">{{ c.name }}</option>{% endfor %}
             </select>
           </label>
+          <fieldset class="inventory-type-fieldset">
+            <legend>Type</legend>
+            <div class="inventory-type-toggle">
+              {% for value, label in inventory_item_type_options %}
+              <label><input type="radio" name="item_type" value="{{ value }}" {% if value == 'non_perishable' %}checked{% endif %} required /><span>{{ label }}</span></label>
+              {% endfor %}
+            </div>
+          </fieldset>
           <label>Area
             <select name="area">
               {% for area in inventory_area_options if area.value != 'all' %}
@@ -441,13 +472,23 @@
           <label>Item Code <span class="inventory-readonly-value">{{ selected_item.item_code or "-" }}</span></label>
           <label>Name <span class="inventory-readonly-value">{{ selected_item.name }}</span></label>
           <label>Category
+            {% set selected_category_name = item_category_display_map.get(selected_item.id) %}
             <select name="category_name">
-              {% for c in categories %}<option value="{{ c.name }}" {% if (selected_item.category_name or '')|lower == c.name|lower %}selected{% endif %}>{{ c.name }}</option>{% endfor %}
-              {% if selected_item.category_name and not (categories|selectattr('name', 'equalto', selected_item.category_name)|list) %}
-              <option value="{{ selected_item.category_name }}" selected>{{ selected_item.category_name }}</option>
+              <option value="" {% if not selected_category_name %}selected{% endif %}>Uncategorized</option>
+              {% for c in item_categories %}<option value="{{ c.name }}" {% if (selected_category_name or '')|lower == c.name|lower %}selected{% endif %}>{{ c.name }}</option>{% endfor %}
+              {% if selected_category_name and not (item_categories|selectattr('name', 'equalto', selected_category_name)|list) %}
+              <option value="{{ selected_category_name }}" selected>{{ selected_category_name }}</option>
               {% endif %}
             </select>
           </label>
+          <fieldset class="inventory-type-fieldset">
+            <legend>Type</legend>
+            <div class="inventory-type-toggle">
+              {% for value, label in inventory_item_type_options %}
+              <label><input type="radio" name="item_type" value="{{ value }}" {% if selected_item.item_type == value %}checked{% endif %} required /><span>{{ label }}</span></label>
+              {% endfor %}
+            </div>
+          </fieldset>
           <label>Subcategory <input name="subcategory_name" value="{{ selected_item.subcategory_name or '' }}" /></label>
           <label>Area
             <select name="area">
@@ -488,22 +529,23 @@
     <section class="panel">
       <div class="split-head"><div><h3>Item &amp; Stock Master</h3><p class="muted">Edit an item to maintain its classification and stock rules. Use adjustments only for documented corrections.</p></div><span class="inventory-badge">{{ filtered_items|length }} shown</span></div>
       <table>
-        <tr><th>Item</th><th>Area</th><th>Category</th><th>Current</th><th>Reorder</th><th>Status</th><th>Vendor</th><th>Value</th><th>Open</th></tr>
+        <tr><th>Item</th><th>Area</th><th>Category</th><th>Type</th><th>Current</th><th>Reorder</th><th>Status</th><th>Vendor</th><th>Value</th><th>Open</th></tr>
         {% for item in filtered_items %}
         {% set item_status = item_status_map.get(item.id, 'healthy') %}
         <tr>
           <td><strong>{{ item.name }}</strong><div class="muted">{{ item.item_code or "-" }}</div></td>
           <td>{{ inventory_area_name_map.get((item.area or '')|lower, item.area or '-') }}</td>
-          <td>{{ item.category_name or "-" }}</td>
+          <td>{{ item_category_display_map.get(item.id) or "-" }}</td>
+          <td><span class="inventory-type-badge {{ item.item_type }}">{{ "Perishable" if item.item_type == "perishable" else "Non-perishable" }}</span></td>
           <td>{{ item.current_amount }} {{ item.unit }}</td>
           <td>{{ item.reorder_level }} {{ item.unit }}</td>
           <td><span class="inventory-status {{ item_status }}">{{ item_status.replace('_', ' ').title() }}</span></td>
           <td>{{ item.vendor.name if item.vendor else "-" }}</td>
           <td>₹{{ "%.2f"|format((item.current_amount or 0) * (item.purchase_price or 0)) }}</td>
-          <td><a href="{{ url_for('cafe.inventory', section='items_stock', edit_item_id=item.id, q=inventory_search, area=inventory_area, category=inventory_category_filter, status=inventory_status_filter) }}">Edit</a></td>
+          <td><a href="{{ url_for('cafe.inventory', section='items_stock', edit_item_id=item.id, q=inventory_search, area=inventory_area, category=inventory_category_filter, item_type=inventory_type_filter, status=inventory_status_filter) }}">Edit</a></td>
         </tr>
         {% else %}
-        <tr><td colspan="9">No items match the current filters.</td></tr>
+        <tr><td colspan="10">No items match the current filters.</td></tr>
         {% endfor %}
       </table>
     </section>
@@ -515,23 +557,32 @@
       <section class="inventory-two-col inventory-main-grid">
         <article class="inventory-subpanel">
           <h4>Add Category</h4>
+          <p class="muted">The icon is an optional visual marker that helps staff recognize a category quickly.</p>
           <form method="post" class="grid inventory-form-grid">
             <input type="hidden" name="action" value="add_category" />
             <label>Name <input name="name" required /></label>
-            <label>Icon <input name="icon" placeholder="leaf" /></label>
-            <label>Color <input name="color" type="color" value="#6cab7a" /></label>
+            <label>Icon {{ inventory_icon_picker('add-category-icon', 'package') }}</label>
+            <label>Color {{ inventory_color_picker('add-category-color', '#6cab7a') }}</label>
             <button type="submit">Add Category</button>
           </form>
         </article>
         <article class="inventory-subpanel">
           <h4>Edit Category</h4>
+          <form method="get" class="grid" style="margin-bottom:0.8rem;">
+            <input type="hidden" name="section" value="items_stock" />
+            <label>Choose added category
+              <select name="edit_category_id" onchange="this.form.submit()">
+                {% for c in inventory_categories_all %}<option value="{{ c.id }}" {% if selected_category and selected_category.id == c.id %}selected{% endif %}>{{ c.name }}{% if not c.active %} (inactive){% endif %}</option>{% endfor %}
+              </select>
+            </label>
+          </form>
           {% if selected_category %}
           <form method="post" class="grid inventory-form-grid">
             <input type="hidden" name="action" value="update_category" />
             <input type="hidden" name="category_id" value="{{ selected_category.id }}" />
             <label>Name <input name="name" value="{{ selected_category.name }}" required /></label>
-            <label>Icon <input name="icon" value="{{ selected_category.icon or '' }}" /></label>
-            <label>Color <input name="color" type="color" value="{{ selected_category.color or '#6cab7a' }}" /></label>
+            <label>Icon {{ inventory_icon_picker('edit-category-icon', selected_category.icon or 'package') }}</label>
+            <label>Color {{ inventory_color_picker('edit-category-color', selected_category.color or '#6cab7a') }}</label>
             <label><input type="checkbox" name="active" {% if selected_category.active %}checked{% endif %} /> Active</label>
             <button type="submit">Update Category</button>
           </form>
@@ -545,7 +596,8 @@
           {% set stats = category_stats|selectattr('category.id', 'equalto', c.id)|first %}
           <tr>
             <td><strong>{{ c.name }}</strong></td>
-            <td>{{ c.icon or "-" }}</td>
+            {% set icon = inventory_category_icon_map.get(c.icon or 'package', inventory_category_icon_map.get('package')) %}
+            <td><span class="inventory-category-icon" title="{{ icon.label }}">{{ icon.glyph }}</span> {{ icon.label }}</td>
             <td><span class="category-dot" style="background:{{ c.color or '#ddd' }}"></span> {{ c.color or '-' }}</td>
             <td>{{ stats.item_count if stats else 0 }}</td>
             <td><span class="inventory-status {{ 'healthy' if c.active else 'overstock' }}">{{ "Active" if c.active else "Inactive" }}</span></td>
@@ -555,6 +607,61 @@
         </table>
       </div>
     </section>
+    <dialog id="inventory-icon-dialog" class="inventory-picker-dialog">
+      <div class="split-head"><div><h3>Choose Category Icon</h3><p class="muted">Select a visual marker for quick recognition.</p></div><button type="button" class="secondary" data-close-picker>Close</button></div>
+      <div class="inventory-icon-grid">
+        {% for value, label, glyph in inventory_category_icon_options %}
+        <button type="button" class="inventory-icon-choice" data-icon-value="{{ value }}" data-icon-label-value="{{ label }}" data-icon-glyph="{{ glyph }}"><span>{{ glyph }}</span><small>{{ label }}</small></button>
+        {% endfor %}
+      </div>
+    </dialog>
+    <dialog id="inventory-color-dialog" class="inventory-picker-dialog">
+      <div class="split-head"><div><h3>Choose Category Color</h3><p class="muted">Choose a preset or use the custom color picker.</p></div><button type="button" class="secondary" data-close-picker>Close</button></div>
+      <div class="inventory-color-grid">
+        {% for value, label in inventory_category_color_options %}
+        <button type="button" class="inventory-color-choice" data-color-value="{{ value }}"><span style="background:{{ value }}"></span><small>{{ label }}</small></button>
+        {% endfor %}
+      </div>
+      <div class="inventory-custom-color"><label>Custom color <input id="inventory-custom-color-input" type="color" value="#6cab7a" /></label><button type="button" data-apply-custom-color>Use Custom Color</button></div>
+    </dialog>
+    <script>
+      (() => {
+        const iconDialog = document.getElementById("inventory-icon-dialog");
+        const colorDialog = document.getElementById("inventory-color-dialog");
+        document.querySelectorAll("[data-icon-picker-target]").forEach((button) => {
+          button.addEventListener("click", () => {
+            iconDialog.dataset.target = button.dataset.iconPickerTarget;
+            iconDialog.showModal();
+          });
+        });
+        iconDialog.querySelectorAll("[data-icon-value]").forEach((button) => {
+          button.addEventListener("click", () => {
+            const target = iconDialog.dataset.target;
+            document.getElementById(target).value = button.dataset.iconValue;
+            document.querySelector(`[data-icon-preview="${target}"]`).textContent = button.dataset.iconGlyph;
+            document.querySelector(`[data-icon-label="${target}"]`).textContent = button.dataset.iconLabelValue;
+            iconDialog.close();
+          });
+        });
+        document.querySelectorAll("[data-color-picker-target]").forEach((button) => {
+          button.addEventListener("click", () => {
+            colorDialog.dataset.target = button.dataset.colorPickerTarget;
+            document.getElementById("inventory-custom-color-input").value = document.getElementById(button.dataset.colorPickerTarget).value;
+            colorDialog.showModal();
+          });
+        });
+        const applyColor = (value) => {
+          const target = colorDialog.dataset.target;
+          document.getElementById(target).value = value;
+          document.querySelector(`[data-color-preview="${target}"]`).style.background = value;
+          document.querySelector(`[data-color-label="${target}"]`).textContent = value;
+          colorDialog.close();
+        };
+        colorDialog.querySelectorAll("[data-color-value]").forEach((button) => button.addEventListener("click", () => applyColor(button.dataset.colorValue)));
+        colorDialog.querySelector("[data-apply-custom-color]").addEventListener("click", () => applyColor(document.getElementById("inventory-custom-color-input").value));
+        document.querySelectorAll("[data-close-picker]").forEach((button) => button.addEventListener("click", () => button.closest("dialog").close()));
+      })();
+    </script>
     {% endif %}
 
     {% if section == "purchases" %}

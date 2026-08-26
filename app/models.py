@@ -345,6 +345,7 @@ class InventoryItem(TimestampMixin, db.Model):
     area = db.Column(db.String(40), nullable=False)  # barista/kitchen/cafe
     name = db.Column(db.String(120), nullable=False)
     category_name = db.Column(db.String(80), nullable=True)
+    item_type = db.Column(db.String(30), nullable=False, default="non_perishable")
     subcategory_name = db.Column(db.String(80), nullable=True)
     unit = db.Column(db.String(20), nullable=False, default="pcs")
     current_amount = db.Column(db.Float, nullable=False, default=0)
