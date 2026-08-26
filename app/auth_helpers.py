@@ -9,6 +9,7 @@ ENDPOINT_PERMISSIONS = {
     "cafe.staff": "can_manage_staff",
     "cafe.user_types": "can_manage_staff",
     "cafe.menu": "can_manage_menu",
+    "cafe.save_menu_display_sop": "can_manage_menu",
     "cafe.add_category": "can_manage_menu",
     "cafe.add_type": "can_manage_menu",
     "cafe.update_category": "can_manage_menu",

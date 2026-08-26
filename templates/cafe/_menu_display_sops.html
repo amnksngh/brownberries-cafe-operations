@@ -1,0 +1,192 @@
+<section class="panel">
+  <h3>Quick Display Recipes & SOPs</h3>
+  <p class="muted">Create the practical recipe and preparation notes shown in workstation SOP panels. Raw stock is listed only as an ingredient choice; edit its stock, purchasing, vendor, and wastage details in Inventory Management.</p>
+  <div class="inventory-category-chip">
+    <strong>Need responsibilities, timed steps, approvals, or version history?</strong>
+    Use <a href="{{ url_for('operations.index') }}">Versioned SOPs & Responsibilities</a>. The quick editor below remains compatible with the existing kitchen and barista display panels.
+  </div>
+</section>
+
+<section class="inventory-two-col">
+  <article class="panel">
+    <h3>Create or Edit a Display SOP</h3>
+    <form method="post" action="{{ url_for('cafe.save_menu_display_sop') }}" class="grid" id="menu-display-sop-form">
+      <div class="grid inventory-form-grid">
+        <label>Menu Item
+          <select name="menu_item_id" id="display-sop-menu-item-select" required>
+            <option value="">Select a prepared or ready-to-sell item</option>
+            {% for item in display_sop_menu_items %}<option value="{{ item.id }}">{{ item.name }}</option>{% endfor %}
+          </select>
+        </label>
+        <label>Primary Preparation Responsibility
+          <select name="chef_user_id" id="display-sop-chef-select">
+            <option value="">Unassigned</option>
+            {% for chef in chef_options %}<option value="{{ chef.id }}">{{ chef.full_name }}{% if chef.has_role('barista') %} · Barista{% else %} · Chef{% endif %}</option>{% endfor %}
+          </select>
+        </label>
+        <label>Yield Quantity <input type="number" step="0.001" min="0" name="yield_qty" value="1" /></label>
+        <label>Yield Unit <input name="yield_unit" value="portion" /></label>
+        <label>Preparation Time (minutes) <input type="number" min="0" name="prep_time_minutes" placeholder="12" /></label>
+        <label>SOP Photo URL <input name="sop_photo_url" placeholder="https://..." /></label>
+      </div>
+      <div class="inventory-sop-grid">
+        <label>Ingredients Notes
+          <textarea name="ingredients_note" rows="4" placeholder="Optional manual notes, one line per note."></textarea>
+        </label>
+        <label>Preparation Steps
+          <textarea name="preparation_steps" rows="6" placeholder="Write one step per line, in the order staff should perform it."></textarea>
+        </label>
+        <label>Plating / Serving Notes
+          <textarea name="plating_notes" rows="4" placeholder="One line per point."></textarea>
+        </label>
+        <label>Quality Checks
+          <textarea name="quality_checks" rows="4" placeholder="One line per check."></textarea>
+        </label>
+        <label>Allergy Alerts
+          <textarea name="allergy_alerts" rows="4" placeholder="Example: Contains dairy."></textarea>
+        </label>
+        <label>Training Notes
+          <textarea name="training_notes" rows="4" placeholder="Helpful cues for new team members."></textarea>
+        </label>
+      </div>
+      <div id="display-sop-size-notes-wrap" class="inventory-size-notes hidden">
+        <div class="split-head">
+          <strong>Serving Size SOP Notes</strong>
+          <span class="muted">These appear with the matching serving size on workstation displays.</span>
+        </div>
+        <div id="display-sop-size-notes-list" class="grid"></div>
+      </div>
+      <details>
+        <summary><strong>Select inventory ingredients</strong></summary>
+        <p class="muted">These records remain owned by Inventory Management. Selecting them here only links the required quantity to this menu item.</p>
+        <table>
+          <tr><th>Inventory Ingredient</th><th>Quantity Per Yield</th><th>Unit</th></tr>
+          {% for item in display_sop_inventory_items %}
+          <tr>
+            <td><label><input type="checkbox" name="recipe_item_id" value="{{ item.id }}" /> {{ item.name }}</label></td>
+            <td><input type="number" step="0.001" min="0" name="recipe_qty_{{ item.id }}" /></td>
+            <td><input name="recipe_unit_{{ item.id }}" value="{{ item.unit }}" /></td>
+          </tr>
+          {% endfor %}
+        </table>
+      </details>
+      <button type="submit">Save Display Recipe & SOP</button>
+    </form>
+  </article>
+
+  <article class="panel">
+    <h3>Existing Display SOPs</h3>
+    <p class="muted">Select an item in this list to load its saved SOP into the editor.</p>
+    <table>
+      <tr><th>Menu Item</th><th>Yield</th><th>Prep</th><th>Inventory Inputs</th><th>Action</th></tr>
+      {% for recipe in display_sop_recipes %}
+      <tr>
+        <td>
+          <strong>{{ recipe.menu_item.name if recipe.menu_item else "-" }}</strong>
+          {% if recipe.menu_item %}<div class="muted">{{ display_sop_menu_item_meta.get(recipe.menu_item.id, {}).get("prep_station_name", "No workstation") }}</div>{% endif %}
+        </td>
+        <td>{{ recipe.yield_qty }} {{ recipe.yield_unit or '' }}</td>
+        <td>{{ recipe.prep_time_minutes or "-" }} min</td>
+        <td>{% for ingredient in recipe.ingredients %}<div>{{ ingredient.inventory_item.name if ingredient.inventory_item else "-" }} — {{ ingredient.qty_per_menu }} {{ ingredient.unit }}</div>{% else %}<span class="muted">None linked</span>{% endfor %}</td>
+        <td>{% if recipe.menu_item and recipe.menu_item.id in display_sop_menu_item_meta %}<button type="button" class="display-sop-edit" data-menu-item-id="{{ recipe.menu_item.id }}">Edit</button>{% elif recipe.menu_item %}<span class="muted">Archived item</span>{% else %}-{% endif %}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="5">No display SOPs have been saved yet.</td></tr>
+      {% endfor %}
+    </table>
+  </article>
+</section>
+
+<script id="display-sop-menu-item-meta" type="application/json">{{ display_sop_menu_item_meta|tojson }}</script>
+<script id="display-sop-recipe-payload-map" type="application/json">{{ display_sop_recipe_payload_map|tojson }}</script>
+<script>
+  (() => {
+    const form = document.getElementById("menu-display-sop-form");
+    const menuSelect = document.getElementById("display-sop-menu-item-select");
+    const sizeWrap = document.getElementById("display-sop-size-notes-wrap");
+    const sizeList = document.getElementById("display-sop-size-notes-list");
+    const menuMetaNode = document.getElementById("display-sop-menu-item-meta");
+    const recipeMapNode = document.getElementById("display-sop-recipe-payload-map");
+    if (!form || !menuSelect || !menuMetaNode || !recipeMapNode) return;
+
+    let menuMeta = {};
+    let recipeMap = {};
+    try { menuMeta = JSON.parse(menuMetaNode.textContent || "{}"); } catch (error) {}
+    try { recipeMap = JSON.parse(recipeMapNode.textContent || "{}"); } catch (error) {}
+    const field = (name) => form.querySelector(`[name="${name}"]`);
+
+    function renderSizeNotes(sizes, existingNotes = {}) {
+      if (!Array.isArray(sizes) || !sizes.length) {
+        sizeWrap?.classList.add("hidden");
+        if (sizeList) sizeList.replaceChildren();
+        return;
+      }
+      sizeWrap?.classList.remove("hidden");
+      sizeList.replaceChildren();
+      sizes.forEach((row) => {
+        const labelText = String(row.size || "");
+        const label = document.createElement("label");
+        const title = document.createElement("span");
+        const hidden = document.createElement("input");
+        const note = document.createElement("textarea");
+        title.textContent = `${labelText} SOP Note`;
+        hidden.type = "hidden";
+        hidden.name = "size_sop_label[]";
+        hidden.value = labelText;
+        note.name = "size_sop_note[]";
+        note.rows = 2;
+        note.placeholder = `Specific steps or output notes for ${labelText}`;
+        note.value = existingNotes[labelText] || "";
+        label.append(title, hidden, note);
+        sizeList.appendChild(label);
+      });
+    }
+
+    function applyRecipe(menuItemId, scrollToEditor = false) {
+      const menuItem = menuMeta[String(menuItemId)] || null;
+      const recipe = recipeMap[String(menuItemId)] || null;
+      if (!menuItemId) {
+        form.reset();
+        menuSelect.value = "";
+        renderSizeNotes([], {});
+        return;
+      }
+      menuSelect.value = String(menuItemId);
+      field("yield_qty").value = recipe?.yield_qty ?? 1;
+      field("yield_unit").value = recipe?.yield_unit ?? "portion";
+      field("prep_time_minutes").value = recipe?.prep_time_minutes || "";
+      field("ingredients_note").value = recipe?.ingredients_note || "";
+      field("preparation_steps").value = recipe?.preparation_steps || "";
+      field("plating_notes").value = recipe?.plating_notes || "";
+      field("quality_checks").value = recipe?.quality_checks || "";
+      field("allergy_alerts").value = recipe?.allergy_alerts || "";
+      field("training_notes").value = recipe?.training_notes || "";
+      field("sop_photo_url").value = recipe?.sop_photo_url || "";
+      const chefSelect = document.getElementById("display-sop-chef-select");
+      if (chefSelect) chefSelect.value = recipe?.chef_user_id ? String(recipe.chef_user_id) : "";
+
+      form.querySelectorAll('input[name="recipe_item_id"]').forEach((checkbox) => { checkbox.checked = false; });
+      form.querySelectorAll('input[name^="recipe_qty_"]').forEach((input) => { input.value = ""; });
+      form.querySelectorAll('input[name^="recipe_unit_"]').forEach((input) => {
+        input.value = input.defaultValue || input.getAttribute("value") || "pcs";
+      });
+      Object.entries(recipe?.ingredients || {}).forEach(([itemId, values]) => {
+        const checkbox = form.querySelector(`input[name="recipe_item_id"][value="${itemId}"]`);
+        const quantityInput = field(`recipe_qty_${itemId}`);
+        const unitInput = field(`recipe_unit_${itemId}`);
+        if (checkbox) checkbox.checked = true;
+        if (quantityInput) quantityInput.value = values.qty ?? "";
+        if (unitInput) unitInput.value = values.unit || unitInput.defaultValue || "pcs";
+      });
+      renderSizeNotes(menuItem?.sizes || [], recipe?.size_notes || {});
+      if (scrollToEditor) form.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+
+    menuSelect.addEventListener("change", () => applyRecipe(menuSelect.value));
+    document.querySelectorAll(".display-sop-edit").forEach((button) => {
+      button.addEventListener("click", () => applyRecipe(button.dataset.menuItemId, true));
+    });
+    const initialMenuItemId = new URLSearchParams(window.location.search).get("menu_item_id");
+    if (initialMenuItemId && menuMeta[String(initialMenuItemId)]) applyRecipe(initialMenuItemId);
+  })();
+</script>

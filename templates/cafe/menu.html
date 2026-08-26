@@ -2,7 +2,7 @@
 {% block content %}
 <section class="panel">
   <h2>Menu Management</h2>
-  <p class="muted">Manage categories, items, sizes, and availability.</p>
+  <p class="muted">Manage categories, prepared and ready-to-sell items, display recipes, SOPs, responsibilities, sizes, and availability.</p>
 </section>
 
 <section class="library-layout">
@@ -11,9 +11,10 @@
     <a href="{{ url_for('cafe.menu', section='navigation') }}" class="{% if active_menu_section == 'navigation' %}active{% endif %}">Menu Navigation</a>
     <a href="{{ url_for('cafe.menu', section='add_item') }}" class="{% if active_menu_section == 'add_item' %}active{% endif %}">Add Menu Item</a>
     <a href="{{ url_for('cafe.menu', section='items') }}" class="{% if active_menu_section == 'items' %}active{% endif %}">Menu Items</a>
+    <a href="{{ url_for('cafe.menu', section='display_sops') }}" class="{% if active_menu_section == 'display_sops' %}active{% endif %}">Quick Display SOPs</a>
     <a href="{{ url_for('cafe.menu', section='availability') }}" class="{% if active_menu_section == 'availability' %}active{% endif %}">Items Availability</a>
     <a href="{{ url_for('cafe.menu', section='deleted_items') }}" class="{% if active_menu_section == 'deleted_items' %}active{% endif %}">Deleted Items</a>
-    <a href="{{ url_for('operations.index') }}">Operational Responsibilities <span class="tag">Experimental</span></a>
+    <a href="{{ url_for('operations.index') }}">Versioned SOPs & Responsibilities <span class="tag">Experimental</span></a>
   </aside>
 
   <div class="library-content">
@@ -424,6 +425,10 @@
         {% endfor %}
       </table>
     </section>
+    {% endif %}
+
+    {% if active_menu_section == 'display_sops' %}
+      {% include "cafe/_menu_display_sops.html" %}
     {% endif %}
 
     {% if active_menu_section == 'availability' %}

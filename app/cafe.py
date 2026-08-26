@@ -1035,8 +1035,85 @@ def _render_menu_page(active_menu_section: str = "catalog", add_form_state: dict
         selected_category_filter,
     ).all()
     availability_items = [item for item in availability_items if menu_item_window_is_open(item)]
-    if active_menu_section not in ["catalog", "navigation", "add_item", "items", "availability", "deleted_items"]:
+    if active_menu_section not in [
+        "catalog",
+        "navigation",
+        "add_item",
+        "items",
+        "display_sops",
+        "availability",
+        "deleted_items",
+    ]:
         active_menu_section = "catalog"
+
+    display_sop_recipes = []
+    display_sop_menu_items = []
+    display_sop_inventory_items = []
+    display_sop_menu_item_meta = {}
+    display_sop_recipe_payload_map = {}
+    if active_menu_section == "display_sops":
+        display_sop_recipes = (
+            InventoryRecipe.query.options(
+                joinedload(InventoryRecipe.menu_item),
+                joinedload(InventoryRecipe.ingredients).joinedload(
+                    InventoryRecipeItem.inventory_item
+                ),
+            )
+            .order_by(InventoryRecipe.id.desc())
+            .all()
+        )
+        display_sop_menu_items = (
+            MenuItem.query.filter(MenuItem.is_deleted.is_(False))
+            .order_by(MenuItem.name.asc())
+            .all()
+        )
+        display_sop_inventory_items = InventoryItem.query.order_by(
+            InventoryItem.category_name.asc(), InventoryItem.name.asc()
+        ).all()
+        display_sop_menu_item_meta = {
+            item.id: {
+                "name": item.name,
+                "prep_station": item.prep_station,
+                "prep_station_name": _workstation_display_name(item.prep_station),
+                "sizes": _load_menu_item_size_variants(item),
+            }
+            for item in display_sop_menu_items
+        }
+        display_sop_recipe_payload_map = {
+            recipe.menu_item_id: {
+                "yield_qty": round(float(recipe.yield_qty or 0), 3),
+                "chef_user_id": recipe.menu_item.chef_user_id if recipe.menu_item else None,
+                "yield_unit": recipe.yield_unit or "",
+                "prep_time_minutes": int(recipe.prep_time_minutes or 0),
+                "ingredients_note": recipe.ingredients_note or "",
+                "preparation_steps": recipe.preparation_steps or "",
+                "plating_notes": recipe.plating_notes or "",
+                "quality_checks": recipe.quality_checks or "",
+                "allergy_alerts": recipe.allergy_alerts or "",
+                "training_notes": recipe.training_notes or "",
+                "sop_photo_url": recipe.sop_photo_url or "",
+                "size_notes": _recipe_size_note_map(recipe),
+                "ingredient_ids": [
+                    int(ingredient.inventory_item_id)
+                    for ingredient in recipe.ingredients
+                    if ingredient.inventory_item_id
+                ],
+                "ingredients": {
+                    int(ingredient.inventory_item_id): {
+                        "qty": round(float(ingredient.qty_per_menu or 0), 3),
+                        "unit": ingredient.unit
+                        or (
+                            ingredient.inventory_item.unit
+                            if ingredient.inventory_item
+                            else ""
+                        ),
+                    }
+                    for ingredient in recipe.ingredients
+                    if ingredient.inventory_item_id
+                },
+            }
+            for recipe in display_sop_recipes
+        }
     return render_template(
         "cafe/menu.html",
         items=items,
@@ -1058,6 +1135,11 @@ def _render_menu_page(active_menu_section: str = "catalog", add_form_state: dict
         availability_items=availability_items,
         selected_category_filter=selected_category_filter,
         add_form=add_form_state or _default_menu_form_state(),
+        display_sop_recipes=display_sop_recipes,
+        display_sop_menu_items=display_sop_menu_items,
+        display_sop_inventory_items=display_sop_inventory_items,
+        display_sop_menu_item_meta=display_sop_menu_item_meta,
+        display_sop_recipe_payload_map=display_sop_recipe_payload_map,
     )
 
 
@@ -2897,6 +2979,110 @@ def menu():
         return redirect(url_for("cafe.menu", section="items"))
     active_menu_section = (request.args.get("section") or "catalog").strip().lower()
     return _render_menu_page(active_menu_section)
+
+
+@bp.route("/menu/display-sops", methods=["POST"])
+@roles_required("admin", "manager")
+def save_menu_display_sop():
+    """Save the menu-facing recipe/SOP used by workstation display panels."""
+
+    menu_item_id = _safe_int(request.form.get("menu_item_id"), 0)
+    menu_item = db.session.get(MenuItem, menu_item_id) if menu_item_id > 0 else None
+    if not menu_item or menu_item.is_deleted:
+        flash("Please select a valid menu item.", "error")
+        return redirect(url_for("cafe.menu", section="display_sops"))
+
+    chef_user_id_raw = (request.form.get("chef_user_id") or "").strip()
+    if chef_user_id_raw:
+        chef_user = db.session.get(User, _safe_int(chef_user_id_raw, 0))
+        if (
+            not chef_user
+            or not chef_user.active
+            or not _is_preparation_responsibility_user(chef_user)
+        ):
+            flash(
+                "Please select an active Chef or Barista for recipe responsibility.",
+                "error",
+            )
+            return redirect(
+                url_for(
+                    "cafe.menu", section="display_sops", menu_item_id=menu_item.id
+                )
+            )
+        menu_item.chef_user_id = chef_user.id
+    else:
+        menu_item.chef_user_id = None
+
+    recipe = InventoryRecipe.query.filter_by(menu_item_id=menu_item.id).first()
+    if not recipe:
+        recipe = InventoryRecipe(menu_item_id=menu_item.id, yield_qty=1, active=True)
+        db.session.add(recipe)
+        db.session.flush()
+
+    recipe.yield_qty = _safe_float(request.form.get("yield_qty"), 1)
+    recipe.yield_unit = (request.form.get("yield_unit") or "").strip() or None
+    recipe.prep_time_minutes = (
+        _safe_int(request.form.get("prep_time_minutes"), 0) or None
+    )
+    recipe.ingredients_note = (
+        request.form.get("ingredients_note") or ""
+    ).strip() or None
+    recipe.preparation_steps = (
+        request.form.get("preparation_steps") or ""
+    ).strip() or None
+    recipe.plating_notes = (request.form.get("plating_notes") or "").strip() or None
+    recipe.quality_checks = (
+        request.form.get("quality_checks") or ""
+    ).strip() or None
+    recipe.allergy_alerts = (
+        request.form.get("allergy_alerts") or ""
+    ).strip() or None
+    recipe.training_notes = (
+        request.form.get("training_notes") or ""
+    ).strip() or None
+    recipe.sop_photo_url = (request.form.get("sop_photo_url") or "").strip() or None
+    size_notes = _parse_recipe_size_notes_from_form()
+    recipe.size_sop_json = json.dumps(size_notes) if size_notes else None
+
+    for old_ingredient in list(recipe.ingredients):
+        db.session.delete(old_ingredient)
+    ingredient_ids = [
+        int(value)
+        for value in request.form.getlist("recipe_item_id")
+        if str(value).isdigit()
+    ]
+    valid_inventory_ids = set()
+    if ingredient_ids:
+        valid_inventory_ids = {
+            row.id
+            for row in InventoryItem.query.filter(
+                InventoryItem.id.in_(ingredient_ids)
+            ).all()
+        }
+    for inventory_item_id in ingredient_ids:
+        if inventory_item_id not in valid_inventory_ids:
+            continue
+        quantity = _safe_float(
+            request.form.get(f"recipe_qty_{inventory_item_id}"), 0
+        )
+        if quantity <= 0:
+            continue
+        db.session.add(
+            InventoryRecipeItem(
+                recipe_id=recipe.id,
+                inventory_item_id=inventory_item_id,
+                qty_per_menu=quantity,
+                unit=(
+                    request.form.get(f"recipe_unit_{inventory_item_id}") or "pcs"
+                ).strip(),
+            )
+        )
+
+    db.session.commit()
+    flash("Display recipe and SOP saved from Menu Management.", "success")
+    return redirect(
+        url_for("cafe.menu", section="display_sops", menu_item_id=menu_item.id)
+    )
 
 
 def _unique_menu_navigation_slug(label: str, model, *, group_id: int | None = None) -> str:
@@ -6005,7 +6191,7 @@ def inventory():
     section = (request.args.get("section") or "dashboard").strip().lower()
     allowed_sections = {
         "dashboard", "daily_closing", "stock_levels", "items", "purchases", "vendors",
-        "recipes", "wastage", "analytics", "categories", "settings", "to_purchase", "movements"
+        "wastage", "analytics", "categories", "settings", "to_purchase", "movements"
     }
     if section not in allowed_sections:
         section = "dashboard"
@@ -6336,61 +6522,6 @@ def inventory():
             flash("Purchase logged and stock updated.", "success")
             return redirect(url_for("cafe.inventory", section="purchases"))
 
-        if action == "save_recipe":
-            menu_item_id = int(request.form.get("menu_item_id") or 0)
-            if menu_item_id <= 0:
-                flash("Please select a menu item.", "error")
-                return redirect(url_for("cafe.inventory", section="recipes"))
-            menu_item = MenuItem.query.get(menu_item_id)
-            if not menu_item:
-                flash("Selected menu item was not found.", "error")
-                return redirect(url_for("cafe.inventory", section="recipes"))
-            chef_user_id_raw = (request.form.get("chef_user_id") or "").strip()
-            if chef_user_id_raw:
-                chef_user = User.query.get(_safe_int(chef_user_id_raw, 0))
-                if not chef_user or not chef_user.active or not _is_preparation_responsibility_user(chef_user):
-                    flash("Please select an active Chef or Barista for recipe responsibility.", "error")
-                    return redirect(url_for("cafe.inventory", section="recipes"))
-                menu_item.chef_user_id = chef_user.id
-            else:
-                menu_item.chef_user_id = None
-            recipe = InventoryRecipe.query.filter_by(menu_item_id=menu_item_id).first()
-            if not recipe:
-                recipe = InventoryRecipe(menu_item_id=menu_item_id, yield_qty=1, active=True)
-                db.session.add(recipe)
-                db.session.flush()
-            recipe.yield_qty = _safe_float(request.form.get("yield_qty"), 1)
-            recipe.yield_unit = (request.form.get("yield_unit") or "").strip() or None
-            recipe.prep_time_minutes = _safe_int(request.form.get("prep_time_minutes"), 0) or None
-            recipe.ingredients_note = (request.form.get("ingredients_note") or "").strip() or None
-            recipe.preparation_steps = (request.form.get("preparation_steps") or "").strip() or None
-            recipe.plating_notes = (request.form.get("plating_notes") or "").strip() or None
-            recipe.quality_checks = (request.form.get("quality_checks") or "").strip() or None
-            recipe.allergy_alerts = (request.form.get("allergy_alerts") or "").strip() or None
-            recipe.training_notes = (request.form.get("training_notes") or "").strip() or None
-            recipe.sop_photo_url = (request.form.get("sop_photo_url") or "").strip() or None
-            size_notes = _parse_recipe_size_notes_from_form()
-            recipe.size_sop_json = json.dumps(size_notes) if size_notes else None
-            for old in list(recipe.ingredients):
-                db.session.delete(old)
-            ingredient_ids = [int(v) for v in request.form.getlist("recipe_item_id") if str(v).isdigit()]
-            for inv_id in ingredient_ids:
-                qty = _safe_float(request.form.get(f"recipe_qty_{inv_id}"), 0)
-                unit = (request.form.get(f"recipe_unit_{inv_id}") or "pcs").strip()
-                if qty <= 0:
-                    continue
-                db.session.add(
-                    InventoryRecipeItem(
-                        recipe_id=recipe.id,
-                        inventory_item_id=inv_id,
-                        qty_per_menu=qty,
-                        unit=unit,
-                    )
-                )
-            db.session.commit()
-            flash("Recipe and SOP saved.", "success")
-            return redirect(url_for("cafe.inventory", section="recipes"))
-
         if action == "add_wastage":
             item_id = int(request.form.get("item_id") or 0)
             qty = _safe_float(request.form.get("quantity"), 0)
@@ -6519,51 +6650,7 @@ def inventory():
     filtered_items = _inventory_filtered_items(items, inventory_search, inventory_area, inventory_category_filter, inventory_status_filter)
     purchases = InventoryPurchase.query.order_by(InventoryPurchase.purchase_date.desc(), InventoryPurchase.id.desc()).limit(80).all()
     wastage_rows = InventoryWastage.query.order_by(InventoryWastage.wastage_date.desc(), InventoryWastage.id.desc()).limit(120).all()
-    recipes = (
-        InventoryRecipe.query.options(
-            joinedload(InventoryRecipe.menu_item),
-            joinedload(InventoryRecipe.ingredients).joinedload(InventoryRecipeItem.inventory_item),
-        )
-        .order_by(InventoryRecipe.id.desc())
-        .all()
-    )
     purchase_todos_active, purchase_todos_history = _purchase_todo_payloads()
-    menu_items = MenuItem.query.filter_by(available=True, is_deleted=False).order_by(MenuItem.name.asc()).all()
-    menu_item_meta = {
-        item.id: {
-            "name": item.name,
-            "prep_station": item.prep_station,
-            "prep_station_name": _workstation_display_name(item.prep_station),
-            "sizes": _load_menu_item_size_variants(item),
-        }
-        for item in menu_items
-    }
-    recipe_payload_map = {
-        recipe.menu_item_id: {
-            "yield_qty": round(float(recipe.yield_qty or 0), 3),
-            "chef_user_id": recipe.menu_item.chef_user_id if recipe.menu_item else None,
-            "yield_unit": recipe.yield_unit or "",
-            "prep_time_minutes": int(recipe.prep_time_minutes or 0),
-            "ingredients_note": recipe.ingredients_note or "",
-            "preparation_steps": recipe.preparation_steps or "",
-            "plating_notes": recipe.plating_notes or "",
-            "quality_checks": recipe.quality_checks or "",
-            "allergy_alerts": recipe.allergy_alerts or "",
-            "training_notes": recipe.training_notes or "",
-            "sop_photo_url": recipe.sop_photo_url or "",
-            "size_notes": _recipe_size_note_map(recipe),
-            "ingredient_ids": [int(ing.inventory_item_id) for ing in recipe.ingredients if ing.inventory_item_id],
-            "ingredients": {
-                int(ing.inventory_item_id): {
-                    "qty": round(float(ing.qty_per_menu or 0), 3),
-                    "unit": ing.unit or (ing.inventory_item.unit if ing.inventory_item else ""),
-                }
-                for ing in recipe.ingredients
-                if ing.inventory_item_id
-            },
-        }
-        for recipe in recipes
-    }
     edit_item_id = request.args.get("edit_item_id", type=int)
     selected_item = InventoryItem.query.get(edit_item_id) if edit_item_id else (filtered_items[0] if filtered_items else None)
     edit_vendor_id = request.args.get("edit_vendor_id", type=int)
@@ -6804,8 +6891,6 @@ def inventory():
         items=items,
         purchases=purchases,
         recent_purchase_lines=recent_purchase_lines,
-        recipes=recipes,
-        menu_items=menu_items,
         wastage_rows=wastage_rows,
         low_stock_items=low_stock_items,
         overstock_items=overstock_items,
@@ -6825,7 +6910,6 @@ def inventory():
         inventory_period_end=inventory_period_end,
         inventory_tracking_category_id=inventory_tracking_category_id,
         workstation_options=_all_workstations(),
-        chef_options=_chef_options(),
         inventory_area=inventory_area,
         inventory_area_options=inventory_area_options,
         inventory_area_name_map=inventory_area_name_map,
@@ -6834,8 +6918,6 @@ def inventory():
         top_stock_value_items=top_stock_value_items,
         top_consumption_rows=top_consumption_rows,
         vendor_purchase_map=vendor_purchase_map,
-        menu_item_meta=menu_item_meta,
-        recipe_payload_map=recipe_payload_map,
         expense_logs=expense_logs,
         recent_expense_logs=recent_expense_logs,
         movement_rows=movement_rows,

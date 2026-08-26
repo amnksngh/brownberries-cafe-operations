@@ -26,13 +26,27 @@
 </style>
 
 <section class="panel">
-  <h2>Operational Items & Responsibility Profiles <span class="tag">Experimental</span></h2>
+  <p><a href="{{ url_for('cafe.menu', section='items') }}">← Back to Menu Management</a></p>
+  <h2>Prepared Items, SOPs & Responsibilities <span class="tag">Experimental</span></h2>
   <p class="muted">Recipe defines what goes into an item; SOP defines how it is made; the responsibility plan defines who should perform it. Approved versions remain immutable.</p>
-  <div class="ops-note"><strong>Customer visibility is isolated.</strong> Only Menu Management controls what customers see. Creating a sauce, dough, raw ingredient, or other internal operational item here will never publish it to QR ordering, staff-assisted ordering, or menu browsing.</div>
+  <div class="ops-note"><strong>This is part of Menu Management.</strong> It contains menu-linked products and internally prepared components such as sauces or dough. Raw stock such as cabbage, milk, and packaging stays in Inventory Management, although it can still be selected as a recipe input. Customer visibility remains controlled only by the Menu Items screen.</div>
+  <details style="margin-top:0.8rem;">
+    <summary><strong>How to create a versioned SOP</strong></summary>
+    <ol>
+      <li>Select a prepared or sellable item from the left. For a sauce, dough, or other prepared component, create the internal item first.</li>
+      <li>Review its Overview and set the production route and default workstation.</li>
+      <li>In Recipe, start a draft, add inventory ingredients or prepared components, then approve the recipe when it is correct.</li>
+      <li>In Standard Operating Procedure, click <strong>Start Draft SOP</strong>, complete the header, and save it.</li>
+      <li>Add each step in working order. Include active/passive time, workstation, role, skill, and quality checkpoint where relevant.</li>
+      <li>In Responsibility Matrix, assign a primary employee and any backups to every required role.</li>
+      <li>Review Contribution and Validation. Resolve errors before approval.</li>
+      <li>Click <strong>Approve & Lock SOP + Responsibility Plan</strong>. Use <strong>Create New Draft SOP Revision</strong> for future changes; the approved history is retained.</li>
+    </ol>
+  </details>
 </section>
 
 <section class="stats">
-  <article class="metric"><h3>Operational Profiles</h3><p>{{ all_profile_count }}</p></article>
+  <article class="metric"><h3>Prepared / Sellable Profiles</h3><p>{{ all_profile_count }}</p></article>
   <article class="metric"><h3>Ready</h3><p>{{ readiness.ready }}</p></article>
   <article class="metric"><h3>Needs Attention</h3><p>{{ readiness.warning }}</p></article>
   <article class="metric"><h3>Blocked</h3><p>{{ readiness.error }}</p></article>
@@ -41,7 +55,7 @@
 <section class="panel">
   <details>
     <summary><strong>Create an internal component or product</strong></summary>
-    <p class="muted">Use this for sauces, gravies, dough, chutney, purchased products, or other internal records that do not already exist in Menu or Inventory Management.</p>
+    <p class="muted">Use this for prepared sauces, gravies, dough, chutney, or other internally made components that are not customer-facing menu items. Raw purchased stock should be created in Inventory Management.</p>
     <form method="post" action="{{ url_for('operations.create_item') }}" class="grid grid-4">
       <label>Internal Code <input name="internal_code" required placeholder="COMP-SAUCE-01" /></label>
       <label>Name <input name="name" required placeholder="Continental White Sauce" /></label>
@@ -61,7 +75,7 @@
 
 <div class="ops-layout">
   <aside class="panel ops-sidebar">
-    <h3>Items</h3>
+    <h3>Prepared & Sellable Items</h3>
     <form method="get">
       <label>Search <input name="q" value="{{ query_text }}" placeholder="Name or internal code" /></label>
       <label>Production Type

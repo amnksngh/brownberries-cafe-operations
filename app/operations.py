@@ -122,7 +122,18 @@ def index():
     ensure_operational_items_seeded()
     query_text = (request.args.get("q") or "").strip()
     production_filter = (request.args.get("production_type") or "").strip()
-    item_query = OperationalItem.query.order_by(OperationalItem.name.asc())
+    # Menu Management owns prepared, sellable, and manually-created operational
+    # records. Profiles created only from raw inventory remain available as recipe
+    # inputs, but are managed from Inventory Management and do not appear here.
+    menu_managed_filter = db.or_(
+        OperationalItem.menu_item_id.isnot(None),
+        OperationalItem.inventory_item_id.is_(None),
+        OperationalItem.internally_produced.is_(True),
+        OperationalItem.sellable.is_(True),
+    )
+    item_query = OperationalItem.query.filter(menu_managed_filter).order_by(
+        OperationalItem.name.asc()
+    )
     if query_text:
         like = f"%{query_text}%"
         item_query = item_query.filter(
@@ -132,7 +143,7 @@ def index():
         item_query = item_query.filter_by(production_type=production_filter)
     items = item_query.all()
     selected_id = request.args.get("item_id", type=int)
-    selected_item = db.session.get(OperationalItem, selected_id) if selected_id else None
+    selected_item = next((row for row in items if row.id == selected_id), None)
     if not selected_item and items:
         selected_item = items[0]
 
@@ -152,7 +163,7 @@ def index():
     certifications = (
         EmployeeOperationalSkill.query.order_by(EmployeeOperationalSkill.updated_at.desc()).all()
     )
-    all_profiles = OperationalItem.query.all()
+    all_profiles = OperationalItem.query.filter(menu_managed_filter).all()
     readiness = {"ready": 0, "warning": 0, "error": 0}
     for profile in all_profiles:
         levels = {row["level"] for row in validation_messages(profile)}
