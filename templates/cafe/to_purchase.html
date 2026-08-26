@@ -5,6 +5,7 @@
     <div>
       <h2>To Purchase</h2>
       <p class="muted">Quick shared list for kitchen, barista, and support staff. Add what is needed, tick it once purchased, and keep the remaining list easy to scan.</p>
+      <p><a href="{{ url_for('cafe.inventory', section='dashboard') }}">← Inventory Management</a></p>
     </div>
     <form method="post">
       <input type="hidden" name="action" value="clear_to_purchase" />
@@ -20,8 +21,8 @@
     <button type="submit">Save Items</button>
   </form>
   <template id="purchase-row-template">
-    <div class="purchase-row" style="display:grid;grid-template-columns:minmax(0,1.5fr) minmax(0,1fr) minmax(80px,0.6fr) minmax(80px,0.6fr) auto auto;gap:0.55rem;align-items:center;">
-      <select name="inventory_item_id[]" aria-label="Registered item" required>
+    <div class="purchase-row" style="display:grid;grid-template-columns:minmax(0,1.4fr) minmax(0,1fr) minmax(80px,0.55fr) minmax(80px,0.55fr) minmax(120px,1fr) auto auto;gap:0.55rem;align-items:center;">
+      <select name="inventory_item_id[]" aria-label="Registered item">
         <option value="">Select item</option>
         {% for item in inventory_items %}<option value="{{ item.id }}">{{ item.name }}{% if item.unit %} · {{ item.unit }}{% endif %}</option>{% endfor %}
       </select>
@@ -29,13 +30,13 @@
         <option value="unassigned">All cafe / unassigned</option>
         {% for workstation in workstation_options %}<option value="{{ workstation.slug }}">{{ workstation.name }}</option>{% endfor %}
       </select>
-      <input name="quantity_amount[]" type="number" min="0.001" step="0.001" placeholder="Qty" required />
+      <input name="quantity_amount[]" type="number" min="0.001" step="0.001" placeholder="Qty" />
       <input name="quantity_unit[]" placeholder="Unit" />
+      <input name="note[]" placeholder="Brand, store, urgency…" aria-label="Purchase note" />
       <button type="button" class="purchase-add-btn">Add</button>
       <button type="button" class="purchase-remove-btn" aria-label="Remove row">×</button>
       <input type="hidden" name="item_name[]" value="" />
       <input type="hidden" name="quantity_note[]" value="" />
-      <input type="hidden" name="note[]" value="" />
     </div>
   </template>
 </section>
@@ -54,6 +55,7 @@
         <strong style="{% if row.status == 'purchased' %}text-decoration:line-through;opacity:0.7;{% endif %}">{{ row.item_name }}</strong>
         <div class="muted">{{ row.quantity_display }}</div>
         <div class="muted">{{ row.workstation_name }}</div>
+        {% if row.note %}<div class="muted">{{ row.note }}</div>{% endif %}
         <div class="muted">Added by {{ row.created_by_name }} on {{ row.created_at_ist }}</div>
         {% if row.status == "purchased" and row.completed_by_name %}
         <div class="muted">Purchased by {{ row.completed_by_name }} on {{ row.completed_at_ist }}</div>
@@ -80,7 +82,7 @@
       <td>{{ row.item_name }}</td>
       <td>{{ row.workstation_name }}</td>
       <td>{{ row.quantity_display or row.quantity_note or "-" }}</td>
-      <td>{{ row.status }}</td>
+      <td>{{ row.status_label }}</td>
       <td>{{ row.created_by_name }}</td>
       <td>{{ row.closed_by_name }}</td>
       <td>{{ row.closed_at_ist }}</td>
@@ -89,6 +91,29 @@
     <tr><td colspan="7">No purchase history yet.</td></tr>
     {% endfor %}
   </table>
+</section>
+
+<section class="inventory-two-col">
+  <article class="panel">
+    <h3>Accumulated Purchase List</h3>
+    <p class="muted">Unique registered items summed across every workstation.</p>
+    <table>
+      <tr><th>Item</th><th>Total Quantity</th><th>Estimated Cost</th><th>Requested By Workstations</th></tr>
+      {% for row in purchase_accumulated_rows %}
+      <tr><td>{{ row.item_name }}</td><td>{{ "%.3f"|format(row.quantity) }} {{ row.unit }}</td><td>₹{{ "%.2f"|format(row.estimated_cost) }}</td><td>{{ row.workstations or "-" }}</td></tr>
+      {% else %}<tr><td colspan="4">No quantified open requests yet.</td></tr>{% endfor %}
+    </table>
+  </article>
+  <article class="panel">
+    <h3>Requests by Workstation</h3>
+    {% for group in purchase_by_workstation %}
+    <h4>{{ group.label }}</h4>
+    <table>
+      <tr><th>Item</th><th>Quantity</th></tr>
+      {% for row in group.items %}<tr><td>{{ row.item_name }}</td><td>{{ "%.3f"|format(row.quantity) }} {{ row.unit }}</td></tr>{% endfor %}
+    </table>
+    {% else %}<p class="muted">No workstation requests yet.</p>{% endfor %}
+  </article>
 </section>
 
 <script>
@@ -116,13 +141,16 @@
           const candidateQty = candidate.querySelector('input[name="quantity_amount[]"]').value.trim();
           return !candidateItem && !candidateQty;
         });
-        if (!hasBlankRow) {
-          rowsRoot.appendChild(buildRow());
+        let nextRow = rows.find((candidate) => {
+          const candidateItem = candidate.querySelector('select[name="inventory_item_id[]"]').value.trim();
+          const candidateQty = candidate.querySelector('input[name="quantity_amount[]"]').value.trim();
+          return candidate !== row && !candidateItem && !candidateQty;
+        });
+        if (!hasBlankRow || !nextRow) {
+          nextRow = buildRow();
+          rowsRoot.appendChild(nextRow);
         }
-        itemInput.value = "";
-        qtyInput.value = "";
-        row.querySelector('input[name="quantity_unit[]"]').value = "";
-        itemInput.focus();
+        nextRow.querySelector('select[name="inventory_item_id[]"]').focus();
       });
       removeBtn.addEventListener("click", () => {
         const rows = [...rowsRoot.querySelectorAll(".purchase-row")];
@@ -130,6 +158,7 @@
           row.querySelector('select[name="inventory_item_id[]"]').value = "";
           row.querySelector('input[name="quantity_amount[]"]').value = "";
           row.querySelector('input[name="quantity_unit[]"]').value = "";
+          row.querySelector('input[name="note[]"]').value = "";
         } else {
           row.remove();
         }

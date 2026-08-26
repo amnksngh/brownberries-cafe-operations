@@ -5816,6 +5816,26 @@ def _inventory_item_status(item: InventoryItem):
     return "healthy"
 
 
+def _inventory_date(raw_value: str | None, default: date | None = None) -> date:
+    """Parse an inventory form/query date consistently and safely."""
+    fallback = default or date.today()
+    value = (raw_value or "").strip()
+    if not value:
+        return fallback
+    try:
+        return date.fromisoformat(value)
+    except ValueError:
+        return fallback
+
+
+def _normalize_inventory_workstation_slug(raw_value: str | None) -> str:
+    """Return a valid workstation slug or the shared unassigned bucket."""
+    slug = (raw_value or "").strip().lower() or "unassigned"
+    if slug == "unassigned":
+        return slug
+    return slug if slug in _workstation_slug_set(include_inactive=True) else "unassigned"
+
+
 def _next_inventory_item_code() -> str:
     """Return the next stable human-readable inventory code."""
     used_codes = {
@@ -5963,15 +5983,61 @@ def _inventory_period_options() -> list[tuple[str, str]]:
     ]
 
 
-def _purchase_todo_payloads():
+def _purchase_todo_payload(row: InventoryToPurchase) -> dict:
+    quantity_unit = row.quantity_unit or (
+        row.inventory_item.unit if row.inventory_item else ""
+    )
+    quantity_display = (
+        f"{float(row.quantity_amount):g} {quantity_unit}".strip()
+        if row.quantity_amount is not None
+        else (row.quantity_note or "")
+    )
+    return {
+        "id": row.id,
+        "item_name": row.item_name,
+        "category_name": row.category.name if row.category else "",
+        "quantity_note": row.quantity_note or "",
+        "inventory_item_id": row.inventory_item_id,
+        "workstation_slug": row.workstation_slug or "unassigned",
+        "workstation_name": _workstation_display_name(row.workstation_slug),
+        "quantity_amount": (
+            float(row.quantity_amount) if row.quantity_amount is not None else None
+        ),
+        "quantity_unit": quantity_unit,
+        "purchase_price": (
+            float(row.inventory_item.purchase_price or 0) if row.inventory_item else 0.0
+        ),
+        "quantity_display": quantity_display,
+        "note": row.note or "",
+        "status": row.status,
+        "status_label": (row.status or "open").replace("_", " ").title(),
+        "created_by_name": row.created_by.full_name if row.created_by else "-",
+        "created_at_ist": _format_ist(row.created_at, "%d %b %Y, %I:%M %p"),
+        "completed_by_name": row.completed_by.full_name if row.completed_by else "",
+        "completed_at_ist": (
+            _format_ist(row.completed_at, "%d %b %Y, %I:%M %p")
+            if row.completed_at
+            else ""
+        ),
+        "closed_by_name": row.closed_by.full_name if row.closed_by else "-",
+        "closed_at_ist": (
+            _format_ist(row.closed_at, "%d %b %Y, %I:%M %p")
+            if row.closed_at
+            else "-"
+        ),
+    }
+
+
+def _purchase_todo_payloads(*, include_history: bool = True):
+    base_query = InventoryToPurchase.query.options(
+        joinedload(InventoryToPurchase.category),
+        joinedload(InventoryToPurchase.inventory_item),
+        joinedload(InventoryToPurchase.created_by),
+        joinedload(InventoryToPurchase.completed_by),
+        joinedload(InventoryToPurchase.closed_by),
+    )
     active_rows = (
-        InventoryToPurchase.query.options(
-            joinedload(InventoryToPurchase.category),
-            joinedload(InventoryToPurchase.inventory_item),
-            joinedload(InventoryToPurchase.created_by),
-            joinedload(InventoryToPurchase.completed_by),
-            joinedload(InventoryToPurchase.closed_by),
-        )
+        base_query
         .filter_by(active=True)
         .order_by(
             db.case((InventoryToPurchase.status == "purchased", 1), else_=0).asc(),
@@ -5979,66 +6045,107 @@ def _purchase_todo_payloads():
         )
         .all()
     )
+    active_payload = [_purchase_todo_payload(row) for row in active_rows]
+    if not include_history:
+        return active_payload, []
     history_rows = (
-        InventoryToPurchase.query.options(
-            joinedload(InventoryToPurchase.category),
-            joinedload(InventoryToPurchase.inventory_item),
-            joinedload(InventoryToPurchase.created_by),
-            joinedload(InventoryToPurchase.completed_by),
-            joinedload(InventoryToPurchase.closed_by),
-        )
+        base_query
         .filter_by(active=False)
         .order_by(InventoryToPurchase.closed_at.desc(), InventoryToPurchase.updated_at.desc())
         .limit(30)
         .all()
     )
-    active_payload = [
-        {
-            "id": row.id,
-            "item_name": row.item_name,
-            "category_name": row.category.name if row.category else "",
-            "quantity_note": row.quantity_note or "",
-            "inventory_item_id": row.inventory_item_id,
-            "workstation_slug": row.workstation_slug or "unassigned",
-            "workstation_name": _workstation_display_name(row.workstation_slug),
-            "quantity_amount": float(row.quantity_amount) if row.quantity_amount is not None else None,
-            "quantity_unit": row.quantity_unit or (row.inventory_item.unit if row.inventory_item else ""),
-            "purchase_price": float(row.inventory_item.purchase_price or 0) if row.inventory_item else 0.0,
-            "quantity_display": (
-                f"{float(row.quantity_amount):g} {row.quantity_unit or (row.inventory_item.unit if row.inventory_item else '')}".strip()
-                if row.quantity_amount is not None
-                else (row.quantity_note or "")
-            ),
-            "note": row.note or "",
-            "status": row.status,
-            "created_by_name": row.created_by.full_name if row.created_by else "-",
-            "created_at_ist": _format_ist(row.created_at, "%d %b %Y, %I:%M %p"),
-            "completed_by_name": row.completed_by.full_name if row.completed_by else "",
-            "completed_at_ist": _format_ist(row.completed_at, "%d %b %Y, %I:%M %p") if row.completed_at else "",
-        }
-        for row in active_rows
+    return active_payload, [_purchase_todo_payload(row) for row in history_rows]
+
+
+def _purchase_request_summaries(active_rows: list[dict]) -> tuple[list[dict], list[dict]]:
+    """Build the aggregate and workstation views from the canonical active payload."""
+    accumulated = {}
+    workstation_map = {}
+    for row in active_rows:
+        if row["status"] == "purchased" or row.get("quantity_amount") is None:
+            continue
+        item_key = row.get("inventory_item_id") or row["item_name"].strip().lower()
+        unit = row.get("quantity_unit") or "unit"
+        item_data = accumulated.setdefault(
+            item_key,
+            {
+                "item_name": row["item_name"],
+                "unit": unit,
+                "quantity": 0.0,
+                "estimated_cost": 0.0,
+                "workstations": set(),
+            },
+        )
+        item_data["quantity"] = round(
+            item_data["quantity"] + float(row["quantity_amount"] or 0), 3
+        )
+        item_data["estimated_cost"] = round(
+            item_data["estimated_cost"]
+            + float(row["quantity_amount"] or 0)
+            * float(row.get("purchase_price") or 0),
+            2,
+        )
+        item_data["workstations"].add(row["workstation_name"])
+        station_data = workstation_map.setdefault(
+            row["workstation_slug"],
+            {"label": row["workstation_name"], "items": {}},
+        )
+        station_item = station_data["items"].setdefault(
+            item_key,
+            {"item_name": row["item_name"], "unit": unit, "quantity": 0.0},
+        )
+        station_item["quantity"] = round(
+            station_item["quantity"] + float(row["quantity_amount"] or 0), 3
+        )
+
+    accumulated_rows = [
+        {**data, "workstations": ", ".join(sorted(data["workstations"]))}
+        for data in accumulated.values()
     ]
-    history_payload = [
+    accumulated_rows.sort(key=lambda row: row["item_name"].lower())
+    by_workstation = [
         {
-            "item_name": row.item_name,
-            "category_name": row.category.name if row.category else "-",
-            "quantity_note": row.quantity_note or "",
-            "inventory_item_id": row.inventory_item_id,
-            "workstation_slug": row.workstation_slug or "unassigned",
-            "workstation_name": _workstation_display_name(row.workstation_slug),
-            "quantity_display": (
-                f"{float(row.quantity_amount):g} {row.quantity_unit or (row.inventory_item.unit if row.inventory_item else '')}".strip()
-                if row.quantity_amount is not None
-                else (row.quantity_note or "")
+            "label": station_data["label"],
+            "items": sorted(
+                station_data["items"].values(),
+                key=lambda row: row["item_name"].lower(),
             ),
-            "status": row.status.replace("_", " ").title(),
-            "created_by_name": row.created_by.full_name if row.created_by else "-",
-            "closed_by_name": row.closed_by.full_name if row.closed_by else "-",
-            "closed_at_ist": _format_ist(row.closed_at, "%d %b %Y, %I:%M %p") if row.closed_at else "-",
         }
-        for row in history_rows
+        for station_data in workstation_map.values()
     ]
-    return active_payload, history_payload
+    by_workstation.sort(key=lambda row: row["label"].lower())
+    return accumulated_rows, by_workstation
+
+
+def _toggle_purchase_todo(row: InventoryToPurchase, actor_id: int | None) -> None:
+    if row.status == "purchased":
+        row.status = "open"
+        row.completed_at = None
+        row.completed_by_user_id = None
+        return
+    row.status = "purchased"
+    row.completed_at = datetime.utcnow()
+    row.completed_by_user_id = actor_id
+
+
+def _remove_purchase_todo(row: InventoryToPurchase, actor_id: int | None) -> None:
+    row.active = False
+    row.status = "removed"
+    row.closed_at = datetime.utcnow()
+    row.closed_by_user_id = actor_id
+
+
+def _clear_purchase_todos(actor_id: int | None) -> int:
+    active_rows = InventoryToPurchase.query.filter_by(active=True).all()
+    now_utc = datetime.utcnow()
+    for row in active_rows:
+        row.active = False
+        if row.status not in {"purchased", "removed"}:
+            row.status = "cleared"
+        row.closed_at = now_utc
+        row.closed_by_user_id = actor_id
+    return len(active_rows)
 
 
 def _dedupe_active_purchase_todos():
@@ -6073,6 +6180,7 @@ def _dedupe_active_purchase_todos():
 def to_purchase():
     if request.method == "POST":
         action = (request.form.get("action") or "add_batch_to_purchase").strip().lower()
+        actor_id = g.current_user.id if g.current_user else None
 
         if action == "add_batch_to_purchase":
             item_ids = request.form.getlist("inventory_item_id[]")
@@ -6088,9 +6196,9 @@ def to_purchase():
                 item_name = item.name if item else ((item_names[idx] if idx < len(item_names) else "") or "").strip()
                 raw_quantity = (quantities[idx] if idx < len(quantities) else "").strip()
                 quantity_note = (quantity_notes[idx] if idx < len(quantity_notes) else "").strip()
-                workstation_slug = (workstations[idx] if idx < len(workstations) else "").strip().lower() or "unassigned"
-                if workstation_slug != "unassigned" and workstation_slug not in _workstation_slug_set(include_inactive=True):
-                    workstation_slug = "unassigned"
+                workstation_slug = _normalize_inventory_workstation_slug(
+                    workstations[idx] if idx < len(workstations) else ""
+                )
                 quantity_unit = (units[idx] if idx < len(units) else "").strip() or (item.unit if item else "pcs")
                 quantity_amount = _safe_float(raw_quantity, 0) if raw_quantity else 0
                 note = (notes[idx] if idx < len(notes) else "").strip() or None
@@ -6122,7 +6230,7 @@ def to_purchase():
                             category_id=item.category_id if item and hasattr(item, "category_id") else None,
                             status="open",
                             active=True,
-                            created_by_user_id=g.current_user.id if g.current_user else None,
+                            created_by_user_id=actor_id,
                         )
                     )
                 added += 1
@@ -6135,45 +6243,29 @@ def to_purchase():
 
         if action == "toggle_to_purchase":
             row = InventoryToPurchase.query.get_or_404(_safe_int(request.form.get("todo_id"), 0))
-            if row.status == "purchased":
-                row.status = "open"
-                row.completed_at = None
-                row.completed_by_user_id = None
-            else:
-                row.status = "purchased"
-                row.completed_at = datetime.utcnow()
-                row.completed_by_user_id = g.current_user.id if g.current_user else None
+            _toggle_purchase_todo(row, actor_id)
             db.session.commit()
             flash("Purchase item updated.", "success")
             return redirect(url_for("cafe.to_purchase"))
 
         if action == "remove_to_purchase":
             row = InventoryToPurchase.query.get_or_404(_safe_int(request.form.get("todo_id"), 0))
-            row.active = False
-            row.status = "removed"
-            row.closed_at = datetime.utcnow()
-            row.closed_by_user_id = g.current_user.id if g.current_user else None
+            _remove_purchase_todo(row, actor_id)
             db.session.commit()
             flash("Purchase item removed.", "success")
             return redirect(url_for("cafe.to_purchase"))
 
         if action == "clear_to_purchase":
-            active_rows = InventoryToPurchase.query.filter_by(active=True).all()
-            now_utc = datetime.utcnow()
-            changed = 0
-            for row in active_rows:
-                row.active = False
-                if row.status not in {"purchased", "removed"}:
-                    row.status = "cleared"
-                row.closed_at = now_utc
-                row.closed_by_user_id = g.current_user.id if g.current_user else None
-                changed += 1
+            changed = _clear_purchase_todos(actor_id)
             db.session.commit()
             flash(f"Cleared {changed} purchase item(s).", "success")
             return redirect(url_for("cafe.to_purchase"))
 
     _dedupe_active_purchase_todos()
     purchase_todos_active, purchase_todos_history = _purchase_todo_payloads()
+    purchase_accumulated_rows, purchase_by_workstation = _purchase_request_summaries(
+        purchase_todos_active
+    )
     inventory_items = InventoryItem.query.order_by(InventoryItem.name.asc()).all()
     workstation_options = _all_workstations()
     return render_template(
@@ -6182,6 +6274,8 @@ def to_purchase():
         purchase_todos_history=purchase_todos_history,
         inventory_items=inventory_items,
         workstation_options=workstation_options,
+        purchase_accumulated_rows=purchase_accumulated_rows,
+        purchase_by_workstation=purchase_by_workstation,
     )
 
 
@@ -6191,7 +6285,7 @@ def inventory():
     section = (request.args.get("section") or "dashboard").strip().lower()
     allowed_sections = {
         "dashboard", "daily_closing", "stock_levels", "items", "purchases", "vendors",
-        "wastage", "analytics", "categories", "settings", "to_purchase", "movements"
+        "wastage", "analytics", "categories", "settings", "movements"
     }
     if section not in allowed_sections:
         section = "dashboard"
@@ -6207,14 +6301,10 @@ def inventory():
             transaction_mode = (request.form.get("transaction_mode") or "qr").strip().lower()
             if transaction_mode not in {"cash", "card", "qr"}:
                 transaction_mode = "qr"
-            workstation_slug = (request.form.get("workstation_slug") or "").strip().lower() or "unassigned"
-            if workstation_slug != "unassigned" and workstation_slug not in _workstation_slug_set(include_inactive=True):
-                workstation_slug = "unassigned"
-            entry_date_raw = (request.form.get("entry_date") or "").strip()
-            try:
-                entry_date = date.fromisoformat(entry_date_raw) if entry_date_raw else date.today()
-            except ValueError:
-                entry_date = date.today()
+            workstation_slug = _normalize_inventory_workstation_slug(
+                request.form.get("workstation_slug")
+            )
+            entry_date = _inventory_date(request.form.get("entry_date"))
             if category_id <= 0:
                 flash("Please select an inventory category.", "error")
                 return redirect(url_for("cafe.inventory", section="dashboard"))
@@ -6319,7 +6409,7 @@ def inventory():
             return redirect(url_for("cafe.inventory", section="stock_levels", edit_item_id=item.id))
 
         if action == "daily_closing_save":
-            closing_date = date.fromisoformat(request.form.get("closing_date") or date.today().isoformat())
+            closing_date = _inventory_date(request.form.get("closing_date"))
             item_ids = [int(v) for v in request.form.getlist("item_id") if str(v).isdigit()]
             for item_id in item_ids:
                 item = InventoryItem.query.get(item_id)
@@ -6403,78 +6493,9 @@ def inventory():
             flash("Vendor updated.", "success")
             return redirect(url_for("cafe.inventory", section="vendors", edit_vendor_id=vendor.id))
 
-        if action == "add_to_purchase":
-            inventory_item = InventoryItem.query.get(_safe_int(request.form.get("inventory_item_id"), 0))
-            item_name = inventory_item.name if inventory_item else (request.form.get("item_name") or "").strip()
-            if not item_name:
-                flash("Please enter an item to purchase.", "error")
-                return redirect(url_for("cafe.inventory", section="to_purchase"))
-            workstation_slug = (request.form.get("workstation_slug") or "").strip().lower() or "unassigned"
-            if workstation_slug != "unassigned" and workstation_slug not in _workstation_slug_set(include_inactive=True):
-                workstation_slug = "unassigned"
-            quantity_amount_raw = (request.form.get("quantity_amount") or "").strip()
-            quantity_amount = _safe_float(quantity_amount_raw, 0) if quantity_amount_raw else 0
-            quantity_unit = (request.form.get("quantity_unit") or (inventory_item.unit if inventory_item else "pcs")).strip()
-            row = InventoryToPurchase(
-                item_name=item_name,
-                inventory_item_id=inventory_item.id if inventory_item else None,
-                workstation_slug=workstation_slug,
-                quantity_amount=round(quantity_amount, 3) if quantity_amount > 0 else None,
-                quantity_unit=quantity_unit if quantity_amount > 0 else None,
-                category_id=_safe_int(request.form.get("category_id"), 0) or None,
-                quantity_note=(request.form.get("quantity_note") or "").strip() or None,
-                note=(request.form.get("note") or "").strip() or None,
-                status="open",
-                active=True,
-                created_by_user_id=g.current_user.id if g.current_user else None,
-            )
-            db.session.add(row)
-            db.session.commit()
-            flash("Added to purchase list.", "success")
-            return redirect(url_for("cafe.inventory", section="to_purchase"))
-
-        if action == "toggle_to_purchase":
-            row = InventoryToPurchase.query.get_or_404(_safe_int(request.form.get("todo_id"), 0))
-            if row.status == "purchased":
-                row.status = "open"
-                row.completed_at = None
-                row.completed_by_user_id = None
-            else:
-                row.status = "purchased"
-                row.completed_at = datetime.utcnow()
-                row.completed_by_user_id = g.current_user.id if g.current_user else None
-            db.session.commit()
-            flash("Purchase item updated.", "success")
-            return redirect(url_for("cafe.inventory", section="to_purchase"))
-
-        if action == "remove_to_purchase":
-            row = InventoryToPurchase.query.get_or_404(_safe_int(request.form.get("todo_id"), 0))
-            row.active = False
-            row.status = "removed"
-            row.closed_at = datetime.utcnow()
-            row.closed_by_user_id = g.current_user.id if g.current_user else None
-            db.session.commit()
-            flash("Purchase item removed.", "success")
-            return redirect(url_for("cafe.inventory", section="to_purchase"))
-
-        if action == "clear_to_purchase":
-            active_rows = InventoryToPurchase.query.filter_by(active=True).all()
-            now_utc = datetime.utcnow()
-            changed = 0
-            for row in active_rows:
-                row.active = False
-                if row.status not in {"purchased", "removed"}:
-                    row.status = "cleared"
-                row.closed_at = now_utc
-                row.closed_by_user_id = g.current_user.id if g.current_user else None
-                changed += 1
-            db.session.commit()
-            flash(f"Cleared {changed} purchase item(s).", "success")
-            return redirect(url_for("cafe.inventory", section="to_purchase"))
-
         if action == "add_purchase":
             purchase = InventoryPurchase(
-                purchase_date=date.fromisoformat(request.form.get("purchase_date") or date.today().isoformat()),
+                purchase_date=_inventory_date(request.form.get("purchase_date")),
                 vendor_id=int(request.form.get("vendor_id")) if request.form.get("vendor_id") else None,
                 invoice_number=(request.form.get("invoice_number") or "").strip() or None,
                 tax_amount=_safe_float(request.form.get("tax_amount"), 0),
@@ -6529,7 +6550,7 @@ def inventory():
                 flash("Select item and quantity.", "error")
                 return redirect(url_for("cafe.inventory", section="wastage"))
             wastage = InventoryWastage(
-                wastage_date=date.fromisoformat(request.form.get("wastage_date") or date.today().isoformat()),
+                wastage_date=_inventory_date(request.form.get("wastage_date")),
                 item_id=item_id,
                 quantity=qty,
                 reason=(request.form.get("reason") or "").strip() or None,
@@ -6587,7 +6608,7 @@ def inventory():
             flash("Category updated.", "success")
             return redirect(url_for("cafe.inventory", section="categories", edit_category_id=category.id))
 
-    closing_date = date.fromisoformat(request.args.get("closing_date") or date.today().isoformat())
+    closing_date = _inventory_date(request.args.get("closing_date"))
     inventory_search = (request.args.get("q") or "").strip()
     inventory_period = (request.args.get("period") or "today").strip().lower()
     if inventory_period not in {key for key, _ in _inventory_period_options()}:
@@ -6650,7 +6671,7 @@ def inventory():
     filtered_items = _inventory_filtered_items(items, inventory_search, inventory_area, inventory_category_filter, inventory_status_filter)
     purchases = InventoryPurchase.query.order_by(InventoryPurchase.purchase_date.desc(), InventoryPurchase.id.desc()).limit(80).all()
     wastage_rows = InventoryWastage.query.order_by(InventoryWastage.wastage_date.desc(), InventoryWastage.id.desc()).limit(120).all()
-    purchase_todos_active, purchase_todos_history = _purchase_todo_payloads()
+    purchase_todos_active, _ = _purchase_todo_payloads(include_history=False)
     edit_item_id = request.args.get("edit_item_id", type=int)
     selected_item = InventoryItem.query.get(edit_item_id) if edit_item_id else (filtered_items[0] if filtered_items else None)
     edit_vendor_id = request.args.get("edit_vendor_id", type=int)
@@ -6826,46 +6847,9 @@ def inventory():
                 "color": station["color"],
             }
         )
-    purchase_accumulated_map = {}
-    purchase_workstation_map = {}
-    for row in purchase_todos_active:
-        if row["status"] == "purchased" or row.get("quantity_amount") is None:
-            continue
-        item_key = row.get("inventory_item_id") or row["item_name"].strip().lower()
-        unit = row.get("quantity_unit") or "unit"
-        item_data = purchase_accumulated_map.setdefault(
-            item_key,
-            {
-                "item_name": row["item_name"],
-                "unit": unit,
-                "quantity": 0.0,
-                "estimated_cost": 0.0,
-                "workstations": set(),
-            },
-        )
-        item_data["quantity"] = round(item_data["quantity"] + float(row["quantity_amount"] or 0), 3)
-        item_data["estimated_cost"] = round(item_data["estimated_cost"] + float(row["quantity_amount"] or 0) * float(row.get("purchase_price") or 0), 2)
-        item_data["workstations"].add(row["workstation_name"])
-        station_data = purchase_workstation_map.setdefault(row["workstation_slug"], {"label": row["workstation_name"], "items": {}})
-        station_item = station_data["items"].setdefault(item_key, {"item_name": row["item_name"], "unit": unit, "quantity": 0.0})
-        station_item["quantity"] = round(station_item["quantity"] + float(row["quantity_amount"] or 0), 3)
-    purchase_accumulated_rows = [
-        {
-            **data,
-            "workstations": ", ".join(sorted(data["workstations"])),
-        }
-        for data in purchase_accumulated_map.values()
-    ]
-    purchase_accumulated_rows.sort(key=lambda row: row["item_name"].lower())
-    purchase_by_workstation = []
-    for station_data in purchase_workstation_map.values():
-        purchase_by_workstation.append(
-            {
-                "label": station_data["label"],
-                "items": sorted(station_data["items"].values(), key=lambda row: row["item_name"].lower()),
-            }
-        )
-    purchase_by_workstation.sort(key=lambda row: row["label"].lower())
+    _, purchase_by_workstation = _purchase_request_summaries(
+        purchase_todos_active
+    )
     average_daily_expense = round(total_period_expense / max((inventory_period_end - inventory_period_start).days + 1, 1), 2)
     recent_expense_logs = [
         {
@@ -6924,7 +6908,6 @@ def inventory():
         movement_summary=movement_summary,
         movement_time_map=movement_time_map,
         purchase_todos_active=purchase_todos_active,
-        purchase_todos_history=purchase_todos_history,
         category_spend_rows=category_spend_rows,
         max_category_spend=max_category_spend,
         timeline_rows=timeline_rows,
@@ -6932,7 +6915,6 @@ def inventory():
         expense_vs_earning=expense_vs_earning,
         average_daily_expense=average_daily_expense,
         workstation_financial_rows=workstation_financial_rows,
-        purchase_accumulated_rows=purchase_accumulated_rows,
         purchase_by_workstation=purchase_by_workstation,
     )
 

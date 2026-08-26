@@ -22,7 +22,7 @@
     <a href="{{ url_for('cafe.inventory', section='movements') }}" class="{% if section=='movements' %}active{% endif %}">Stock Movements</a>
     <a href="{{ url_for('cafe.inventory', section='purchases') }}" class="{% if section=='purchases' %}active{% endif %}">Purchases</a>
     <a href="{{ url_for('cafe.inventory', section='vendors') }}" class="{% if section=='vendors' %}active{% endif %}">Vendors</a>
-    <a href="{{ url_for('cafe.inventory', section='to_purchase') }}" class="{% if section=='to_purchase' %}active{% endif %}">To Purchase</a>
+    <a href="{{ url_for('cafe.to_purchase') }}">To Purchase ↗</a>
     <a href="{{ url_for('cafe.inventory', section='wastage') }}" class="{% if section=='wastage' %}active{% endif %}">Wastage</a>
     <a href="{{ url_for('cafe.inventory', section='analytics') }}" class="{% if section=='analytics' %}active{% endif %}">Analytics</a>
     <a href="{{ url_for('cafe.inventory', section='categories') }}" class="{% if section=='categories' %}active{% endif %}">Categories</a>
@@ -254,117 +254,6 @@
           <p class="muted">No urgent stock alerts.</p>
           {% endif %}
         </div>
-      </article>
-    </section>
-    {% endif %}
-
-    {% if section == "to_purchase" %}
-    <section class="inventory-two-col inventory-main-grid">
-      <article class="panel">
-        <div class="split-head">
-          <div>
-            <h3>To Purchase</h3>
-            <p class="muted">Build a shared buying list, tick items as purchased, and keep the remaining items visible at a glance.</p>
-          </div>
-          <form method="post">
-            <input type="hidden" name="action" value="clear_to_purchase" />
-            <button type="submit" {% if not purchase_todos_active %}disabled{% endif %}>Clear Whole List</button>
-          </form>
-        </div>
-        <form method="post" class="grid inventory-form-grid">
-          <input type="hidden" name="action" value="add_to_purchase" />
-          <label>Registered Item
-            <select name="inventory_item_id" required>
-              <option value="">Select inventory item</option>
-              {% for item in items %}<option value="{{ item.id }}">{{ item.name }}{% if item.unit %} · {{ item.unit }}{% endif %}</option>{% endfor %}
-            </select>
-          </label>
-          <label>Workstation
-            <select name="workstation_slug"><option value="unassigned">All cafe / unassigned</option>{% for workstation in workstation_options %}<option value="{{ workstation.slug }}">{{ workstation.name }}</option>{% endfor %}</select>
-          </label>
-          <label>Quantity <input name="quantity_amount" type="number" min="0.001" step="0.001" placeholder="5" required /></label>
-          <label>Unit <input name="quantity_unit" placeholder="kg, litre, pcs" /></label>
-          <label class="full">Note <input name="note" placeholder="Brand preference, store, urgent, etc." /></label>
-          <button type="submit">Add to List</button>
-        </form>
-      </article>
-
-      <article class="panel">
-        <h3>Active Purchase List</h3>
-        <div class="inventory-alert-list">
-          {% for row in purchase_todos_active %}
-          <div class="inventory-alert-row neutral" style="display:grid;grid-template-columns:auto 1fr auto;align-items:flex-start;gap:0.8rem;">
-            <form method="post" style="margin:0;">
-              <input type="hidden" name="action" value="toggle_to_purchase" />
-              <input type="hidden" name="todo_id" value="{{ row.id }}" />
-              <input type="checkbox" {% if row.status == 'purchased' %}checked{% endif %} onchange="this.form.submit()" />
-            </form>
-            <div>
-              <strong style="{% if row.status == 'purchased' %}text-decoration:line-through;opacity:0.7;{% endif %}">{{ row.item_name }}</strong>
-              <div class="muted">
-                {% if row.category_name %}{{ row.category_name }}{% endif %}
-                {% if row.quantity_display %}{% if row.category_name %} | {% endif %}{{ row.quantity_display }}{% endif %}
-                | {{ row.workstation_name }}
-              </div>
-              {% if row.note %}<div class="muted">{{ row.note }}</div>{% endif %}
-              <div class="muted">
-                Added by {{ row.created_by_name }} on {{ row.created_at_ist }}
-                {% if row.status == "purchased" and row.completed_by_name %}
-                <br />Purchased by {{ row.completed_by_name }} on {{ row.completed_at_ist }}
-                {% endif %}
-              </div>
-            </div>
-            <form method="post" style="margin:0;">
-              <input type="hidden" name="action" value="remove_to_purchase" />
-              <input type="hidden" name="todo_id" value="{{ row.id }}" />
-              <button type="submit">Remove</button>
-            </form>
-          </div>
-          {% else %}
-          <p class="muted">No active purchase items right now.</p>
-          {% endfor %}
-        </div>
-      </article>
-    </section>
-
-    <section class="panel">
-      <h3>Purchase List History</h3>
-      <table>
-        <tr><th>Item</th><th>Category</th><th>Status</th><th>Added By</th><th>Closed By</th><th>Closed At</th></tr>
-        {% for row in purchase_todos_history %}
-        <tr>
-          <td>{{ row.item_name }}{% if row.quantity_note %}<br /><small>{{ row.quantity_note }}</small>{% endif %}</td>
-          <td>{{ row.category_name }}</td>
-          <td>{{ row.status }}</td>
-          <td>{{ row.created_by_name }}</td>
-          <td>{{ row.closed_by_name }}</td>
-          <td>{{ row.closed_at_ist }}</td>
-        </tr>
-        {% else %}
-        <tr><td colspan="6">No purchase history yet.</td></tr>
-        {% endfor %}
-      </table>
-    </section>
-    <section class="inventory-two-col">
-      <article class="panel">
-        <h3>Accumulated Purchase List</h3>
-        <p class="muted">Unique registered items summed across every workstation.</p>
-        <table>
-          <tr><th>Item</th><th>Total Quantity</th><th>Estimated Cost</th><th>Requested By Workstations</th></tr>
-          {% for row in purchase_accumulated_rows %}
-          <tr><td>{{ row.item_name }}</td><td>{{ "%.3f"|format(row.quantity) }} {{ row.unit }}</td><td>₹{{ "%.2f"|format(row.estimated_cost) }}</td><td>{{ row.workstations or "-" }}</td></tr>
-          {% else %}<tr><td colspan="4">No quantified open requests yet.</td></tr>{% endfor %}
-        </table>
-      </article>
-      <article class="panel">
-        <h3>By Workstation</h3>
-        {% for group in purchase_by_workstation %}
-        <h4>{{ group.label }}</h4>
-        <table>
-          <tr><th>Item</th><th>Quantity</th></tr>
-          {% for row in group.items %}<tr><td>{{ row.item_name }}</td><td>{{ "%.3f"|format(row.quantity) }} {{ row.unit }}</td></tr>{% endfor %}
-        </table>
-        {% else %}<p class="muted">No workstation requests yet.</p>{% endfor %}
       </article>
     </section>
     {% endif %}
