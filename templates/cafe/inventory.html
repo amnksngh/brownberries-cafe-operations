@@ -15,21 +15,19 @@
 
 <section class="inventory-layout">
   <aside class="inventory-sidebar panel">
-    <a href="{{ url_for('cafe.inventory', section='dashboard') }}" class="{% if section=='dashboard' %}active{% endif %}">Dashboard</a>
-    <a href="{{ url_for('cafe.inventory', section='daily_closing', closing_date=closing_date.isoformat()) }}" class="{% if section=='daily_closing' %}active{% endif %}">Daily Closing</a>
-    <a href="{{ url_for('cafe.inventory', section='items') }}" class="{% if section=='items' %}active{% endif %}">Items</a>
-    <a href="{{ url_for('cafe.inventory', section='stock_levels') }}" class="{% if section=='stock_levels' %}active{% endif %}">Stock Levels</a>
-    <a href="{{ url_for('cafe.inventory', section='movements') }}" class="{% if section=='movements' %}active{% endif %}">Stock Movements</a>
+    <a href="{{ url_for('cafe.inventory', section='dashboard') }}" class="{% if section=='dashboard' %}active{% endif %}">Overview</a>
+    <a href="{{ url_for('cafe.inventory', section='items_stock') }}" class="{% if section=='items_stock' %}active{% endif %}">Items &amp; Stock</a>
     <a href="{{ url_for('cafe.inventory', section='purchases') }}" class="{% if section=='purchases' %}active{% endif %}">Purchases</a>
     <a href="{{ url_for('cafe.inventory', section='vendors') }}" class="{% if section=='vendors' %}active{% endif %}">Vendors</a>
     <a href="{{ url_for('cafe.to_purchase') }}">To Purchase ↗</a>
+    <a href="{{ url_for('cafe.inventory', section='daily_closing', closing_date=closing_date.isoformat()) }}" class="{% if section=='daily_closing' %}active{% endif %}">Daily Closing</a>
     <a href="{{ url_for('cafe.inventory', section='wastage') }}" class="{% if section=='wastage' %}active{% endif %}">Wastage</a>
-    <a href="{{ url_for('cafe.inventory', section='analytics') }}" class="{% if section=='analytics' %}active{% endif %}">Analytics</a>
-    <a href="{{ url_for('cafe.inventory', section='categories') }}" class="{% if section=='categories' %}active{% endif %}">Categories</a>
-    <a href="{{ url_for('cafe.inventory', section='settings') }}" class="{% if section=='settings' %}active{% endif %}">Settings</a>
+    <a href="{{ url_for('cafe.inventory', section='audit') }}" class="{% if section=='audit' %}active{% endif %}">Audit Trail</a>
+    {% if g.current_user and g.current_user.has_any_role('owner', 'admin', 'manager', 'inventory_manager') %}<a href="{{ url_for('cafe.inventory', section='settings') }}" class="{% if section=='settings' %}active{% endif %}">Settings</a>{% endif %}
   </aside>
 
   <div class="inventory-content">
+    {% if section == "dashboard" %}
     <section class="panel inventory-card-grid">
       <article class="inventory-kpi"><h4>Total Items</h4><p>{{ inventory_analytics.total_items }}</p></article>
       <article class="inventory-kpi"><h4>Low Stock</h4><p>{{ inventory_analytics.low_stock_count }}</p></article>
@@ -42,7 +40,6 @@
       <article class="inventory-kpi"><h4>To Purchase</h4><p>{{ inventory_analytics.to_purchase_count }}</p></article>
     </section>
 
-    {% if section == "dashboard" %}
     <section class="panel">
       <div class="split-head" style="gap:1rem;align-items:flex-start;">
         <div>
@@ -256,17 +253,39 @@
         </div>
       </article>
     </section>
+    <section class="inventory-two-col">
+      <article class="panel">
+        <h3>Consumption Drivers</h3>
+        <p class="muted">Latest saved daily-closing consumption compared with each item's expected daily use.</p>
+        <div class="table-scroll">
+          <table>
+            <tr><th>Item</th><th>Consumed</th><th>Average</th></tr>
+            {% for row in top_consumption_rows %}
+            <tr><td>{{ row.item.name }}</td><td>{{ "%.3f"|format(row.existing.consumed_amount if row.existing else 0) }} {{ row.item.unit }}</td><td>{{ "%.3f"|format(row.item.average_daily_usage or 0) }} {{ row.item.unit }}</td></tr>
+            {% else %}<tr><td colspan="3">No daily closing data yet.</td></tr>{% endfor %}
+          </table>
+        </div>
+      </article>
+      <article class="panel">
+        <h3>Operational Risk</h3>
+        <div class="inventory-alert-list">
+          <div class="inventory-alert-row low"><strong>Low Stock Items</strong><span>{{ low_stock_items|length }}</span></div>
+          <div class="inventory-alert-row overstock"><strong>Overstock Items</strong><span>{{ overstock_items|length }}</span></div>
+          <div class="inventory-alert-row neutral"><strong>Items Without Vendor</strong><span>{{ items_without_vendor|length }}</span></div>
+        </div>
+      </article>
+    </section>
     {% endif %}
 
-    {% if section == "movements" %}
+    {% if section == "audit" %}
     <section class="panel">
       <div class="split-head" style="gap:1rem;align-items:flex-start;">
         <div>
-          <h3>Stock Movements</h3>
-          <p class="muted">A read-only audit trail of purchases, consumption, wastage, counts, and corrections.</p>
+          <h3>Inventory Audit Trail</h3>
+          <p class="muted">Daily Closing records one physical end-of-day count. This separate, read-only history records every stock change—purchases, recipe consumption, wastage, counts, and manual corrections—so balances can be investigated later.</p>
         </div>
         <form method="get" class="grid inventory-inline-form">
-          <input type="hidden" name="section" value="movements" />
+          <input type="hidden" name="section" value="audit" />
           <label>Period
             <select name="period">
               {% for value, label in inventory_period_options %}
@@ -300,7 +319,7 @@
             <td>{{ row.created_by.full_name if row.created_by else "-" }}</td>
           </tr>
           {% else %}
-          <tr><td colspan="9">No stock movements in this period yet.</td></tr>
+          <tr><td colspan="9">No inventory audit entries in this period yet.</td></tr>
           {% endfor %}
         </table>
       </div>
@@ -339,7 +358,10 @@
               <td>{{ "%.3f"|format(row.opening) }}</td>
               <td><input type="number" step="0.001" min="0" name="closing_stock_{{ row.item.id }}" value="{{ existing.closing_stock if existing else row.item.current_amount }}" /></td>
               <td>{{ "%.3f"|format(existing.consumed_amount if existing else 0) }}</td>
-              <td>{{ "%.3f"|format(existing.variance_amount if existing else 0) }}</td>
+              <td>
+                {{ "%.3f"|format(existing.variance_amount if existing else 0) }}
+                {% if row.variance_warning %}<span class="inventory-status low">Review</span>{% endif %}
+              </td>
               <td><input name="closing_note_{{ row.item.id }}" value="{{ existing.note if existing else '' }}" placeholder="Optional note" /></td>
             </tr>
             {% endfor %}
@@ -351,12 +373,12 @@
     </section>
     {% endif %}
 
-    {% if section in ["stock_levels", "items"] %}
+    {% if section == "items_stock" %}
     <section class="panel">
       <div class="split-head">
-        <h3>Stock Control</h3>
+        <div><h3>Items &amp; Stock</h3><p class="muted">One master list for item details, live quantities, reorder rules, and categories.</p></div>
         <form method="get" class="grid inventory-filter-bar">
-          <input type="hidden" name="section" value="stock_levels" />
+          <input type="hidden" name="section" value="items_stock" />
           <label>Search <input name="q" value="{{ inventory_search }}" placeholder="Name, code, category, location" /></label>
           <label>Area
             <select name="area">
@@ -365,11 +387,9 @@
               {% endfor %}
             </select>
           </label>
-          <label>Item Type
+          <label>Category
             <select name="category">
               <option value="all" {% if inventory_category_filter == 'all' %}selected{% endif %}>All</option>
-              <option value="perishable" {% if inventory_category_filter == 'perishable' %}selected{% endif %}>Perishable</option>
-              <option value="non-perishable" {% if inventory_category_filter == 'non-perishable' %}selected{% endif %}>Non-perishable</option>
               {% for c in categories %}<option value="{{ c.name|lower }}" {% if inventory_category_filter == c.name|lower %}selected{% endif %}>{{ c.name }}</option>{% endfor %}
             </select>
           </label>
@@ -392,14 +412,20 @@
         <form method="post" class="grid inventory-form-grid">
           <input type="hidden" name="action" value="add_item" />
           <label>Name <input name="name" required /></label>
-          <label>Item Type
+          <label>Category
             <select name="category_name" required>
               <option value="">Select category</option>
-              <option value="Perishable">Perishable</option>
-              <option value="Non-perishable">Non-perishable</option>
+              {% for c in categories %}<option value="{{ c.name }}">{{ c.name }}</option>{% endfor %}
             </select>
           </label>
-          <label>Unit <input name="unit" value="pcs" required /></label>
+          <label>Area
+            <select name="area">
+              {% for area in inventory_area_options if area.value != 'all' %}
+              <option value="{{ area.value }}" {% if inventory_settings.default_area == area.value %}selected{% endif %}>{{ area.label }}</option>
+              {% endfor %}
+            </select>
+          </label>
+          <label>Unit <input name="unit" value="{{ inventory_settings.default_unit }}" required /></label>
           <label>Storage Location <input name="storage_location" /></label>
           <button type="submit">Add Item</button>
         </form>
@@ -414,11 +440,10 @@
           <input type="hidden" name="item_id" value="{{ selected_item.id }}" />
           <label>Item Code <span class="inventory-readonly-value">{{ selected_item.item_code or "-" }}</span></label>
           <label>Name <span class="inventory-readonly-value">{{ selected_item.name }}</span></label>
-          <label>Item Type
+          <label>Category
             <select name="category_name">
-              <option value="Perishable" {% if (selected_item.category_name or '')|lower == 'perishable' %}selected{% endif %}>Perishable</option>
-              <option value="Non-perishable" {% if (selected_item.category_name or '')|lower == 'non-perishable' %}selected{% endif %}>Non-perishable</option>
-              {% if selected_item.category_name and (selected_item.category_name|lower not in ['perishable', 'non-perishable']) %}
+              {% for c in categories %}<option value="{{ c.name }}" {% if (selected_item.category_name or '')|lower == c.name|lower %}selected{% endif %}>{{ c.name }}</option>{% endfor %}
+              {% if selected_item.category_name and not (categories|selectattr('name', 'equalto', selected_item.category_name)|list) %}
               <option value="{{ selected_item.category_name }}" selected>{{ selected_item.category_name }}</option>
               {% endif %}
             </select>
@@ -461,16 +486,11 @@
       </article>
     </section>
     <section class="panel">
-      <h3>Stock Levels</h3>
+      <div class="split-head"><div><h3>Item &amp; Stock Master</h3><p class="muted">Edit an item to maintain its classification and stock rules. Use adjustments only for documented corrections.</p></div><span class="inventory-badge">{{ filtered_items|length }} shown</span></div>
       <table>
-        <tr><th>Item</th><th>Area</th><th>Item Type</th><th>Current</th><th>Reorder</th><th>Status</th><th>Vendor</th><th>Value</th><th>Open</th></tr>
+        <tr><th>Item</th><th>Area</th><th>Category</th><th>Current</th><th>Reorder</th><th>Status</th><th>Vendor</th><th>Value</th><th>Open</th></tr>
         {% for item in filtered_items %}
-        {% set item_status = 'healthy' %}
-        {% if item.current_amount <= item.reorder_level %}
-          {% set item_status = 'low' %}
-        {% elif item.required_amount > 0 and item.current_amount >= item.required_amount * 1.35 %}
-          {% set item_status = 'overstock' %}
-        {% endif %}
+        {% set item_status = item_status_map.get(item.id, 'healthy') %}
         <tr>
           <td><strong>{{ item.name }}</strong><div class="muted">{{ item.item_code or "-" }}</div></td>
           <td>{{ inventory_area_name_map.get((item.area or '')|lower, item.area or '-') }}</td>
@@ -480,12 +500,60 @@
           <td><span class="inventory-status {{ item_status }}">{{ item_status.replace('_', ' ').title() }}</span></td>
           <td>{{ item.vendor.name if item.vendor else "-" }}</td>
           <td>₹{{ "%.2f"|format((item.current_amount or 0) * (item.purchase_price or 0)) }}</td>
-          <td><a href="{{ url_for('cafe.inventory', section='stock_levels', edit_item_id=item.id, q=inventory_search, area=inventory_area, category=inventory_category_filter, status=inventory_status_filter) }}">Edit</a></td>
+          <td><a href="{{ url_for('cafe.inventory', section='items_stock', edit_item_id=item.id, q=inventory_search, area=inventory_area, category=inventory_category_filter, status=inventory_status_filter) }}">Edit</a></td>
         </tr>
         {% else %}
         <tr><td colspan="9">No items match the current filters.</td></tr>
         {% endfor %}
       </table>
+    </section>
+    <section class="panel">
+      <div class="split-head">
+        <div><h3>Categories</h3><p class="muted">Maintain classifications here, beside the items that use them. Inactive categories remain visible for historical records but cannot be assigned to new items.</p></div>
+        <span class="inventory-badge">{{ inventory_categories_all|length }} categories</span>
+      </div>
+      <section class="inventory-two-col inventory-main-grid">
+        <article class="inventory-subpanel">
+          <h4>Add Category</h4>
+          <form method="post" class="grid inventory-form-grid">
+            <input type="hidden" name="action" value="add_category" />
+            <label>Name <input name="name" required /></label>
+            <label>Icon <input name="icon" placeholder="leaf" /></label>
+            <label>Color <input name="color" type="color" value="#6cab7a" /></label>
+            <button type="submit">Add Category</button>
+          </form>
+        </article>
+        <article class="inventory-subpanel">
+          <h4>Edit Category</h4>
+          {% if selected_category %}
+          <form method="post" class="grid inventory-form-grid">
+            <input type="hidden" name="action" value="update_category" />
+            <input type="hidden" name="category_id" value="{{ selected_category.id }}" />
+            <label>Name <input name="name" value="{{ selected_category.name }}" required /></label>
+            <label>Icon <input name="icon" value="{{ selected_category.icon or '' }}" /></label>
+            <label>Color <input name="color" type="color" value="{{ selected_category.color or '#6cab7a' }}" /></label>
+            <label><input type="checkbox" name="active" {% if selected_category.active %}checked{% endif %} /> Active</label>
+            <button type="submit">Update Category</button>
+          </form>
+          {% else %}<p class="muted">Add the first inventory category.</p>{% endif %}
+        </article>
+      </section>
+      <div class="table-scroll" style="margin-top:0.8rem;">
+        <table>
+          <tr><th>Name</th><th>Icon</th><th>Color</th><th>Items</th><th>Status</th><th>Open</th></tr>
+          {% for c in inventory_categories_all %}
+          {% set stats = category_stats|selectattr('category.id', 'equalto', c.id)|first %}
+          <tr>
+            <td><strong>{{ c.name }}</strong></td>
+            <td>{{ c.icon or "-" }}</td>
+            <td><span class="category-dot" style="background:{{ c.color or '#ddd' }}"></span> {{ c.color or '-' }}</td>
+            <td>{{ stats.item_count if stats else 0 }}</td>
+            <td><span class="inventory-status {{ 'healthy' if c.active else 'overstock' }}">{{ "Active" if c.active else "Inactive" }}</span></td>
+            <td><a href="{{ url_for('cafe.inventory', section='items_stock', edit_category_id=c.id) }}">Edit</a></td>
+          </tr>
+          {% else %}<tr><td colspan="6">No inventory categories yet.</td></tr>{% endfor %}
+        </table>
+      </div>
     </section>
     {% endif %}
 
@@ -616,144 +684,46 @@
     </section>
     {% endif %}
 
-    {% if section == "analytics" %}
-    <section class="panel">
-      <div class="split-head" style="gap:1rem;align-items:flex-start;">
-        <div>
-          <h3>Inventory Analytics</h3>
-          <p class="muted">Use the same time window across spend, stock pressure, and menu-linked consumption.</p>
-        </div>
-        <form method="get" class="grid inventory-inline-form">
-          <input type="hidden" name="section" value="analytics" />
-          <label>Period
-            <select name="period">
-              {% for value, label in inventory_period_options %}
-              <option value="{{ value }}" {% if inventory_period == value %}selected{% endif %}>{{ label }}</option>
-              {% endfor %}
-            </select>
-          </label>
-          <button type="submit">Refresh</button>
-        </form>
-      </div>
-    </section>
-    <section class="inventory-two-col">
-      <article class="panel">
-        <h3>Expense vs Earnings</h3>
-        <div class="inventory-alert-list">
-          <div style="display:grid;gap:0.35rem;margin-bottom:0.85rem;">
-            <div class="split-head"><strong>Expenses</strong><span>₹{{ "%.2f"|format(expense_vs_earning.expense) }}</span></div>
-            <div style="height:12px;background:#f2e8df;border-radius:999px;overflow:hidden;"><div style="height:100%;width:{{ ((expense_vs_earning.expense / [expense_vs_earning.expense, expense_vs_earning.revenue]|max) * 100) if ([expense_vs_earning.expense, expense_vs_earning.revenue]|max) else 0 }}%;background:#a15c38;"></div></div>
-          </div>
-          <div style="display:grid;gap:0.35rem;">
-            <div class="split-head"><strong>Earnings</strong><span>₹{{ "%.2f"|format(expense_vs_earning.revenue) }}</span></div>
-            <div style="height:12px;background:#f2e8df;border-radius:999px;overflow:hidden;"><div style="height:100%;width:{{ ((expense_vs_earning.revenue / [expense_vs_earning.expense, expense_vs_earning.revenue]|max) * 100) if ([expense_vs_earning.expense, expense_vs_earning.revenue]|max) else 0 }}%;background:#4e8f76;"></div></div>
-          </div>
-        </div>
-      </article>
-      <article class="panel">
-        <h3>Operational Risk</h3>
-        <div class="inventory-alert-list">
-          <div class="inventory-alert-row low"><strong>Low Stock Items</strong><span>{{ low_stock_items|length }}</span></div>
-          <div class="inventory-alert-row overstock"><strong>Overstock Items</strong><span>{{ overstock_items|length }}</span></div>
-          <div class="inventory-alert-row neutral"><strong>Items Without Vendor</strong><span>{{ items_without_vendor|length }}</span></div>
-        </div>
-      </article>
-    </section>
-    <section class="inventory-two-col">
-      <article class="panel">
-        <h3>Consumption Drivers</h3>
-        <table>
-          <tr><th>Item</th><th>Latest Consumed</th><th>Avg Daily Usage</th></tr>
-          {% for row in top_consumption_rows %}
-          <tr>
-            <td>{{ row.item.name }}</td>
-            <td>{{ "%.3f"|format(row.existing.consumed_amount if row.existing else 0) }} {{ row.item.unit }}</td>
-            <td>{{ "%.3f"|format(row.item.average_daily_usage or 0) }} {{ row.item.unit }}</td>
-          </tr>
-          {% else %}
-          <tr><td colspan="3">No daily closing data yet.</td></tr>
-          {% endfor %}
-        </table>
-      </article>
-      <article class="panel">
-        <h3>Best Value Categories</h3>
-        <table>
-          <tr><th>Category</th><th>Spend</th><th>Entries</th></tr>
-          {% for row in category_spend_rows[:8] %}
-          <tr>
-            <td>{{ row.category.name }}</td>
-            <td>₹{{ "%.2f"|format(row.amount) }}</td>
-            <td>{{ row.entry_count }}</td>
-          </tr>
-          {% else %}
-          <tr><td colspan="3">No category spend recorded yet.</td></tr>
-          {% endfor %}
-        </table>
-      </article>
-    </section>
-    {% endif %}
-
-    {% if section == "categories" %}
-    <section class="inventory-two-col">
-      <article class="panel">
-        <h3>Add Category</h3>
-        <form method="post" class="grid inventory-form-grid">
-          <input type="hidden" name="action" value="add_category" />
-          <label>Name <input name="name" required /></label>
-          <label>Icon <input name="icon" placeholder="leaf" /></label>
-          <label>Color <input name="color" placeholder="#6cab7a" /></label>
-          <button type="submit">Add Category</button>
-        </form>
-      </article>
-      <article class="panel">
-        <h3>Edit Category</h3>
-        {% if selected_category %}
-        <form method="post" class="grid inventory-form-grid">
-          <input type="hidden" name="action" value="update_category" />
-          <input type="hidden" name="category_id" value="{{ selected_category.id }}" />
-          <label>Name <input name="name" value="{{ selected_category.name }}" required /></label>
-          <label>Icon <input name="icon" value="{{ selected_category.icon or '' }}" /></label>
-          <label>Color <input name="color" value="{{ selected_category.color or '' }}" /></label>
-          <label><input type="checkbox" name="active" {% if selected_category.active %}checked{% endif %} /> Active</label>
-          <button type="submit">Update Category</button>
-        </form>
-        {% endif %}
-      </article>
-    </section>
-    <section class="panel">
-      <h3>Categories</h3>
-      <table>
-        <tr><th>Name</th><th>Icon</th><th>Color</th><th>Status</th><th>Open</th></tr>
-        {% for c in categories %}
-        <tr>
-          <td>{{ c.name }}</td>
-          <td>{{ c.icon or "-" }}</td>
-          <td><span class="category-dot" style="background:{{ c.color or '#ddd' }}"></span> {{ c.color or '-' }}</td>
-          <td>{{ "Active" if c.active else "Inactive" }}</td>
-          <td><a href="{{ url_for('cafe.inventory', section='categories', edit_category_id=c.id) }}">Edit</a></td>
-        </tr>
-        {% endfor %}
-      </table>
-    </section>
-    {% endif %}
-
     {% if section == "settings" %}
     <section class="panel">
-      <h3>Inventory Settings</h3>
-      <div class="inventory-setting-grid">
-        <article class="inventory-category-chip">
-          <h4>Closing Discipline</h4>
-          <p>Daily closing tracks opening, closing, consumed, and variance for each item.</p>
-        </article>
-        <article class="inventory-category-chip">
-          <h4>Stock Health Model</h4>
-          <p>Low stock uses reorder level. Overstock is flagged when current stock rises above 135% of required stock.</p>
-        </article>
-        <article class="inventory-category-chip">
-          <h4>Prepared For Growth</h4>
-          <p>Vendor linking, purchase logging, closing discipline, and wastage tracking are ready for deeper automation later.</p>
-        </article>
-      </div>
+      <div class="split-head"><div><h3>Inventory Settings</h3><p class="muted">Defaults and control thresholds used by Inventory OS. Changes apply immediately and do not alter existing stock quantities.</p></div></div>
+      {% if can_manage_inventory_settings %}
+      <form method="post" class="grid inventory-settings-form">
+        <input type="hidden" name="action" value="save_inventory_settings" />
+        <fieldset>
+          <legend>New item defaults</legend>
+          <label>Default Area
+            <select name="default_area">
+              {% for area in inventory_area_options if area.value != 'all' %}<option value="{{ area.value }}" {% if inventory_settings.default_area == area.value %}selected{% endif %}>{{ area.label }}</option>{% endfor %}
+            </select>
+            <small>Preselected when a new inventory item is created.</small>
+          </label>
+          <label>Default Unit
+            <input name="default_unit" value="{{ inventory_settings.default_unit }}" maxlength="30" required />
+            <small>For example: pcs, kg, litre, packet.</small>
+          </label>
+        </fieldset>
+        <fieldset>
+          <legend>Stock health rules</legend>
+          <label>Overstock threshold
+            <div class="inventory-input-suffix"><input name="overstock_percent" type="number" min="101" max="500" value="{{ inventory_settings.overstock_percent }}" required /><span>% of required stock</span></div>
+            <small>Low stock still uses each item's reorder level.</small>
+          </label>
+          <label>Closing variance warning
+            <div class="inventory-input-suffix"><input name="variance_warning_percent" type="number" min="0" max="500" value="{{ inventory_settings.variance_warning_percent }}" required /><span>% of average use</span></div>
+            <small>Shows “Review” beside unusual saved daily-closing variance. Use 0 to flag any variance.</small>
+          </label>
+        </fieldset>
+        <fieldset>
+          <legend>Audit display</legend>
+          <label>Maximum audit entries
+            <input name="audit_page_size" type="number" min="50" max="1000" step="50" value="{{ inventory_settings.audit_page_size }}" required />
+            <small>Controls how many records can appear for the selected Audit Trail period. History is never deleted.</small>
+          </label>
+        </fieldset>
+        <button type="submit">Save Inventory Settings</button>
+      </form>
+      {% else %}<p class="muted">Only managers and inventory managers can change these controls.</p>{% endif %}
     </section>
     {% endif %}
   </div>

@@ -5,13 +5,16 @@ from flask import Flask
 
 from app.cafe import (
     _clear_purchase_todos,
+    _ensure_inventory_item_categories,
     _inventory_date,
+    _inventory_item_status,
+    _normalize_inventory_section,
     _purchase_request_summaries,
     _remove_purchase_todo,
     _toggle_purchase_todo,
 )
 from app.extensions import db
-from app.models import InventoryToPurchase
+from app.models import InventoryCategory, InventoryItem, InventoryToPurchase
 
 
 class InventoryDryHelperTests(unittest.TestCase):
@@ -37,6 +40,52 @@ class InventoryDryHelperTests(unittest.TestCase):
         self.assertEqual(_inventory_date("2026-08-25", fallback), date(2026, 8, 25))
         self.assertEqual(_inventory_date("", fallback), fallback)
         self.assertEqual(_inventory_date("not-a-date", fallback), fallback)
+
+    def test_legacy_inventory_sections_open_the_consolidated_screens(self):
+        self.assertEqual(_normalize_inventory_section("items"), "items_stock")
+        self.assertEqual(_normalize_inventory_section("stock_levels"), "items_stock")
+        self.assertEqual(_normalize_inventory_section("categories"), "items_stock")
+        self.assertEqual(_normalize_inventory_section("analytics"), "dashboard")
+        self.assertEqual(_normalize_inventory_section("movements"), "audit")
+        self.assertEqual(_normalize_inventory_section("unknown"), "dashboard")
+
+    def test_stock_status_uses_configurable_overstock_threshold(self):
+        item = InventoryItem(
+            name="Milk",
+            category_name="Dairy",
+            unit="litre",
+            current_amount=14,
+            reorder_level=2,
+            required_amount=10,
+        )
+        self.assertEqual(
+            _inventory_item_status(item, {"overstock_factor": 1.35}),
+            "overstock",
+        )
+        self.assertEqual(
+            _inventory_item_status(item, {"overstock_factor": 1.5}),
+            "healthy",
+        )
+
+    def test_existing_item_categories_are_preserved_and_manageable(self):
+        db.session.add(
+            InventoryItem(
+                name="Cabbage",
+                area="cafe",
+                category_name="Perishable",
+                unit="kg",
+            )
+        )
+        db.session.commit()
+
+        _ensure_inventory_item_categories()
+        _ensure_inventory_item_categories()
+
+        rows = InventoryCategory.query.filter(
+            db.func.lower(InventoryCategory.name) == "perishable"
+        ).all()
+        self.assertEqual(len(rows), 1)
+        self.assertTrue(rows[0].active)
 
     def test_purchase_summary_reuses_one_payload_for_all_views(self):
         active_rows = [

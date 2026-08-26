@@ -5805,13 +5805,53 @@ def kiosk_update_order_item_status(access_key, item_id):
     return _update_order_item_status_impl(item_id, next_url)
 
 
-def _inventory_item_status(item: InventoryItem):
+INVENTORY_SETTINGS_DEFAULTS = {
+    "overstock_percent": 135,
+    "variance_warning_percent": 20,
+    "default_area": "cafe",
+    "default_unit": "pcs",
+    "audit_page_size": 300,
+}
+
+
+def _inventory_settings() -> dict:
+    """Return validated Inventory OS preferences from the deployment config."""
+    cfg = load_deployment_config(current_app.instance_path)
+    overstock_percent = max(
+        101,
+        min(500, _safe_int(cfg.get("INVENTORY_OVERSTOCK_PERCENT"), 135)),
+    )
+    variance_warning_percent = max(
+        0,
+        min(500, _safe_int(cfg.get("INVENTORY_VARIANCE_WARNING_PERCENT"), 20)),
+    )
+    audit_page_size = max(
+        50,
+        min(1000, _safe_int(cfg.get("INVENTORY_AUDIT_PAGE_SIZE"), 300)),
+    )
+    default_area = _normalize_inventory_area(
+        cfg.get("INVENTORY_DEFAULT_AREA"),
+        INVENTORY_SETTINGS_DEFAULTS["default_area"],
+    )
+    default_unit = (cfg.get("INVENTORY_DEFAULT_UNIT") or "pcs").strip()[:30] or "pcs"
+    return {
+        "overstock_percent": overstock_percent,
+        "overstock_factor": overstock_percent / 100,
+        "variance_warning_percent": variance_warning_percent,
+        "default_area": default_area,
+        "default_unit": default_unit,
+        "audit_page_size": audit_page_size,
+    }
+
+
+def _inventory_item_status(item: InventoryItem, settings: dict | None = None):
+    settings = settings or _inventory_settings()
     current_amount = float(item.current_amount or 0)
     reorder_level = float(item.reorder_level or 0)
     required_amount = float(item.required_amount or 0)
     if current_amount <= reorder_level:
         return "low"
-    if required_amount > 0 and current_amount >= required_amount * 1.35:
+    if required_amount > 0 and current_amount >= required_amount * settings["overstock_factor"]:
         return "overstock"
     return "healthy"
 
@@ -5867,6 +5907,36 @@ def _ensure_inventory_item_codes() -> None:
     db.session.commit()
 
 
+def _ensure_inventory_item_categories() -> None:
+    """Keep every category already used by an item manageable without rewriting data."""
+    used_names = {
+        (value or "").strip()
+        for (value,) in InventoryItem.query.with_entities(InventoryItem.category_name).all()
+        if (value or "").strip()
+    }
+    existing_names = {
+        (value or "").strip().lower()
+        for (value,) in InventoryCategory.query.with_entities(InventoryCategory.name).all()
+        if (value or "").strip()
+    }
+    missing_names = sorted(
+        (name for name in used_names if name.lower() not in existing_names),
+        key=str.lower,
+    )
+    if not missing_names:
+        return
+    for name in missing_names:
+        db.session.add(
+            InventoryCategory(
+                name=name,
+                icon="box",
+                color="#8a735f",
+                active=True,
+            )
+        )
+    db.session.commit()
+
+
 def _record_inventory_movement(
     item: InventoryItem,
     *,
@@ -5903,11 +5973,19 @@ def _record_inventory_movement(
     return row
 
 
-def _inventory_filtered_items(items, search_text: str, area_filter: str, category_filter: str, status_filter: str):
+def _inventory_filtered_items(
+    items,
+    search_text: str,
+    area_filter: str,
+    category_filter: str,
+    status_filter: str,
+    settings: dict | None = None,
+):
     filtered = []
+    settings = settings or _inventory_settings()
     q = search_text.strip().lower()
     for item in items:
-        status_key = _inventory_item_status(item)
+        status_key = _inventory_item_status(item, settings)
         if q:
             hay = " ".join(
                 [
@@ -5967,6 +6045,29 @@ def _inventory_period_bounds(period_key: str, today: date | None = None) -> tupl
         start = date(today.year, 1, 1)
         return start, today
     return today, today
+
+
+def _normalize_inventory_section(raw_value: str | None) -> str:
+    """Map legacy Inventory OS links to the consolidated information architecture."""
+    requested = (raw_value or "dashboard").strip().lower()
+    section = {
+        "items": "items_stock",
+        "stock_levels": "items_stock",
+        "categories": "items_stock",
+        "analytics": "dashboard",
+        "movements": "audit",
+    }.get(requested, requested)
+    allowed = {
+        "dashboard",
+        "items_stock",
+        "purchases",
+        "vendors",
+        "daily_closing",
+        "wastage",
+        "audit",
+        "settings",
+    }
+    return section if section in allowed else "dashboard"
 
 
 def _inventory_period_options() -> list[tuple[str, str]]:
@@ -6282,15 +6383,11 @@ def to_purchase():
 @bp.route("/inventory", methods=["GET", "POST"])
 @roles_required("owner", "admin", "manager", "accountant", "barista", "inventory_manager")
 def inventory():
-    section = (request.args.get("section") or "dashboard").strip().lower()
-    allowed_sections = {
-        "dashboard", "daily_closing", "stock_levels", "items", "purchases", "vendors",
-        "wastage", "analytics", "categories", "settings", "movements"
-    }
-    if section not in allowed_sections:
-        section = "dashboard"
+    section = _normalize_inventory_section(request.args.get("section"))
 
     _ensure_inventory_item_codes()
+    _ensure_inventory_item_categories()
+    inventory_settings = _inventory_settings()
 
     if request.method == "POST":
         action = (request.form.get("action") or "").strip().lower()
@@ -6329,19 +6426,25 @@ def inventory():
         if action == "add_item":
             item_name = (request.form.get("name") or "").strip()
             category_name = (request.form.get("category_name") or "").strip()
-            unit = (request.form.get("unit") or "").strip()
+            unit = (request.form.get("unit") or inventory_settings["default_unit"]).strip()
             storage_location = (request.form.get("storage_location") or "").strip() or None
             if not item_name:
                 flash("Item name is required.", "error")
-                return redirect(url_for("cafe.inventory", section="items"))
-            if category_name not in {"Perishable", "Non-perishable"}:
-                flash("Choose either Perishable or Non-perishable.", "error")
-                return redirect(url_for("cafe.inventory", section="items"))
+                return redirect(url_for("cafe.inventory", section="items_stock"))
+            valid_category_names = {
+                row.name.strip().lower()
+                for row in InventoryCategory.query.filter_by(active=True).all()
+            }
+            if not category_name or category_name.lower() not in valid_category_names:
+                flash("Choose an active inventory category.", "error")
+                return redirect(url_for("cafe.inventory", section="items_stock"))
             if not unit:
                 flash("Unit is required.", "error")
-                return redirect(url_for("cafe.inventory", section="items"))
+                return redirect(url_for("cafe.inventory", section="items_stock"))
             item = InventoryItem(
-                area=_normalize_inventory_area("cafe"),
+                area=_normalize_inventory_area(
+                    request.form.get("area"), inventory_settings["default_area"]
+                ),
                 name=item_name,
                 category_name=category_name,
                 unit=unit,
@@ -6351,7 +6454,7 @@ def inventory():
             item.item_code = _next_inventory_item_code()
             db.session.commit()
             flash("Inventory item added.", "success")
-            return redirect(url_for("cafe.inventory", section="items"))
+            return redirect(url_for("cafe.inventory", section="items_stock", edit_item_id=item.id))
 
         if action == "update_item":
             item = InventoryItem.query.get_or_404(_safe_int(request.form.get("item_id"), 0))
@@ -6382,18 +6485,18 @@ def inventory():
             )
             db.session.commit()
             flash("Inventory item updated.", "success")
-            return redirect(url_for("cafe.inventory", section="stock_levels", edit_item_id=item.id))
+            return redirect(url_for("cafe.inventory", section="items_stock", edit_item_id=item.id))
 
         if action == "adjust_stock":
             item = InventoryItem.query.get_or_404(_safe_int(request.form.get("item_id"), 0))
             adjustment = _safe_float(request.form.get("adjustment"), 0)
             if adjustment == 0:
                 flash("Enter a stock adjustment value.", "error")
-                return redirect(url_for("cafe.inventory", section="stock_levels"))
+                return redirect(url_for("cafe.inventory", section="items_stock"))
             before = float(item.current_amount or 0)
             if adjustment < 0 and before + adjustment < 0:
                 flash(f"Insufficient stock for {item.name}. Stock cannot go below zero.", "error")
-                return redirect(url_for("cafe.inventory", section="stock_levels", edit_item_id=item.id))
+                return redirect(url_for("cafe.inventory", section="items_stock", edit_item_id=item.id))
             item.current_amount = round(max(0.0, before + adjustment), 3)
             _record_inventory_movement(
                 item,
@@ -6406,7 +6509,7 @@ def inventory():
             )
             db.session.commit()
             flash("Stock adjusted.", "success")
-            return redirect(url_for("cafe.inventory", section="stock_levels", edit_item_id=item.id))
+            return redirect(url_for("cafe.inventory", section="items_stock", edit_item_id=item.id))
 
         if action == "daily_closing_save":
             closing_date = _inventory_date(request.form.get("closing_date"))
@@ -6582,10 +6685,10 @@ def inventory():
             name = (request.form.get("name") or "").strip()
             if not name:
                 flash("Category name is required.", "error")
-                return redirect(url_for("cafe.inventory", section="categories"))
+                return redirect(url_for("cafe.inventory", section="items_stock"))
             if InventoryCategory.query.filter(db.func.lower(InventoryCategory.name) == name.lower()).first():
                 flash("Category already exists.", "error")
-                return redirect(url_for("cafe.inventory", section="categories"))
+                return redirect(url_for("cafe.inventory", section="items_stock"))
             db.session.add(
                 InventoryCategory(
                     name=name,
@@ -6596,17 +6699,68 @@ def inventory():
             )
             db.session.commit()
             flash("Category added.", "success")
-            return redirect(url_for("cafe.inventory", section="categories"))
+            return redirect(url_for("cafe.inventory", section="items_stock"))
 
         if action == "update_category":
             category = InventoryCategory.query.get_or_404(_safe_int(request.form.get("category_id"), 0))
-            category.name = (request.form.get("name") or "").strip() or category.name
+            old_name = category.name
+            new_name = (request.form.get("name") or "").strip() or old_name
+            duplicate = InventoryCategory.query.filter(
+                db.func.lower(InventoryCategory.name) == new_name.lower(),
+                InventoryCategory.id != category.id,
+            ).first()
+            if duplicate:
+                flash("Another category already uses that name.", "error")
+                return redirect(url_for("cafe.inventory", section="items_stock", edit_category_id=category.id))
+            category.name = new_name
             category.icon = (request.form.get("icon") or "").strip() or None
             category.color = (request.form.get("color") or "").strip() or None
             category.active = True if request.form.get("active") else False
+            if new_name.lower() != old_name.lower():
+                InventoryItem.query.filter(
+                    db.func.lower(InventoryItem.category_name) == old_name.lower()
+                ).update(
+                    {InventoryItem.category_name: new_name},
+                    synchronize_session=False,
+                )
             db.session.commit()
             flash("Category updated.", "success")
-            return redirect(url_for("cafe.inventory", section="categories", edit_category_id=category.id))
+            return redirect(url_for("cafe.inventory", section="items_stock", edit_category_id=category.id))
+
+        if action == "save_inventory_settings":
+            if not g.current_user or not g.current_user.has_any_role(
+                "owner", "admin", "manager", "inventory_manager"
+            ):
+                flash("Only managers and inventory managers can change inventory settings.", "error")
+                return redirect(url_for("cafe.inventory", section="settings"))
+            overstock_percent = max(
+                101,
+                min(500, _safe_int(request.form.get("overstock_percent"), 135)),
+            )
+            variance_warning_percent = max(
+                0,
+                min(500, _safe_int(request.form.get("variance_warning_percent"), 20)),
+            )
+            audit_page_size = max(
+                50,
+                min(1000, _safe_int(request.form.get("audit_page_size"), 300)),
+            )
+            default_area = _normalize_inventory_area(
+                request.form.get("default_area"), "cafe"
+            )
+            default_unit = (request.form.get("default_unit") or "pcs").strip()[:30] or "pcs"
+            save_deployment_config(
+                current_app.instance_path,
+                {
+                    "INVENTORY_OVERSTOCK_PERCENT": overstock_percent,
+                    "INVENTORY_VARIANCE_WARNING_PERCENT": variance_warning_percent,
+                    "INVENTORY_DEFAULT_AREA": default_area,
+                    "INVENTORY_DEFAULT_UNIT": default_unit,
+                    "INVENTORY_AUDIT_PAGE_SIZE": audit_page_size,
+                },
+            )
+            flash("Inventory settings saved.", "success")
+            return redirect(url_for("cafe.inventory", section="settings"))
 
     closing_date = _inventory_date(request.args.get("closing_date"))
     inventory_search = (request.args.get("q") or "").strip()
@@ -6628,7 +6782,7 @@ def inventory():
             InventoryMovement.created_at < movement_end_utc,
         )
         .order_by(InventoryMovement.created_at.desc(), InventoryMovement.id.desc())
-        .limit(300)
+        .limit(inventory_settings["audit_page_size"])
         .all()
     )
     movement_summary = {
@@ -6650,7 +6804,8 @@ def inventory():
     inventory_status_filter = (request.args.get("status") or "all").strip().lower()
     if inventory_status_filter not in ["all", "healthy", "low", "overstock"]:
         inventory_status_filter = "all"
-    categories = InventoryCategory.query.filter_by(active=True).order_by(InventoryCategory.name.asc()).all()
+    inventory_categories_all = InventoryCategory.query.order_by(InventoryCategory.name.asc()).all()
+    categories = [row for row in inventory_categories_all if row.active]
     vendors = InventoryVendor.query.filter_by(active=True).order_by(InventoryVendor.name.asc()).all()
     items = InventoryItem.query.order_by(InventoryItem.category_name.asc(), InventoryItem.name.asc()).all()
     expense_logs = (
@@ -6668,7 +6823,14 @@ def inventory():
     )
     if inventory_tracking_category_id:
         expense_logs = [row for row in expense_logs if row.category_id == inventory_tracking_category_id]
-    filtered_items = _inventory_filtered_items(items, inventory_search, inventory_area, inventory_category_filter, inventory_status_filter)
+    filtered_items = _inventory_filtered_items(
+        items,
+        inventory_search,
+        inventory_area,
+        inventory_category_filter,
+        inventory_status_filter,
+        inventory_settings,
+    )
     purchases = InventoryPurchase.query.order_by(InventoryPurchase.purchase_date.desc(), InventoryPurchase.id.desc()).limit(80).all()
     wastage_rows = InventoryWastage.query.order_by(InventoryWastage.wastage_date.desc(), InventoryWastage.id.desc()).limit(120).all()
     purchase_todos_active, _ = _purchase_todo_payloads(include_history=False)
@@ -6677,16 +6839,17 @@ def inventory():
     edit_vendor_id = request.args.get("edit_vendor_id", type=int)
     selected_vendor = InventoryVendor.query.get(edit_vendor_id) if edit_vendor_id else (vendors[0] if vendors else None)
     edit_category_id = request.args.get("edit_category_id", type=int)
-    selected_category = InventoryCategory.query.get(edit_category_id) if edit_category_id else (categories[0] if categories else None)
+    selected_category = InventoryCategory.query.get(edit_category_id) if edit_category_id else (inventory_categories_all[0] if inventory_categories_all else None)
 
     category_stats = []
-    for cat in categories:
+    for cat in inventory_categories_all:
         cat_items = [x for x in items if (x.category_name or "").strip().lower() == cat.name.lower()]
         stock_value = round(sum(float(x.current_amount or 0) * float(x.purchase_price or 0) for x in cat_items), 2)
         category_stats.append({"category": cat, "item_count": len(cat_items), "stock_value": stock_value})
 
     low_stock_items = [x for x in items if float(x.current_amount or 0) <= float(x.reorder_level or 0)]
-    overstock_items = [x for x in items if _inventory_item_status(x) == "overstock"]
+    item_status_map = {x.id: _inventory_item_status(x, inventory_settings) for x in items}
+    overstock_items = [x for x in items if item_status_map[x.id] == "overstock"]
     items_without_vendor = [x for x in items if not x.vendor_id]
     total_stock_value = round(sum(float(x.current_amount or 0) * float(x.purchase_price or 0) for x in items), 2)
     today_purchase_spend = round(
@@ -6722,6 +6885,14 @@ def inventory():
             "opening": opening,
             "existing": existing,
             "consumed": float(existing.consumed_amount) if existing else 0.0,
+            "variance_warning": bool(
+                existing
+                and float(item.average_daily_usage or 0) > 0
+                and abs(float(existing.variance_amount or 0))
+                >= float(item.average_daily_usage or 0)
+                * inventory_settings["variance_warning_percent"]
+                / 100
+            ),
         })
     daily_rows_grouped = {}
     for row in daily_rows:
@@ -6870,6 +7041,7 @@ def inventory():
         "cafe/inventory.html",
         section=section,
         categories=categories,
+        inventory_categories_all=inventory_categories_all,
         category_stats=category_stats,
         vendors=vendors,
         items=items,
@@ -6899,6 +7071,8 @@ def inventory():
         inventory_area_name_map=inventory_area_name_map,
         inventory_category_filter=inventory_category_filter,
         inventory_status_filter=inventory_status_filter,
+        inventory_settings=inventory_settings,
+        item_status_map=item_status_map,
         top_stock_value_items=top_stock_value_items,
         top_consumption_rows=top_consumption_rows,
         vendor_purchase_map=vendor_purchase_map,
@@ -6916,6 +7090,12 @@ def inventory():
         average_daily_expense=average_daily_expense,
         workstation_financial_rows=workstation_financial_rows,
         purchase_by_workstation=purchase_by_workstation,
+        can_manage_inventory_settings=bool(
+            g.current_user
+            and g.current_user.has_any_role(
+                "owner", "admin", "manager", "inventory_manager"
+            )
+        ),
     )
 
 

@@ -5233,6 +5233,59 @@ body.cashier-shell.cashier-tablet-portrait .cashier-selected-sections {
   gap: 0.6rem;
 }
 
+.inventory-subpanel {
+  border: 1px solid #e6dacd;
+  border-radius: 8px;
+  padding: 0.8rem;
+  background: #fffdfa;
+}
+
+.inventory-subpanel h4 {
+  margin-top: 0;
+}
+
+.inventory-settings-form {
+  max-width: 760px;
+  gap: 0.9rem;
+}
+
+.inventory-settings-form fieldset {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 0.8rem;
+  border: 1px solid #e6dacd;
+  border-radius: 10px;
+  padding: 0.9rem;
+  background: #fffdfa;
+}
+
+.inventory-settings-form legend {
+  padding: 0 0.4rem;
+  font-weight: 700;
+}
+
+.inventory-settings-form label {
+  display: grid;
+  gap: 0.35rem;
+}
+
+.inventory-settings-form small {
+  color: var(--muted);
+  line-height: 1.35;
+}
+
+.inventory-input-suffix {
+  display: grid;
+  grid-template-columns: minmax(90px, 140px) 1fr;
+  align-items: center;
+  gap: 0.55rem;
+}
+
+.inventory-input-suffix span {
+  color: var(--muted);
+  font-size: 0.84rem;
+}
+
 @media (max-width: 900px) {
   .inventory-layout {
     grid-template-columns: 1fr;
