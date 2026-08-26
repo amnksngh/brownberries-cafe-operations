@@ -5499,6 +5499,197 @@ body.cashier-shell.cashier-tablet-portrait .cashier-selected-sections {
   margin-bottom: 0.6rem;
 }
 
+/* Application-wide responsive containment
+   ---------------------------------------
+   Grid and flex children default to a min-width based on their content. Long
+   select options, URLs, file paths, and legacy tables could therefore make a
+   390px screen render as a much wider desktop canvas. Keep every page shell
+   shrinkable and let genuinely wide data tables scroll inside their panel. */
+.container,
+.container-wide,
+.container > *,
+.panel,
+.metric,
+.grid,
+.grid > *,
+.split,
+.split > *,
+.stats,
+.stats > *,
+.profile-layout,
+.profile-layout > *,
+.profile-content,
+.library-layout,
+.library-layout > *,
+.library-content,
+.ops-layout,
+.ops-layout > *,
+.review-summary-shell,
+.review-summary-shell > *,
+.review-two-col > *,
+.inventory-layout,
+.inventory-layout > *,
+.inventory-content,
+.inventory-content > * {
+  min-width: 0;
+  max-width: 100%;
+}
+
+img,
+picture,
+video,
+canvas,
+svg {
+  max-width: 100%;
+}
+
+form,
+fieldset,
+label,
+input,
+select,
+textarea {
+  min-width: 0;
+  max-width: 100%;
+}
+
+button,
+.button-link {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
+pre {
+  max-width: 100%;
+  overflow-x: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+code,
+.flash,
+.panel p,
+.panel li {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.table-wrap,
+.table-scroll,
+.review-table-wrap,
+.all-orders-table-wrap,
+.staff-timeline-scroll,
+.ops-matrix {
+  min-width: 0;
+  max-width: 100%;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.cashier-orders-panel > *,
+.cashier-settlement-panel > * {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.cashier-orders-panel > div[style*="overflow"] {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  contain: inline-size;
+}
+
+@media (max-width: 800px) {
+  .container {
+    width: 100%;
+    padding-inline: 0.65rem;
+  }
+
+  input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="color"]),
+  select,
+  textarea {
+    width: 100%;
+  }
+
+  .grid-2,
+  .grid-3,
+  .grid-4,
+  .split,
+  .stats,
+  .stats-filter-grid,
+  .stats-kpi-grid,
+  .stats-chart-grid,
+  .stats-best-days,
+  .stats-kv-grid,
+  .review-kpi-grid,
+  .review-action-grid,
+  .review-two-col,
+  .review-detail-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .split-head,
+  .section-heading-row {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .panel > table,
+  .profile-content > table,
+  .library-content > table {
+    display: block;
+    width: 100%;
+    max-width: 100%;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  form.inline {
+    flex-wrap: wrap;
+  }
+}
+
+@media (max-width: 520px) {
+  body.cashier-shell .brand-wrap,
+  body.cashier-shell .brand-wrap > div,
+  body.cashier-shell .cashier-topbar-tools {
+    width: 100%;
+    min-width: 0;
+    max-width: 100%;
+  }
+
+  body.cashier-shell .brand-wrap > div p {
+    display: none;
+  }
+
+  body.cashier-shell .cashier-topbar-tools,
+  body.cashier-shell.cashier-tablet-portrait .cashier-topbar-tools {
+    grid-template-columns: minmax(0, 1fr) auto auto;
+    gap: 0.42rem;
+  }
+
+  body.cashier-shell .cashier-topbar-select {
+    grid-column: 1 / -1;
+  }
+
+  body.cashier-shell .cashier-topbar-volume,
+  body.cashier-shell.cashier-tablet-portrait .cashier-topbar-volume {
+    width: 100%;
+    min-width: 0;
+  }
+
+  body.cashier-shell .cashier-topbar-volume input[type="range"],
+  body.cashier-shell.cashier-tablet-portrait .cashier-topbar-volume input[type="range"] {
+    width: 100%;
+    min-width: 0;
+  }
+
+  body.cashier-shell .cashier-cash-counter-link {
+    padding-inline: 0.55rem;
+    font-size: 0.8rem;
+  }
+}
+
 .public-notice-track {
   white-space: nowrap;
   display: inline-block;
