@@ -6,6 +6,7 @@ $LogDir = Join-Path $RepoDir "logs"
 $LogFile = Join-Path $LogDir "windows-watchdog.log"
 $LocalHealthUrl = "http://127.0.0.1:5050/healthz"
 $PublicHealthUrl = "https://brownberriescafe.com/healthz"
+$AppRestartRequestFile = Join-Path $RepoDir "instance\restart_app.request"
 $InternetProbeHost = "one.one.one.one"
 $AppServiceName = "BrownberriesApp"
 $TunnelServiceCandidates = @(
@@ -93,6 +94,15 @@ foreach ($candidate in $TunnelServiceCandidates) {
 }
 
 [void](Ensure-ServiceRunning -ServiceName $AppServiceName)
+
+# A deploy can request one privileged restart without granting the interactive
+# account service-control rights.  The SYSTEM watchdog consumes the marker once
+# and follows the same logged restart path used by health recovery.
+if (Test-Path -LiteralPath $AppRestartRequestFile) {
+  Write-Log "One-shot application restart requested"
+  Remove-Item -LiteralPath $AppRestartRequestFile -Force -ErrorAction SilentlyContinue
+  Restart-ServiceSafe -ServiceName $AppServiceName
+}
 
 if ($null -ne $TunnelServiceName) {
   [void](Ensure-ServiceRunning -ServiceName $TunnelServiceName)
