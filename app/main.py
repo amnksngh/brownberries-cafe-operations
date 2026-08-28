@@ -476,11 +476,12 @@ def _is_public_menu_item(
     *,
     respect_serving_hours: bool = True,
 ) -> bool:
-    if not respect_serving_hours:
-        return True
-    if not menu_item_window_is_open(item):
+    # Browsing may ignore serving hours, but it must never bypass the
+    # customer-facing category boundary.  Utility/Other records are internal
+    # helpers (for example packaging lines), not dishes customers can order.
+    if not _public_menu_category_ids(item, category_name_by_id):
         return False
-    return len(_public_menu_category_ids(item, category_name_by_id)) > 0
+    return not respect_serving_hours or menu_item_window_is_open(item)
 
 
 def _attendance_settings():
@@ -1324,7 +1325,13 @@ def customer_menu():
                 MenuItem.available.is_(True),
                 MenuItem.is_deleted.is_(False),
             ).all() if item_ids else []
-            menu_items = [item for item in menu_items if menu_item_window_is_open(item)]
+            all_category_rows = MenuCategory.query.order_by(MenuCategory.name.asc()).all()
+            all_category_name_by_id = {c.id: c.name for c in all_category_rows}
+            menu_items = [
+                item
+                for item in menu_items
+                if _is_public_menu_item(item, all_category_name_by_id)
+            ]
             item_map = {m.id: m for m in menu_items}
             for menu_item_id, quantity in qty_map.items():
                 if menu_item_id in item_map:

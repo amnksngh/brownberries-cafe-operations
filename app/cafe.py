@@ -1884,7 +1884,14 @@ def _parse_line_items_from_request():
         MenuItem.available.is_(True),
         MenuItem.is_deleted.is_(False),
     ).all()
-    items = [item for item in items if menu_item_window_is_open(item)]
+    all_category_rows = MenuCategory.query.order_by(MenuCategory.name.asc()).all()
+    all_category_name_by_id = {row.id: row.name for row in all_category_rows}
+    items = [
+        item
+        for item in items
+        if menu_item_window_is_open(item)
+        and bool(_public_menu_category_ids(item, all_category_name_by_id))
+    ]
     item_by_id = {item.id: item for item in items}
     line_items = []
     for (menu_item_id, is_parcel, size_label, unit_price_key), quantity in merged.items():
@@ -3757,8 +3764,15 @@ def _render_orders_view(kiosk_mode: bool = False, access_key: str = ""):
     menu_query = _apply_category_filter(menu_query, category_id)
     if item_type:
         menu_query = menu_query.filter(MenuItem.item_type == item_type)
+    all_category_rows = MenuCategory.query.order_by(MenuCategory.name.asc()).all()
+    all_category_name_by_id = {row.id: row.name for row in all_category_rows}
     filtered_items = menu_query.all()
-    filtered_items = [item for item in filtered_items if menu_item_window_is_open(item)]
+    filtered_items = [
+        item
+        for item in filtered_items
+        if menu_item_window_is_open(item)
+        and bool(_public_menu_category_ids(item, all_category_name_by_id))
+    ]
 
     item_frequency = recent_paid_item_frequency()
     menu_items = sorted(
@@ -3779,7 +3793,7 @@ def _render_orders_view(kiosk_mode: bool = False, access_key: str = ""):
                 sizes = []
         item_size_map[item.id] = sizes
 
-    categories = _visible_categories_for_available_menu(include_protected=True)
+    categories = _visible_categories_for_available_menu(include_protected=False)
     category_name_by_id = {c.id: c.name for c in categories}
     item_category_names_map = {
         item.id: _get_item_category_names(item, category_name_by_id) for item in menu_items
@@ -6440,11 +6454,19 @@ def to_purchase():
     )
     inventory_items = InventoryItem.query.order_by(InventoryItem.name.asc()).all()
     workstation_options = _all_workstations()
+    inventory_category_options = sorted(
+        {
+            (item.category_name or "Uncategorized").strip() or "Uncategorized"
+            for item in inventory_items
+        },
+        key=str.lower,
+    )
     return render_template(
         "cafe/to_purchase.html",
         purchase_todos_active=purchase_todos_active,
         purchase_todos_history=purchase_todos_history,
         inventory_items=inventory_items,
+        inventory_category_options=inventory_category_options,
         workstation_options=workstation_options,
         purchase_accumulated_rows=purchase_accumulated_rows,
         purchase_by_workstation=purchase_by_workstation,

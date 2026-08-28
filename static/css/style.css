@@ -5005,6 +5005,58 @@ body.cashier-shell.cashier-tablet-portrait .cashier-selected-sections {
   min-width: 0;
 }
 
+.purchase-finder-toolbar {
+  display: grid;
+  grid-template-columns: minmax(220px, 1.5fr) minmax(160px, 1fr) minmax(160px, 1fr) auto;
+  gap: 0.65rem;
+  align-items: end;
+  margin-bottom: 0.9rem;
+}
+
+.purchase-finder-toolbar p {
+  margin: 0 0 0.55rem;
+  white-space: nowrap;
+}
+
+.purchase-entry-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1.7fr) minmax(0, 1fr) minmax(76px, 0.5fr) minmax(76px, 0.55fr) minmax(120px, 1fr) auto auto;
+  gap: 0.55rem;
+  align-items: center;
+  min-width: 0;
+}
+
+@media (max-width: 900px) {
+  .purchase-finder-toolbar {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .purchase-entry-row {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .purchase-entry-row > select[name="inventory_item_id[]"],
+  .purchase-entry-row > input[name="note[]"] {
+    grid-column: 1 / -1;
+  }
+}
+
+@media (max-width: 520px) {
+  .purchase-finder-toolbar,
+  .purchase-entry-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .purchase-entry-row > select[name="inventory_item_id[]"],
+  .purchase-entry-row > input[name="note[]"] {
+    grid-column: auto;
+  }
+
+  .purchase-finder-toolbar p {
+    margin-bottom: 0;
+  }
+}
+
 .inventory-hero {
   background: linear-gradient(135deg, #fffdf9 0%, #f3e7d9 100%);
 }

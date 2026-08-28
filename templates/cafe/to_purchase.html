@@ -15,16 +15,44 @@
 </section>
 
 <section class="panel">
+  <div class="purchase-finder-toolbar" aria-label="Find inventory items">
+    <label>Search item
+      <input id="purchase-item-search" type="search" placeholder="Potato, आलू, Dairy, Barista…" autocomplete="off" />
+    </label>
+    <label>Category
+      <select id="purchase-category-filter">
+        <option value="">All categories</option>
+        {% for category in inventory_category_options %}<option value="{{ category|lower }}">{{ category }}</option>{% endfor %}
+      </select>
+    </label>
+    <label>Workstation
+      <select id="purchase-workstation-filter">
+        <option value="">All workstations</option>
+        <option value="cafe">All cafe / general</option>
+        {% for workstation in workstation_options %}<option value="{{ workstation.slug }}">{{ workstation.name }}</option>{% endfor %}
+      </select>
+    </label>
+    <p id="purchase-filter-count" class="muted" aria-live="polite"></p>
+  </div>
   <form method="post" id="to-purchase-form" class="grid" style="gap:0.8rem;">
     <input type="hidden" name="action" value="add_batch_to_purchase" />
     <div id="purchase-rows" style="display:grid;gap:0.7rem;"></div>
     <button type="submit">Save Items</button>
   </form>
   <template id="purchase-row-template">
-    <div class="purchase-row" style="display:grid;grid-template-columns:minmax(0,1.4fr) minmax(0,1fr) minmax(80px,0.55fr) minmax(80px,0.55fr) minmax(120px,1fr) auto auto;gap:0.55rem;align-items:center;">
+    <div class="purchase-row purchase-entry-row">
       <select name="inventory_item_id[]" aria-label="Registered item">
         <option value="">Select item</option>
-        {% for item in inventory_items %}<option value="{{ item.id }}">{{ item.name }}{% if item.unit %} · {{ item.unit }}{% endif %}</option>{% endfor %}
+        {% for item in inventory_items %}
+        <option
+          value="{{ item.id }}"
+          data-category="{{ (item.category_name or 'Uncategorized')|lower }}"
+          data-subcategory="{{ (item.subcategory_name or '')|lower }}"
+          data-workstation="{{ (item.area or 'cafe')|lower }}"
+          data-unit="{{ item.unit or 'pcs' }}"
+          data-search="{{ item.name|lower }} {{ (item.category_name or '')|lower }} {{ (item.subcategory_name or '')|lower }} {{ (item.area or '')|lower }}"
+        >{{ item.name }} · {{ item.category_name or 'Uncategorized' }} · {{ item.area or 'cafe' }}{% if item.unit %} · {{ item.unit }}{% endif %}</option>
+        {% endfor %}
       </select>
       <select name="workstation_slug[]" aria-label="Workstation">
         <option value="unassigned">All cafe / unassigned</option>
@@ -119,12 +147,58 @@
 <script>
   (() => {
     const rowsRoot = document.getElementById("purchase-rows");
+    const searchInput = document.getElementById("purchase-item-search");
+    const categoryFilter = document.getElementById("purchase-category-filter");
+    const workstationFilter = document.getElementById("purchase-workstation-filter");
+    const filterCount = document.getElementById("purchase-filter-count");
     if (!rowsRoot) return;
+
+    const normalize = (value) => String(value || "").trim().toLocaleLowerCase();
+
+    function optionMatches(option) {
+      if (!option.value) return true;
+      const query = normalize(searchInput?.value);
+      const category = normalize(categoryFilter?.value);
+      const workstation = normalize(workstationFilter?.value);
+      const haystack = normalize(`${option.textContent} ${option.dataset.search || ""}`);
+      return (!query || haystack.includes(query))
+        && (!category || normalize(option.dataset.category) === category)
+        && (!workstation || normalize(option.dataset.workstation) === workstation);
+    }
+
+    function applyItemFilters() {
+      let visibleCount = 0;
+      rowsRoot.querySelectorAll('select[name="inventory_item_id[]"]').forEach((select) => {
+        [...select.options].forEach((option) => {
+          if (!option.value) return;
+          const visible = optionMatches(option) || option.selected;
+          option.hidden = !visible;
+          option.disabled = !visible;
+          if (visible) visibleCount += 1;
+        });
+      });
+      const rowCount = Math.max(1, rowsRoot.querySelectorAll(".purchase-row").length);
+      if (filterCount) filterCount.textContent = `${Math.round(visibleCount / rowCount)} matching item(s)`;
+    }
+
+    function syncSelectedItem(row) {
+      const itemInput = row.querySelector('select[name="inventory_item_id[]"]');
+      const option = itemInput?.selectedOptions?.[0];
+      if (!option?.value) return;
+      const unitInput = row.querySelector('input[name="quantity_unit[]"]');
+      const stationInput = row.querySelector('select[name="workstation_slug[]"]');
+      if (unitInput && !unitInput.value.trim()) unitInput.value = option.dataset.unit || "pcs";
+      if (stationInput && (!stationInput.value || stationInput.value === "unassigned")) {
+        const station = option.dataset.workstation || "unassigned";
+        if ([...stationInput.options].some((candidate) => candidate.value === station)) stationInput.value = station;
+      }
+    }
 
     function buildRow() {
       const row = document.getElementById("purchase-row-template").content.firstElementChild.cloneNode(true);
       const addBtn = row.querySelector(".purchase-add-btn");
       const removeBtn = row.querySelector(".purchase-remove-btn");
+      row.querySelector('select[name="inventory_item_id[]"]')?.addEventListener("change", () => syncSelectedItem(row));
       addBtn.addEventListener("click", () => {
         const itemInput = row.querySelector('select[name="inventory_item_id[]"]');
         const qtyInput = row.querySelector('input[name="quantity_amount[]"]');
@@ -163,9 +237,13 @@
           row.remove();
         }
       });
+      window.requestAnimationFrame(applyItemFilters);
       return row;
     }
 
+    [searchInput, categoryFilter, workstationFilter].forEach((control) => {
+      control?.addEventListener(control.tagName === "INPUT" ? "input" : "change", applyItemFilters);
+    });
     rowsRoot.appendChild(buildRow());
   })();
 </script>
