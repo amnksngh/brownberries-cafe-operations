@@ -33,6 +33,12 @@ from .attendance_logic import (
 from .auth_helpers import login_required, roles_required, user_has_any_role, user_has_permission
 from .deploy_config import load_deployment_config, save_deployment_config
 from .extensions import db, socketio
+from .inventory_control import (
+    closing_metrics,
+    convert_quantity,
+    coverage_metrics,
+    stock_band,
+)
 from .leave_logic import (
     apply_leave_decision,
     business_today,
@@ -2470,6 +2476,11 @@ def home():
     serving_hours = menu_period_settings()
     kiosk_token = (cfg.get("KDS_KIOSK_TOKEN") or "").strip()
     reception_kiosk_token = (cfg.get("RECEPTION_KIOSK_TOKEN") or "").strip()
+    inventory_health_settings = _inventory_settings()
+    deficit_inventory_count = sum(
+        _inventory_item_status(item, inventory_health_settings) == "deficit"
+        for item in InventoryItem.query.all()
+    )
     return render_template(
         "cafe/home.html",
         tables=CafeTable.query.count(),
@@ -2478,9 +2489,7 @@ def home():
             CafeOrder.created_at >= today_start,
             CafeOrder.created_at <= today_end,
         ).count(),
-        low_stock=InventoryItem.query.filter(
-            InventoryItem.current_amount <= InventoryItem.reorder_level
-        ).count(),
+        low_stock=deficit_inventory_count,
         delivery_open_orders=CafeOrder.query.filter_by(is_delivery=True).filter(
             CafeOrder.status.notin_(["paid", "cancelled"]),
             CafeOrder.created_at >= today_start,
@@ -5820,7 +5829,7 @@ def kiosk_update_order_item_status(access_key, item_id):
 
 
 INVENTORY_SETTINGS_DEFAULTS = {
-    "overstock_percent": 135,
+    "stock_tolerance_percent": 15,
     "variance_warning_percent": 20,
     "default_area": "cafe",
     "default_unit": "pcs",
@@ -5898,9 +5907,15 @@ def _normalize_inventory_category_color(raw_value: str | None) -> str:
 def _inventory_settings() -> dict:
     """Return validated Inventory OS preferences from the deployment config."""
     cfg = load_deployment_config(current_app.instance_path)
-    overstock_percent = max(
-        101,
-        min(500, _safe_int(cfg.get("INVENTORY_OVERSTOCK_PERCENT"), 135)),
+    stock_tolerance_percent = max(
+        0,
+        min(
+            50,
+            _safe_int(
+                cfg.get("INVENTORY_STOCK_TOLERANCE_PERCENT"),
+                INVENTORY_SETTINGS_DEFAULTS["stock_tolerance_percent"],
+            ),
+        ),
     )
     variance_warning_percent = max(
         0,
@@ -5916,8 +5931,12 @@ def _inventory_settings() -> dict:
     )
     default_unit = (cfg.get("INVENTORY_DEFAULT_UNIT") or "pcs").strip()[:30] or "pcs"
     return {
-        "overstock_percent": overstock_percent,
-        "overstock_factor": overstock_percent / 100,
+        "stock_tolerance_percent": stock_tolerance_percent,
+        "lower_stock_factor": 1 - stock_tolerance_percent / 100,
+        "upper_stock_factor": 1 + stock_tolerance_percent / 100,
+        # Compatibility keys for older callers and bookmarked templates.
+        "overstock_percent": 100 + stock_tolerance_percent,
+        "overstock_factor": 1 + stock_tolerance_percent / 100,
         "variance_warning_percent": variance_warning_percent,
         "default_area": default_area,
         "default_unit": default_unit,
@@ -5927,14 +5946,11 @@ def _inventory_settings() -> dict:
 
 def _inventory_item_status(item: InventoryItem, settings: dict | None = None):
     settings = settings or _inventory_settings()
-    current_amount = float(item.current_amount or 0)
-    reorder_level = float(item.reorder_level or 0)
-    required_amount = float(item.required_amount or 0)
-    if current_amount <= reorder_level:
-        return "low"
-    if required_amount > 0 and current_amount >= required_amount * settings["overstock_factor"]:
-        return "overstock"
-    return "healthy"
+    return stock_band(
+        item.current_amount,
+        item.required_amount,
+        settings.get("stock_tolerance_percent", 15),
+    )["status"]
 
 
 def _inventory_date(raw_value: str | None, default: date | None = None) -> date:
@@ -6052,6 +6068,225 @@ def _record_inventory_movement(
     )
     db.session.add(row)
     return row
+
+
+def _inventory_stock_band(item: InventoryItem, settings: dict | None = None) -> dict:
+    settings = settings or _inventory_settings()
+    return stock_band(
+        item.current_amount,
+        item.required_amount,
+        settings.get("stock_tolerance_percent", 15),
+    )
+
+
+def _inventory_day_utc_bounds(target_date: date) -> tuple[datetime, datetime]:
+    start = _utc_naive_from_ist(datetime.combine(target_date, time.min))
+    end = _utc_naive_from_ist(
+        datetime.combine(target_date + timedelta(days=1), time.min)
+    )
+    return start, end
+
+
+def _inventory_expected_consumption_map(
+    target_date: date,
+) -> tuple[dict[int, float], dict[int, list[str]]]:
+    """Return recipe-derived consumption from paid sales for one IST date."""
+    start_utc, end_utc = _inventory_day_utc_bounds(target_date)
+    order_items = (
+        CafeOrderItem.query.options(
+            joinedload(CafeOrderItem.menu_item)
+            .joinedload(MenuItem.inventory_recipe)
+            .joinedload(InventoryRecipe.ingredients)
+            .joinedload(InventoryRecipeItem.inventory_item)
+        )
+        .join(CafeOrder, CafeOrder.id == CafeOrderItem.order_id)
+        .filter(
+            CafeOrder.status == "paid",
+            db.func.coalesce(CafeOrder.paid_at, CafeOrder.created_at) >= start_utc,
+            db.func.coalesce(CafeOrder.paid_at, CafeOrder.created_at) < end_utc,
+        )
+        .all()
+    )
+    expected: dict[int, float] = {}
+    warnings: dict[int, list[str]] = {}
+    for order_item in order_items:
+        if (order_item.approval_status or "pending") == "rejected":
+            continue
+        recipe = order_item.menu_item.inventory_recipe if order_item.menu_item else None
+        if not recipe or not recipe.active:
+            continue
+        sold_quantity = max(0, int(order_item.quantity or 0))
+        for ingredient in recipe.ingredients:
+            inventory_item = ingredient.inventory_item
+            if not inventory_item or float(ingredient.qty_per_menu or 0) <= 0:
+                continue
+            recipe_quantity = float(ingredient.qty_per_menu or 0) * sold_quantity
+            converted = convert_quantity(
+                recipe_quantity,
+                ingredient.unit,
+                inventory_item.unit,
+            )
+            if converted is None:
+                warnings.setdefault(inventory_item.id, []).append(
+                    f"Cannot convert SOP unit {ingredient.unit or '-'} to {inventory_item.unit or '-'}"
+                )
+                continue
+            expected[inventory_item.id] = round(
+                expected.get(inventory_item.id, 0.0) + converted,
+                3,
+            )
+    return expected, warnings
+
+
+def _inventory_closing_activity_maps(
+    target_date: date,
+) -> tuple[dict[int, float], dict[int, float], dict[int, float]]:
+    """Return inbound, explicit wastage, and first observed opening balances."""
+    inbound: dict[int, float] = {}
+    purchase_lines = (
+        InventoryPurchaseLine.query.join(
+            InventoryPurchase,
+            InventoryPurchase.id == InventoryPurchaseLine.purchase_id,
+        )
+        .filter(InventoryPurchase.purchase_date == target_date)
+        .all()
+    )
+    for line in purchase_lines:
+        inbound[line.item_id] = round(
+            inbound.get(line.item_id, 0.0) + max(0.0, float(line.quantity or 0)),
+            3,
+        )
+
+    start_utc, end_utc = _inventory_day_utc_bounds(target_date)
+    day_movements = InventoryMovement.query.filter(
+        InventoryMovement.created_at >= start_utc,
+        InventoryMovement.created_at < end_utc,
+        InventoryMovement.movement_type != "count",
+    ).order_by(InventoryMovement.created_at.asc(), InventoryMovement.id.asc()).all()
+    opening_hints: dict[int, float] = {}
+    for movement in day_movements:
+        opening_hints.setdefault(movement.item_id, float(movement.quantity_before or 0))
+        if movement.quantity_delta <= 0 or movement.movement_type == "purchase":
+            continue
+        inbound[movement.item_id] = round(
+            inbound.get(movement.item_id, 0.0)
+            + float(movement.quantity_delta or 0),
+            3,
+        )
+
+    explicit_wastage: dict[int, float] = {}
+    for row in InventoryWastage.query.filter_by(wastage_date=target_date).all():
+        explicit_wastage[row.item_id] = round(
+            explicit_wastage.get(row.item_id, 0.0)
+            + max(0.0, float(row.quantity or 0)),
+            3,
+        )
+    return inbound, explicit_wastage, opening_hints
+
+
+def _sync_closing_purchase_recommendations(
+    closing_rows: list[InventoryDailyClosing],
+    target_date: date,
+    actor_id: int | None,
+) -> dict:
+    """Refresh the open auto-restock list from one saved physical closing."""
+    current_auto_rows = (
+        InventoryToPurchase.query.filter_by(
+            active=True,
+            status="open",
+            source_type="daily_closing",
+        )
+        .order_by(InventoryToPurchase.id.asc())
+        .all()
+    )
+    by_item = {row.inventory_item_id: row for row in current_auto_rows if row.inventory_item_id}
+    evaluated_ids = {row.item_id for row in closing_rows}
+    deficit_ids: set[int] = set()
+    created = 0
+    updated = 0
+    total_quantity = 0.0
+
+    category_by_name = {
+        row.name.strip().lower(): row.id
+        for row in InventoryCategory.query.all()
+        if (row.name or "").strip()
+    }
+    for closing in closing_rows:
+        suggested_quantity = round(
+            max(0.0, float(closing.suggested_purchase_amount or 0)),
+            3,
+        )
+        if closing.stock_status != "deficit" or suggested_quantity <= 0 or not closing.item:
+            continue
+        item = closing.item
+        manual_requested = (
+            db.session.query(
+                db.func.coalesce(db.func.sum(InventoryToPurchase.quantity_amount), 0.0)
+            )
+            .filter(
+                InventoryToPurchase.active.is_(True),
+                InventoryToPurchase.status == "open",
+                InventoryToPurchase.inventory_item_id == item.id,
+                db.or_(
+                    InventoryToPurchase.source_type.is_(None),
+                    InventoryToPurchase.source_type != "daily_closing",
+                ),
+            )
+            .scalar()
+            or 0.0
+        )
+        quantity = round(max(0.0, suggested_quantity - float(manual_requested)), 3)
+        if quantity <= 0:
+            continue
+        deficit_ids.add(item.id)
+        total_quantity = round(total_quantity + quantity, 3)
+        note = (
+            f"Auto-restock from {target_date.isoformat()} closing; "
+            f"counted {float(closing.closing_stock or 0):g}, "
+            f"adequate target {float(item.required_amount or 0):g}."
+        )
+        row = by_item.get(item.id)
+        if row:
+            row.item_name = item.name
+            row.workstation_slug = _normalize_inventory_workstation_slug(item.area)
+            row.quantity_amount = quantity
+            row.quantity_unit = item.unit or "pcs"
+            row.source_date = target_date
+            row.note = note[:255]
+            updated += 1
+            continue
+        row = InventoryToPurchase(
+            item_name=item.name,
+            inventory_item_id=item.id,
+            workstation_slug=_normalize_inventory_workstation_slug(item.area),
+            quantity_amount=quantity,
+            quantity_unit=item.unit or "pcs",
+            category_id=category_by_name.get((item.category_name or "").strip().lower()),
+            note=note[:255],
+            status="open",
+            active=True,
+            source_type="daily_closing",
+            source_date=target_date,
+            created_by_user_id=actor_id,
+        )
+        db.session.add(row)
+        created += 1
+
+    resolved = 0
+    now_utc = datetime.utcnow()
+    for row in current_auto_rows:
+        if row.inventory_item_id in evaluated_ids and row.inventory_item_id not in deficit_ids:
+            row.active = False
+            row.status = "resolved"
+            row.closed_at = now_utc
+            row.closed_by_user_id = actor_id
+            resolved += 1
+    return {
+        "created": created,
+        "updated": updated,
+        "resolved": resolved,
+        "quantity": total_quantity,
+    }
 
 
 def _inventory_filtered_items(
@@ -6195,6 +6430,9 @@ def _purchase_todo_payload(row: InventoryToPurchase) -> dict:
         ),
         "quantity_display": quantity_display,
         "note": row.note or "",
+        "source_type": row.source_type or "manual",
+        "source_date": row.source_date.isoformat() if row.source_date else "",
+        "is_automatic": row.source_type == "daily_closing",
         "status": row.status,
         "status_label": (row.status or "open").replace("_", " ").title(),
         "created_by_name": row.created_by.full_name if row.created_by else "-",
@@ -6315,6 +6553,44 @@ def _toggle_purchase_todo(row: InventoryToPurchase, actor_id: int | None) -> Non
     row.completed_by_user_id = actor_id
 
 
+def _apply_logged_purchase_to_todos(
+    inventory_item_id: int,
+    purchased_quantity: float,
+    actor_id: int | None,
+) -> dict:
+    """Complete or reduce open requests using the quantity actually purchased."""
+    remaining = max(0.0, float(purchased_quantity or 0))
+    completed = 0
+    partially_filled = 0
+    rows = (
+        InventoryToPurchase.query.filter_by(
+            active=True,
+            status="open",
+            inventory_item_id=inventory_item_id,
+        )
+        .order_by(InventoryToPurchase.created_at.asc(), InventoryToPurchase.id.asc())
+        .all()
+    )
+    for row in rows:
+        if remaining <= 0:
+            break
+        requested = max(0.0, float(row.quantity_amount or 0))
+        if requested <= 0:
+            continue
+        if remaining + 1e-9 >= requested:
+            remaining = round(remaining - requested, 3)
+            _toggle_purchase_todo(row, actor_id)
+            completed += 1
+            continue
+        row.quantity_amount = round(requested - remaining, 3)
+        row.note = "; ".join(
+            filter(None, [row.note, f"Partially filled; {remaining:g} received"])
+        )[:255]
+        remaining = 0.0
+        partially_filled += 1
+    return {"completed": completed, "partial": partially_filled}
+
+
 def _remove_purchase_todo(row: InventoryToPurchase, actor_id: int | None) -> None:
     row.active = False
     row.status = "removed"
@@ -6340,23 +6616,39 @@ def _dedupe_active_purchase_todos():
         .order_by(InventoryToPurchase.created_at.asc(), InventoryToPurchase.id.asc())
         .all()
     )
-    seen: set[tuple[str, str, str]] = set()
+    seen: dict[tuple[str, str, str, str], InventoryToPurchase] = {}
     changed = False
     for row in rows:
         key = (
             str(row.inventory_item_id or (row.item_name or "").strip().lower()),
             (row.workstation_slug or "unassigned").strip().lower(),
             (row.quantity_unit or row.quantity_note or "").strip().lower(),
+            (row.source_type or "manual").strip().lower(),
         )
         if not key[0]:
             continue
         if key in seen:
+            kept = seen[key]
+            if row.quantity_amount is not None:
+                if row.source_type == "daily_closing":
+                    kept.quantity_amount = max(
+                        float(kept.quantity_amount or 0),
+                        float(row.quantity_amount or 0),
+                    )
+                else:
+                    kept.quantity_amount = round(
+                        float(kept.quantity_amount or 0)
+                        + float(row.quantity_amount or 0),
+                        3,
+                    )
+            if row.note and row.note not in (kept.note or ""):
+                kept.note = "; ".join(filter(None, [kept.note, row.note]))[:255]
             row.active = False
             row.status = "removed"
             row.closed_at = row.closed_at or datetime.utcnow()
             changed = True
             continue
-        seen.add(key)
+        seen[key] = row
     if changed:
         db.session.commit()
 
@@ -6488,9 +6780,14 @@ def inventory():
             category_id = _safe_int(request.form.get("category_id"), 0)
             vendor_id = _safe_int(request.form.get("vendor_id"), 0) or None
             amount = _safe_float(request.form.get("amount"), 0)
-            transaction_mode = (request.form.get("transaction_mode") or "qr").strip().lower()
-            if transaction_mode not in {"cash", "card", "qr"}:
-                transaction_mode = "qr"
+            transaction_mode = (request.form.get("transaction_mode") or "upi").strip().lower()
+            if transaction_mode == "qr":
+                transaction_mode = "upi"
+            if transaction_mode not in {"cash", "card", "upi"}:
+                transaction_mode = "upi"
+            funding_source = (request.form.get("funding_source") or "cafe_operations").strip().lower()
+            if funding_source not in {"cafe_operations", "owner_personal"}:
+                funding_source = "cafe_operations"
             workstation_slug = _normalize_inventory_workstation_slug(
                 request.form.get("workstation_slug")
             )
@@ -6508,6 +6805,7 @@ def inventory():
                 workstation_slug=workstation_slug,
                 amount=round(amount, 2),
                 transaction_mode=transaction_mode,
+                funding_source=funding_source,
                 note=(request.form.get("note") or "").strip() or None,
                 created_by_user_id=g.current_user.id if g.current_user else None,
             )
@@ -6545,6 +6843,12 @@ def inventory():
                 item_type=item_type,
                 unit=unit,
                 storage_location=storage_location,
+                required_amount=max(0.0, _safe_float(request.form.get("required_amount"), 0)),
+            )
+            item.reorder_level = round(
+                float(item.required_amount or 0)
+                * inventory_settings["lower_stock_factor"],
+                3,
             )
             db.session.add(item)
             item.item_code = _next_inventory_item_code()
@@ -6577,8 +6881,14 @@ def inventory():
             item.unit = (request.form.get("unit") or item.unit or "pcs").strip()
             previous_amount = float(item.current_amount or 0)
             item.current_amount = max(0.0, _safe_float(request.form.get("current_amount"), previous_amount))
-            item.reorder_level = _safe_float(request.form.get("reorder_level"), item.reorder_level or 0)
-            item.required_amount = _safe_float(request.form.get("required_amount"), item.required_amount or 0)
+            item.required_amount = max(
+                0.0,
+                _safe_float(request.form.get("required_amount"), item.required_amount or 0),
+            )
+            item.reorder_level = round(
+                item.required_amount * inventory_settings["lower_stock_factor"],
+                3,
+            )
             item.average_daily_usage = _safe_float(request.form.get("average_daily_usage"), item.average_daily_usage or 0)
             item.purchase_price = _safe_float(request.form.get("purchase_price"), item.purchase_price or 0)
             item.shelf_life_days = _safe_int(request.form.get("shelf_life_days"), 0) if request.form.get("shelf_life_days") else None
@@ -6599,6 +6909,48 @@ def inventory():
             db.session.commit()
             flash("Inventory item updated.", "success")
             return redirect(url_for("cafe.inventory", section="items_stock", edit_item_id=item.id))
+
+        if action in {"bulk_update_adequate_stock", "bulk_update_required_stock"}:
+            item_ids = [
+                int(value)
+                for value in request.form.getlist("adequate_item_id")
+                if str(value).isdigit()
+            ]
+            save_item_id = _safe_int(request.form.get("save_item_id"), 0)
+            if save_item_id:
+                item_ids = [save_item_id]
+            changed = 0
+            saved_item = None
+            for item_id in item_ids:
+                raw_value = (request.form.get(f"adequate_{item_id}") or "").strip()
+                if not raw_value:
+                    continue
+                item = InventoryItem.query.get(item_id)
+                if not item:
+                    continue
+                required = max(0.0, _safe_float(raw_value, item.required_amount or 0))
+                lower = round(required * inventory_settings["lower_stock_factor"], 3)
+                saved_item = item
+                if float(item.required_amount or 0) != required or float(item.reorder_level or 0) != lower:
+                    item.required_amount = required
+                    item.reorder_level = lower
+                    changed += 1
+            db.session.commit()
+            if save_item_id and saved_item:
+                flash(f"Required Stock saved for {saved_item.name}.", "success")
+            else:
+                flash(f"Updated Required Stock for {changed} item(s).", "success")
+            return redirect(
+                url_for(
+                    "cafe.inventory",
+                    section="items_stock",
+                    q=request.form.get("return_q") or "",
+                    area=request.form.get("return_area") or "all",
+                    category=request.form.get("return_category") or "all",
+                    item_type=request.form.get("return_item_type") or "all",
+                    status=request.form.get("return_status") or "all",
+                )
+            )
 
         if action == "adjust_stock":
             item = InventoryItem.query.get_or_404(_safe_int(request.form.get("item_id"), 0))
@@ -6627,6 +6979,11 @@ def inventory():
         if action == "daily_closing_save":
             closing_date = _inventory_date(request.form.get("closing_date"))
             item_ids = [int(v) for v in request.form.getlist("item_id") if str(v).isdigit()]
+            expected_map, _ = _inventory_expected_consumption_map(closing_date)
+            inbound_map, explicit_wastage_map, opening_hints = (
+                _inventory_closing_activity_maps(closing_date)
+            )
+            saved_rows: list[InventoryDailyClosing] = []
             for item_id in item_ids:
                 item = InventoryItem.query.get(item_id)
                 if not item:
@@ -6635,6 +6992,10 @@ def inventory():
                 if closing_raw == "":
                     continue
                 closing_stock = max(0.0, _safe_float(closing_raw, 0))
+                row = InventoryDailyClosing.query.filter_by(
+                    item_id=item_id,
+                    closing_date=closing_date,
+                ).first()
                 prev_row = (
                     InventoryDailyClosing.query.filter(
                         InventoryDailyClosing.item_id == item_id,
@@ -6643,18 +7004,46 @@ def inventory():
                     .order_by(InventoryDailyClosing.closing_date.desc())
                     .first()
                 )
-                opening_stock = float(prev_row.closing_stock) if prev_row else float(item.current_amount or 0)
-                consumed = round(opening_stock - closing_stock, 3)
-                variance = round(consumed - float(item.average_daily_usage or 0), 3)
-                row = InventoryDailyClosing.query.filter_by(item_id=item_id, closing_date=closing_date).first()
+                opening_stock = (
+                    float(row.opening_stock)
+                    if row
+                    else (
+                        float(prev_row.closing_stock)
+                        if prev_row
+                        else float(opening_hints.get(item_id, item.current_amount or 0))
+                    )
+                )
+                inbound_amount = float(inbound_map.get(item_id, 0))
+                expected_consumption = float(expected_map.get(item_id, 0))
+                explicit_wastage = float(explicit_wastage_map.get(item_id, 0))
+                metrics = closing_metrics(
+                    opening_stock=opening_stock,
+                    inbound_amount=inbound_amount,
+                    closing_stock=closing_stock,
+                    expected_consumption=expected_consumption,
+                    explicit_wastage=explicit_wastage,
+                    unit_price=item.purchase_price,
+                )
+                band = stock_band(
+                    closing_stock,
+                    item.required_amount,
+                    inventory_settings["stock_tolerance_percent"],
+                )
                 if not row:
                     row = InventoryDailyClosing(item_id=item_id, closing_date=closing_date)
                     db.session.add(row)
                     db.session.flush()
                 row.opening_stock = opening_stock
+                row.inbound_amount = inbound_amount
                 row.closing_stock = closing_stock
-                row.consumed_amount = consumed
-                row.variance_amount = variance
+                row.consumed_amount = metrics["physical_consumption"]
+                row.expected_consumption_amount = metrics["expected_consumption"]
+                row.explicit_wastage_amount = metrics["explicit_wastage"]
+                row.variance_amount = metrics["variance"]
+                row.unexplained_variance_amount = metrics["unexplained_variance"]
+                row.variance_value = metrics["unexplained_wastage_value"]
+                row.stock_status = band["status"]
+                row.suggested_purchase_amount = band["suggested_purchase"]
                 row.note = (request.form.get(f"closing_note_{item_id}") or "").strip() or None
                 before = float(item.current_amount or 0)
                 item.current_amount = closing_stock
@@ -6667,9 +7056,53 @@ def inventory():
                     reference_type="daily_closing",
                     reference_id=row.id if row.id else None,
                 )
+                saved_rows.append(row)
+            auto_summary = None
+            if request.form.get("auto_add_deficits"):
+                auto_summary = _sync_closing_purchase_recommendations(
+                    saved_rows,
+                    closing_date,
+                    g.current_user.id if g.current_user else None,
+                )
             db.session.commit()
-            flash("Daily closing saved.", "success")
+            if auto_summary:
+                flash(
+                    "Daily closing saved. Purchase list refreshed: "
+                    f"{auto_summary['created']} added, {auto_summary['updated']} updated, "
+                    f"{auto_summary['resolved']} resolved.",
+                    "success",
+                )
+            else:
+                flash("Daily closing saved. Review deficits before adding them to purchase.", "success")
             return redirect(url_for("cafe.inventory", section="daily_closing", closing_date=closing_date.isoformat()))
+
+        if action == "add_closing_deficits_to_purchase":
+            closing_date = _inventory_date(request.form.get("closing_date"))
+            rows = InventoryDailyClosing.query.options(
+                joinedload(InventoryDailyClosing.item)
+            ).filter_by(closing_date=closing_date).all()
+            if not rows:
+                flash("Save the daily closing before generating a purchase list.", "error")
+                return redirect(
+                    url_for(
+                        "cafe.inventory",
+                        section="daily_closing",
+                        closing_date=closing_date.isoformat(),
+                    )
+                )
+            summary = _sync_closing_purchase_recommendations(
+                rows,
+                closing_date,
+                g.current_user.id if g.current_user else None,
+            )
+            db.session.commit()
+            flash(
+                "Purchase list refreshed from closing: "
+                f"{summary['created']} added, {summary['updated']} updated, "
+                f"{summary['resolved']} resolved.",
+                "success",
+            )
+            return redirect(url_for("cafe.to_purchase"))
 
         if action == "add_vendor":
             vendor = InventoryVendor(
@@ -6737,12 +7170,23 @@ def inventory():
             payment_status = (request.form.get("payment_status") or "pending").strip().lower()
             if payment_status not in {"pending", "paid", "partial"}:
                 payment_status = "pending"
+            payment_mode = (request.form.get("payment_mode") or "upi").strip().lower()
+            if payment_mode == "qr":
+                payment_mode = "upi"
+            if payment_mode not in {"cash", "card", "upi"}:
+                payment_mode = "upi"
+            funding_source = (request.form.get("funding_source") or "cafe_operations").strip().lower()
+            if funding_source not in {"cafe_operations", "owner_personal"}:
+                funding_source = "cafe_operations"
             purchase = InventoryPurchase(
                 purchase_date=_inventory_date(request.form.get("purchase_date")),
                 vendor_id=_safe_int(request.form.get("vendor_id"), 0) or None,
                 invoice_number=(request.form.get("invoice_number") or "").strip() or None,
                 tax_amount=max(0.0, _safe_float(request.form.get("tax_amount"), 0)),
                 payment_status=payment_status,
+                payment_mode=payment_mode,
+                funding_source=funding_source,
+                created_by_user_id=g.current_user.id if g.current_user else None,
                 note=(request.form.get("note") or "").strip() or None,
             )
             db.session.add(purchase)
@@ -6771,6 +7215,11 @@ def inventory():
                     reason=f"Purchase #{purchase.id}",
                     reference_type="purchase",
                     reference_id=purchase.id,
+                )
+                _apply_logged_purchase_to_todos(
+                    item.id,
+                    qty,
+                    g.current_user.id if g.current_user else None,
                 )
                 subtotal += line_total
             purchase.subtotal = round(subtotal, 2)
@@ -6866,9 +7315,9 @@ def inventory():
             ):
                 flash("Only managers and inventory managers can change inventory settings.", "error")
                 return redirect(url_for("cafe.inventory", section="settings"))
-            overstock_percent = max(
-                101,
-                min(500, _safe_int(request.form.get("overstock_percent"), 135)),
+            stock_tolerance_percent = max(
+                0,
+                min(50, _safe_int(request.form.get("stock_tolerance_percent"), 15)),
             )
             variance_warning_percent = max(
                 0,
@@ -6885,13 +7334,20 @@ def inventory():
             save_deployment_config(
                 current_app.instance_path,
                 {
-                    "INVENTORY_OVERSTOCK_PERCENT": overstock_percent,
+                    "INVENTORY_STOCK_TOLERANCE_PERCENT": stock_tolerance_percent,
                     "INVENTORY_VARIANCE_WARNING_PERCENT": variance_warning_percent,
                     "INVENTORY_DEFAULT_AREA": default_area,
                     "INVENTORY_DEFAULT_UNIT": default_unit,
                     "INVENTORY_AUDIT_PAGE_SIZE": audit_page_size,
                 },
             )
+            lower_factor = 1 - stock_tolerance_percent / 100
+            for item in InventoryItem.query.all():
+                item.reorder_level = round(
+                    max(0.0, float(item.required_amount or 0)) * lower_factor,
+                    3,
+                )
+            db.session.commit()
             flash("Inventory settings saved.", "success")
             return redirect(url_for("cafe.inventory", section="settings"))
 
@@ -6938,7 +7394,11 @@ def inventory():
     if inventory_type_filter not in {"all", "perishable", "non_perishable"}:
         inventory_type_filter = "all"
     inventory_status_filter = (request.args.get("status") or "all").strip().lower()
-    if inventory_status_filter not in ["all", "healthy", "low", "overstock"]:
+    inventory_status_filter = {
+        "healthy": "adequate",
+        "low": "deficit",
+    }.get(inventory_status_filter, inventory_status_filter)
+    if inventory_status_filter not in ["all", "adequate", "deficit", "overstock", "unconfigured"]:
         inventory_status_filter = "all"
     inventory_categories_all = InventoryCategory.query.order_by(InventoryCategory.name.asc()).all()
     categories = [row for row in inventory_categories_all if row.active]
@@ -6973,9 +7433,43 @@ def inventory():
         inventory_status_filter,
         inventory_settings,
     )
-    purchases = InventoryPurchase.query.order_by(InventoryPurchase.purchase_date.desc(), InventoryPurchase.id.desc()).limit(80).all()
+    purchases = (
+        InventoryPurchase.query.options(
+            joinedload(InventoryPurchase.lines).joinedload(InventoryPurchaseLine.item),
+            joinedload(InventoryPurchase.vendor),
+            joinedload(InventoryPurchase.created_by),
+        )
+        .order_by(InventoryPurchase.purchase_date.desc(), InventoryPurchase.id.desc())
+        .limit(80)
+        .all()
+    )
+    period_purchases = (
+        InventoryPurchase.query.options(
+            joinedload(InventoryPurchase.lines).joinedload(InventoryPurchaseLine.item),
+            joinedload(InventoryPurchase.vendor),
+            joinedload(InventoryPurchase.created_by),
+        )
+        .filter(
+            InventoryPurchase.purchase_date >= inventory_period_start,
+            InventoryPurchase.purchase_date <= inventory_period_end,
+        )
+        .all()
+    )
     wastage_rows = InventoryWastage.query.order_by(InventoryWastage.wastage_date.desc(), InventoryWastage.id.desc()).limit(120).all()
     purchase_todos_active, _ = _purchase_todo_payloads(include_history=False)
+    purchase_prefill_map: dict[int, float] = {}
+    for row in purchase_todos_active:
+        if (
+            row["status"] == "open"
+            and row.get("inventory_item_id")
+            and row.get("quantity_amount") is not None
+        ):
+            item_id = int(row["inventory_item_id"])
+            purchase_prefill_map[item_id] = round(
+                purchase_prefill_map.get(item_id, 0.0)
+                + float(row["quantity_amount"] or 0),
+                3,
+            )
     edit_item_id = request.args.get("edit_item_id", type=int)
     selected_item = InventoryItem.query.get(edit_item_id) if edit_item_id else (filtered_items[0] if filtered_items else None)
     edit_vendor_id = request.args.get("edit_vendor_id", type=int)
@@ -6993,9 +7487,13 @@ def inventory():
         stock_value = round(sum(float(x.current_amount or 0) * float(x.purchase_price or 0) for x in cat_items), 2)
         category_stats.append({"category": cat, "item_count": len(cat_items), "stock_value": stock_value})
 
-    low_stock_items = [x for x in items if float(x.current_amount or 0) <= float(x.reorder_level or 0)]
     item_status_map = {x.id: _inventory_item_status(x, inventory_settings) for x in items}
+    item_stock_band_map = {
+        x.id: _inventory_stock_band(x, inventory_settings) for x in items
+    }
+    low_stock_items = [x for x in items if item_status_map[x.id] == "deficit"]
     overstock_items = [x for x in items if item_status_map[x.id] == "overstock"]
+    unconfigured_stock_items = [x for x in items if item_status_map[x.id] == "unconfigured"]
     items_without_vendor = [x for x in items if not x.vendor_id]
     total_stock_value = round(sum(float(x.current_amount or 0) * float(x.purchase_price or 0) for x in items), 2)
     today_purchase_spend = round(
@@ -7007,13 +7505,10 @@ def inventory():
         2,
     )
 
-    today_consumption = (
-        db.session.query(db.func.coalesce(db.func.sum(InventoryDailyClosing.consumed_amount), 0.0))
-        .filter(InventoryDailyClosing.closing_date == closing_date)
-        .scalar()
-        or 0.0
+    expected_map, expected_unit_warnings = _inventory_expected_consumption_map(closing_date)
+    inbound_map, explicit_wastage_map, opening_hints = _inventory_closing_activity_maps(
+        closing_date
     )
-
     daily_rows = []
     for item in items:
         existing = InventoryDailyClosing.query.filter_by(item_id=item.id, closing_date=closing_date).first()
@@ -7025,17 +7520,52 @@ def inventory():
             .order_by(InventoryDailyClosing.closing_date.desc())
             .first()
         )
-        opening = float(prev_row.closing_stock) if prev_row else float(item.current_amount or 0)
+        opening = (
+            float(existing.opening_stock)
+            if existing
+            else (
+                float(prev_row.closing_stock)
+                if prev_row
+                else float(opening_hints.get(item.id, item.current_amount or 0))
+            )
+        )
+        current_for_band = (
+            float(existing.closing_stock) if existing else float(item.current_amount or 0)
+        )
+        band = stock_band(
+            current_for_band,
+            item.required_amount,
+            inventory_settings["stock_tolerance_percent"],
+        )
+        preview_metrics = closing_metrics(
+            opening_stock=opening,
+            inbound_amount=inbound_map.get(item.id, 0),
+            closing_stock=current_for_band,
+            expected_consumption=expected_map.get(item.id, 0),
+            explicit_wastage=explicit_wastage_map.get(item.id, 0),
+            unit_price=item.purchase_price,
+        )
+        metrics = {
+            "physical_consumption": float(existing.consumed_amount or 0),
+            "expected_consumption": float(existing.expected_consumption_amount or 0),
+            "explicit_wastage": float(existing.explicit_wastage_amount or 0),
+            "variance": float(existing.variance_amount or 0),
+            "unexplained_variance": float(existing.unexplained_variance_amount or 0),
+            "unexplained_wastage_value": float(existing.variance_value or 0),
+        } if existing else preview_metrics
+        warning_base = max(float(metrics["expected_consumption"] or 0), 0.001)
         daily_rows.append({
             "item": item,
             "opening": opening,
             "existing": existing,
-            "consumed": float(existing.consumed_amount) if existing else 0.0,
+            "inbound": float(existing.inbound_amount or 0) if existing else float(inbound_map.get(item.id, 0)),
+            "metrics": metrics,
+            "band": band,
+            "unit_warnings": sorted(set(expected_unit_warnings.get(item.id, []))),
             "variance_warning": bool(
                 existing
-                and float(item.average_daily_usage or 0) > 0
-                and abs(float(existing.variance_amount or 0))
-                >= float(item.average_daily_usage or 0)
+                and abs(float(metrics["unexplained_variance"] or 0))
+                >= warning_base
                 * inventory_settings["variance_warning_percent"]
                 / 100
             ),
@@ -7044,6 +7574,122 @@ def inventory():
     for row in daily_rows:
         key = _inventory_item_category_name(row["item"]) or "Uncategorized"
         daily_rows_grouped.setdefault(key, []).append(row)
+
+    closing_summary = {
+        "configured": sum(row["band"]["status"] != "unconfigured" for row in daily_rows),
+        "deficit": sum(row["band"]["status"] == "deficit" for row in daily_rows),
+        "overstock": sum(row["band"]["status"] == "overstock" for row in daily_rows),
+        "adequate": sum(row["band"]["status"] == "adequate" for row in daily_rows),
+        "unconfigured": sum(row["band"]["status"] == "unconfigured" for row in daily_rows),
+        "suggested_purchase_value": round(
+            sum(
+                row["band"]["suggested_purchase"]
+                * float(row["item"].purchase_price or 0)
+                for row in daily_rows
+            ),
+            2,
+        ),
+        "unexplained_wastage_value": round(
+            sum(max(0.0, float(row["metrics"]["unexplained_wastage_value"] or 0)) for row in daily_rows),
+            2,
+        ),
+    }
+
+    usage_start_date = closing_date - timedelta(days=29)
+    usage_rows = InventoryDailyClosing.query.filter(
+        InventoryDailyClosing.closing_date >= usage_start_date,
+        InventoryDailyClosing.closing_date <= closing_date,
+    ).all()
+    usage_by_item: dict[int, list[float]] = {}
+    for closing in usage_rows:
+        physical = max(0.0, float(closing.consumed_amount or 0))
+        if physical > 0:
+            usage_by_item.setdefault(closing.item_id, []).append(physical)
+    item_coverage_map = {}
+    coverage_rows = []
+    for item in items:
+        samples = usage_by_item.get(item.id, [])
+        learned_usage = (
+            sum(samples) / len(samples)
+            if samples
+            else float(item.average_daily_usage or 0)
+        )
+        coverage = coverage_metrics(
+            current_amount=item.current_amount,
+            adequate_amount=item.required_amount,
+            average_daily_usage=learned_usage,
+            shelf_life_days=item.shelf_life_days,
+        )
+        coverage["learned_daily_usage"] = round(learned_usage, 3)
+        item_coverage_map[item.id] = coverage
+        coverage_rows.append({"item": item, **coverage})
+    spoilage_risk_rows = sorted(
+        [row for row in coverage_rows if row["spoilage_risk"]],
+        key=lambda row: (row["coverage_days"] or 0) - (row["shelf_life_days"] or 0),
+        reverse=True,
+    )[:20]
+
+    period_closing_rows = (
+        InventoryDailyClosing.query.options(joinedload(InventoryDailyClosing.item))
+        .filter(
+            InventoryDailyClosing.closing_date >= inventory_period_start,
+            InventoryDailyClosing.closing_date <= inventory_period_end,
+        )
+        .all()
+    )
+    efficiency_by_date = {}
+    closing_variance_rows = []
+    tracked_category_name = next(
+        (
+            row.name.strip().lower()
+            for row in categories
+            if row.id == inventory_tracking_category_id
+        ),
+        None,
+    )
+    for closing in period_closing_rows:
+        item = closing.item
+        if not item:
+            continue
+        if tracked_category_name and (item.category_name or "").strip().lower() != tracked_category_name:
+            continue
+        unit_price = max(0.0, float(item.purchase_price or 0))
+        data = efficiency_by_date.setdefault(
+            closing.closing_date,
+            {"actual_value": 0.0, "expected_value": 0.0, "explicit_waste_value": 0.0, "unexplained_value": 0.0},
+        )
+        data["actual_value"] += max(0.0, float(closing.consumed_amount or 0)) * unit_price
+        data["expected_value"] += max(0.0, float(closing.expected_consumption_amount or 0)) * unit_price
+        data["explicit_waste_value"] += max(0.0, float(closing.explicit_wastage_amount or 0)) * unit_price
+        data["unexplained_value"] += max(0.0, float(closing.unexplained_variance_amount or 0)) * unit_price
+        if abs(float(closing.unexplained_variance_amount or 0)) > 0:
+            closing_variance_rows.append(
+                {
+                    "date": closing.closing_date,
+                    "item": item,
+                    "actual": round(float(closing.consumed_amount or 0), 3),
+                    "expected": round(float(closing.expected_consumption_amount or 0), 3),
+                    "explicit_wastage": round(float(closing.explicit_wastage_amount or 0), 3),
+                    "unexplained": round(float(closing.unexplained_variance_amount or 0), 3),
+                    "value": round(max(0.0, float(closing.unexplained_variance_amount or 0)) * unit_price, 2),
+                }
+            )
+    closing_efficiency_timeline = []
+    cursor = inventory_period_start
+    while cursor <= inventory_period_end:
+        values = efficiency_by_date.get(cursor, {})
+        closing_efficiency_timeline.append(
+            {
+                "date": cursor.strftime("%d %b"),
+                "actual_value": round(values.get("actual_value", 0.0), 2),
+                "expected_value": round(values.get("expected_value", 0.0), 2),
+                "explicit_waste_value": round(values.get("explicit_waste_value", 0.0), 2),
+                "unexplained_value": round(values.get("unexplained_value", 0.0), 2),
+            }
+        )
+        cursor += timedelta(days=1)
+    closing_variance_rows.sort(key=lambda row: (row["value"], abs(row["unexplained"])), reverse=True)
+    closing_variance_rows = closing_variance_rows[:25]
 
     vendor_purchase_map = {}
     for purchase in purchases:
@@ -7059,7 +7705,7 @@ def inventory():
     )[:8]
     top_consumption_rows = sorted(
         daily_rows,
-        key=lambda x: float(x["existing"].consumed_amount if x["existing"] else 0),
+        key=lambda x: float(x["metrics"]["physical_consumption"] or 0),
         reverse=True,
     )[:8]
     recent_purchase_lines = (
@@ -7073,11 +7719,28 @@ def inventory():
         "total_items": len(items),
         "low_stock_count": len(low_stock_items),
         "overstock_count": len(overstock_items),
+        "adequate_stock_count": sum(status == "adequate" for status in item_status_map.values()),
+        "unconfigured_stock_count": len(unconfigured_stock_items),
         "unassigned_vendor_count": len(items_without_vendor),
         "total_stock_value": total_stock_value,
         "today_purchase_spend": today_purchase_spend,
         "today_wastage_value": today_wastage_value,
-        "today_consumption": round(today_consumption, 2),
+        "closing_consumption_value": round(
+            sum(
+                max(0.0, float(row["metrics"]["physical_consumption"] or 0))
+                * float(row["item"].purchase_price or 0)
+                for row in daily_rows
+            ),
+            2,
+        ),
+        "closing_expected_value": round(
+            sum(
+                max(0.0, float(row["metrics"]["expected_consumption"] or 0))
+                * float(row["item"].purchase_price or 0)
+                for row in daily_rows
+            ),
+            2,
+        ),
         "to_purchase_count": len([row for row in purchase_todos_active if row["status"] != "purchased"]),
     }
 
@@ -7088,6 +7751,84 @@ def inventory():
         category_spend_map[log_row.category_id] = round(category_spend_map.get(log_row.category_id, 0.0) + float(log_row.amount or 0), 2)
         category_entry_count_map[log_row.category_id] = category_entry_count_map.get(log_row.category_id, 0) + 1
         timeline_map[log_row.entry_date] = round(timeline_map.get(log_row.entry_date, 0.0) + float(log_row.amount or 0), 2)
+
+    category_id_by_name = {
+        row.name.strip().lower(): row.id
+        for row in categories
+        if (row.name or "").strip()
+    }
+    period_purchase_expense = 0.0
+    purchase_expense_by_workstation: dict[str, float] = {}
+    purchase_ledger_rows = []
+    purchase_funding_totals = {"cafe_operations": 0.0, "owner_personal": 0.0}
+    for purchase in period_purchases:
+        matching_lines = [
+            line
+            for line in purchase.lines
+            if line.item
+            and (
+                not tracked_category_name
+                or (line.item.category_name or "").strip().lower() == tracked_category_name
+            )
+        ]
+        if tracked_category_name:
+            purchase_amount = round(sum(float(line.line_total or 0) for line in matching_lines), 2)
+        else:
+            purchase_amount = round(float(purchase.total_amount or 0), 2)
+        if purchase_amount <= 0:
+            continue
+        period_purchase_expense = round(period_purchase_expense + purchase_amount, 2)
+        timeline_map[purchase.purchase_date] = round(
+            timeline_map.get(purchase.purchase_date, 0.0) + purchase_amount,
+            2,
+        )
+        funding_key = (
+            purchase.funding_source
+            if purchase.funding_source in purchase_funding_totals
+            else "cafe_operations"
+        )
+        purchase_funding_totals[funding_key] = round(
+            purchase_funding_totals[funding_key] + purchase_amount,
+            2,
+        )
+        for line in matching_lines:
+            line_amount = round(float(line.line_total or 0), 2)
+            category_id = category_id_by_name.get(
+                (line.item.category_name or "").strip().lower()
+            )
+            if category_id:
+                category_spend_map[category_id] = round(
+                    category_spend_map.get(category_id, 0.0) + line_amount,
+                    2,
+                )
+                category_entry_count_map[category_id] = category_entry_count_map.get(category_id, 0) + 1
+            station_slug = _normalize_inventory_workstation_slug(line.item.area)
+            purchase_expense_by_workstation[station_slug] = round(
+                purchase_expense_by_workstation.get(station_slug, 0.0) + line_amount,
+                2,
+            )
+        if not tracked_category_name:
+            tax_amount = max(0.0, float(purchase.tax_amount or 0))
+            purchase_expense_by_workstation["unassigned"] = round(
+                purchase_expense_by_workstation.get("unassigned", 0.0) + tax_amount,
+                2,
+            )
+        purchase_ledger_rows.append(
+            {
+                "sort_date": purchase.purchase_date,
+                "expense_date": purchase.purchase_date.strftime("%d %b %Y"),
+                "source": f"Purchase #{purchase.id}",
+                "category_name": "Inventory purchase" if not tracked_category_name else tracked_category_name.title(),
+                "vendor_name": purchase.vendor.name if purchase.vendor else "Other",
+                "amount": purchase_amount,
+                "transaction_mode": (purchase.payment_mode or "upi").upper(),
+                "funding_source": "Owner personal" if purchase.funding_source == "owner_personal" else "Cafe operations",
+                "logged_by": purchase.created_by.full_name if purchase.created_by else "-",
+                "workstation_name": "Allocated by purchased item",
+                "logged_at_ist": _format_ist(purchase.created_at, "%d %b %Y, %I:%M:%S %p"),
+                "note": purchase.note or purchase.invoice_number or "",
+            }
+        )
 
     category_spend_rows = []
     for cat in categories:
@@ -7136,17 +7877,42 @@ def inventory():
                     2,
                 )
 
-    total_period_expense = round(sum(float(row.amount or 0) for row in expense_logs), 2)
+    manual_period_expense = round(sum(float(row.amount or 0) for row in expense_logs), 2)
+    total_period_expense = round(manual_period_expense + period_purchase_expense, 2)
+    manual_funding_totals = {"cafe_operations": 0.0, "owner_personal": 0.0}
+    for row in expense_logs:
+        funding_key = (
+            row.funding_source
+            if row.funding_source in manual_funding_totals
+            else "cafe_operations"
+        )
+        manual_funding_totals[funding_key] = round(
+            manual_funding_totals[funding_key] + float(row.amount or 0),
+            2,
+        )
+    expense_funding_totals = {
+        key: round(manual_funding_totals[key] + purchase_funding_totals[key], 2)
+        for key in manual_funding_totals
+    }
     expense_vs_earning = {
         "expense": total_period_expense,
+        "manual_expense": manual_period_expense,
+        "purchase_expense": period_purchase_expense,
         "revenue": period_revenue,
         "difference": round(period_revenue - total_period_expense, 2),
+        "cafe_funded": expense_funding_totals["cafe_operations"],
+        "owner_funded": expense_funding_totals["owner_personal"],
     }
     workstation_expenses = {row["slug"]: 0.0 for row in _stats_station_registry(include_unassigned=True)}
     for log_row in expense_logs:
         station_slug = (log_row.workstation_slug or "unassigned").strip().lower() or "unassigned"
         workstation_expenses[station_slug] = round(
             workstation_expenses.get(station_slug, 0.0) + float(log_row.amount or 0),
+            2,
+        )
+    for station_slug, amount in purchase_expense_by_workstation.items():
+        workstation_expenses[station_slug] = round(
+            workstation_expenses.get(station_slug, 0.0) + amount,
             2,
         )
     workstation_financial_rows = []
@@ -7168,20 +7934,32 @@ def inventory():
         purchase_todos_active
     )
     average_daily_expense = round(total_period_expense / max((inventory_period_end - inventory_period_start).days + 1, 1), 2)
-    recent_expense_logs = [
+    manual_ledger_rows = [
         {
+            "sort_date": row.entry_date,
             "expense_date": row.entry_date.strftime("%d %b %Y"),
+            "source": "Manual expense",
             "category_name": row.category.name if row.category else "-",
             "vendor_name": row.vendor.name if row.vendor else "Other",
             "amount": round(float(row.amount or 0), 2),
-            "transaction_mode": ((row.transaction_mode or "qr").strip().title() if (row.transaction_mode or "").strip() else "QR"),
+            "transaction_mode": (
+                "UPI"
+                if (row.transaction_mode or "").strip().lower() in {"", "qr", "upi"}
+                else (row.transaction_mode or "").strip().upper()
+            ),
+            "funding_source": "Owner personal" if row.funding_source == "owner_personal" else "Cafe operations",
             "logged_by": row.created_by.full_name if row.created_by else "-",
             "workstation_name": _workstation_display_name(row.workstation_slug),
             "logged_at_ist": _format_ist(row.created_at, "%d %b %Y, %I:%M:%S %p"),
             "note": row.note or "",
         }
-        for row in expense_logs[:12]
+        for row in expense_logs
     ]
+    recent_expense_logs = sorted(
+        manual_ledger_rows + purchase_ledger_rows,
+        key=lambda row: row["sort_date"],
+        reverse=True,
+    )[:20]
 
     return render_template(
         "cafe/inventory.html",
@@ -7197,9 +7975,11 @@ def inventory():
         wastage_rows=wastage_rows,
         low_stock_items=low_stock_items,
         overstock_items=overstock_items,
+        unconfigured_stock_items=unconfigured_stock_items,
         items_without_vendor=items_without_vendor,
         daily_rows=daily_rows,
         daily_rows_grouped=daily_rows_grouped,
+        closing_summary=closing_summary,
         closing_date=closing_date,
         inventory_analytics=inventory_analytics,
         filtered_items=filtered_items,
@@ -7225,6 +8005,11 @@ def inventory():
         inventory_category_color_options=INVENTORY_CATEGORY_COLOR_OPTIONS,
         inventory_settings=inventory_settings,
         item_status_map=item_status_map,
+        item_stock_band_map=item_stock_band_map,
+        item_coverage_map=item_coverage_map,
+        spoilage_risk_rows=spoilage_risk_rows,
+        closing_efficiency_timeline=closing_efficiency_timeline,
+        closing_variance_rows=closing_variance_rows,
         item_category_display_map={x.id: _inventory_item_category_name(x) for x in items},
         top_stock_value_items=top_stock_value_items,
         top_consumption_rows=top_consumption_rows,
@@ -7235,6 +8020,7 @@ def inventory():
         movement_summary=movement_summary,
         movement_time_map=movement_time_map,
         purchase_todos_active=purchase_todos_active,
+        purchase_prefill_map=purchase_prefill_map,
         category_spend_rows=category_spend_rows,
         max_category_spend=max_category_spend,
         timeline_rows=timeline_rows,

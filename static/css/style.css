@@ -5272,7 +5272,8 @@ body.cashier-shell.cashier-tablet-portrait .cashier-selected-sections {
   font-weight: 700;
 }
 
-.inventory-status.low {
+.inventory-status.low,
+.inventory-status.deficit {
   background: #fff0eb;
   color: #9d3322;
 }
@@ -5282,9 +5283,46 @@ body.cashier-shell.cashier-tablet-portrait .cashier-selected-sections {
   color: #8f5d00;
 }
 
-.inventory-status.healthy {
+.inventory-status.healthy,
+.inventory-status.adequate {
   background: #edf8f0;
   color: #1f6d3f;
+}
+
+.inventory-status.unconfigured {
+  background: #eef1f4;
+  color: #52606d;
+}
+
+.inventory-adequate-input {
+  width: 7rem;
+  min-width: 5.5rem;
+}
+
+.inventory-stock-actions {
+  min-width: 8.5rem;
+}
+
+.inventory-stock-actions .inventory-row-save {
+  width: auto;
+  min-height: 2rem;
+  padding: 0.35rem 0.65rem;
+  margin-right: 0.45rem;
+}
+
+.inventory-auto-purchase-option {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.55rem;
+  padding: 0.75rem;
+  border: 1px solid #d8c0a7;
+  border-radius: 9px;
+  background: #fff8ed;
+}
+
+.inventory-auto-purchase-option input {
+  width: auto;
+  margin-top: 0.15rem;
 }
 
 .inventory-setting-grid {

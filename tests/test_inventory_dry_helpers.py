@@ -6,6 +6,7 @@ from flask import Flask
 from app import _normalize_inventory_item_types
 from app.cafe import (
     _clear_purchase_todos,
+    _apply_logged_purchase_to_todos,
     _ensure_inventory_item_categories,
     _inventory_date,
     _inventory_item_status,
@@ -15,10 +16,16 @@ from app.cafe import (
     _normalize_inventory_section,
     _purchase_request_summaries,
     _remove_purchase_todo,
+    _sync_closing_purchase_recommendations,
     _toggle_purchase_todo,
 )
 from app.extensions import db
-from app.models import InventoryCategory, InventoryItem, InventoryToPurchase
+from app.models import (
+    InventoryCategory,
+    InventoryDailyClosing,
+    InventoryItem,
+    InventoryToPurchase,
+)
 
 
 class InventoryDryHelperTests(unittest.TestCase):
@@ -53,7 +60,7 @@ class InventoryDryHelperTests(unittest.TestCase):
         self.assertEqual(_normalize_inventory_section("movements"), "audit")
         self.assertEqual(_normalize_inventory_section("unknown"), "dashboard")
 
-    def test_stock_status_uses_configurable_overstock_threshold(self):
+    def test_stock_status_uses_adequate_quantity_and_symmetric_tolerance(self):
         item = InventoryItem(
             name="Milk",
             category_name="Dairy",
@@ -63,12 +70,23 @@ class InventoryDryHelperTests(unittest.TestCase):
             required_amount=10,
         )
         self.assertEqual(
-            _inventory_item_status(item, {"overstock_factor": 1.35}),
+            _inventory_item_status(item, {"stock_tolerance_percent": 15}),
             "overstock",
         )
+        item.current_amount = 8
         self.assertEqual(
-            _inventory_item_status(item, {"overstock_factor": 1.5}),
-            "healthy",
+            _inventory_item_status(item, {"stock_tolerance_percent": 15}),
+            "deficit",
+        )
+        item.current_amount = 10
+        self.assertEqual(
+            _inventory_item_status(item, {"stock_tolerance_percent": 15}),
+            "adequate",
+        )
+        item.required_amount = 0
+        self.assertEqual(
+            _inventory_item_status(item, {"stock_tolerance_percent": 15}),
+            "unconfigured",
         )
 
     def test_inventory_type_and_visual_category_values_are_normalized(self):
@@ -195,6 +213,82 @@ class InventoryDryHelperTests(unittest.TestCase):
         self.assertFalse(second.active)
         self.assertEqual(second.status, "cleared")
         self.assertIsNotNone(second.closed_at)
+
+    def test_closing_purchase_recommendations_are_idempotent_and_resolve(self):
+        item = InventoryItem(
+            name="Milk",
+            area="cafe",
+            category_name="Dairy",
+            unit="litre",
+            current_amount=4,
+            required_amount=10,
+        )
+        closing = InventoryDailyClosing(
+            closing_date=date(2026, 8, 28),
+            item=item,
+            opening_stock=8,
+            closing_stock=4,
+            stock_status="deficit",
+            suggested_purchase_amount=6,
+        )
+        db.session.add_all([item, closing])
+        db.session.commit()
+
+        first = _sync_closing_purchase_recommendations(
+            [closing], closing.closing_date, None
+        )
+        db.session.commit()
+        second = _sync_closing_purchase_recommendations(
+            [closing], closing.closing_date, None
+        )
+        db.session.commit()
+
+        self.assertEqual(first["created"], 1)
+        self.assertEqual(second["updated"], 1)
+        self.assertEqual(InventoryToPurchase.query.filter_by(active=True).count(), 1)
+        row = InventoryToPurchase.query.filter_by(active=True).one()
+        self.assertEqual(row.quantity_amount, 6)
+        self.assertEqual(row.source_type, "daily_closing")
+
+        closing.stock_status = "adequate"
+        closing.suggested_purchase_amount = 0
+        resolved = _sync_closing_purchase_recommendations(
+            [closing], closing.closing_date, None
+        )
+        db.session.commit()
+        self.assertEqual(resolved["resolved"], 1)
+        self.assertEqual(InventoryToPurchase.query.filter_by(active=True).count(), 0)
+
+    def test_logged_purchase_completes_or_reduces_matching_requests(self):
+        item = InventoryItem(name="Milk", area="cafe", unit="litre")
+        db.session.add(item)
+        db.session.flush()
+        first = InventoryToPurchase(
+            item_name=item.name,
+            inventory_item_id=item.id,
+            quantity_amount=2,
+            quantity_unit=item.unit,
+            status="open",
+            active=True,
+        )
+        second = InventoryToPurchase(
+            item_name=item.name,
+            inventory_item_id=item.id,
+            quantity_amount=3,
+            quantity_unit=item.unit,
+            status="open",
+            active=True,
+        )
+        db.session.add_all([first, second])
+        db.session.commit()
+
+        result = _apply_logged_purchase_to_todos(item.id, 4, None)
+        db.session.commit()
+
+        self.assertEqual(result, {"completed": 1, "partial": 1})
+        self.assertEqual(first.status, "purchased")
+        self.assertEqual(second.status, "open")
+        self.assertEqual(second.quantity_amount, 1)
 
 
 if __name__ == "__main__":

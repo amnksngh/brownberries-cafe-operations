@@ -226,12 +226,29 @@ def _ensure_sqlite_schema_columns():
             "vendor_id": "INTEGER",
             "transaction_mode": "TEXT",
             "workstation_slug": "TEXT",
+            "funding_source": "TEXT NOT NULL DEFAULT 'cafe_operations'",
+        },
+        "inventory_purchase": {
+            "payment_mode": "TEXT",
+            "funding_source": "TEXT NOT NULL DEFAULT 'cafe_operations'",
+            "created_by_user_id": "INTEGER",
+        },
+        "inventory_daily_closing": {
+            "inbound_amount": "FLOAT NOT NULL DEFAULT 0",
+            "expected_consumption_amount": "FLOAT NOT NULL DEFAULT 0",
+            "explicit_wastage_amount": "FLOAT NOT NULL DEFAULT 0",
+            "unexplained_variance_amount": "FLOAT NOT NULL DEFAULT 0",
+            "variance_value": "FLOAT NOT NULL DEFAULT 0",
+            "stock_status": "TEXT",
+            "suggested_purchase_amount": "FLOAT NOT NULL DEFAULT 0",
         },
         "inventory_to_purchase": {
             "inventory_item_id": "INTEGER",
             "workstation_slug": "TEXT",
             "quantity_amount": "FLOAT",
             "quantity_unit": "TEXT",
+            "source_type": "TEXT",
+            "source_date": "DATE",
         },
         "job_opening": {
             "salary_display": "TEXT",
@@ -410,6 +427,12 @@ def _ensure_sqlite_schema_columns():
     )
     db.session.execute(
         text("CREATE INDEX IF NOT EXISTS idx_inventory_to_purchase_active_workstation_item ON inventory_to_purchase (active, workstation_slug, inventory_item_id, status)")
+    )
+    db.session.execute(
+        text("CREATE INDEX IF NOT EXISTS idx_inventory_to_purchase_source ON inventory_to_purchase (source_type, source_date, inventory_item_id, active)")
+    )
+    db.session.execute(
+        text("CREATE INDEX IF NOT EXISTS idx_inventory_purchase_date ON inventory_purchase (purchase_date)")
     )
     db.session.execute(
         text("CREATE INDEX IF NOT EXISTS idx_job_opening_status_published ON job_opening (status, published_at)")

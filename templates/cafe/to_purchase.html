@@ -4,7 +4,7 @@
   <div class="split-head" style="align-items:flex-start;gap:1rem;">
     <div>
       <h2>To Purchase</h2>
-      <p class="muted">Quick shared list for kitchen, barista, and support staff. Add what is needed, tick it once purchased, and keep the remaining list easy to scan.</p>
+      <p class="muted">Quick shared list for kitchen, barista, and support staff. Add items manually or refresh deficits automatically from Daily Closing.</p>
       <p><a href="{{ url_for('cafe.inventory', section='dashboard') }}">← Inventory Management</a></p>
     </div>
     <form method="post">
@@ -81,6 +81,7 @@
       </form>
       <div>
         <strong style="{% if row.status == 'purchased' %}text-decoration:line-through;opacity:0.7;{% endif %}">{{ row.item_name }}</strong>
+        {% if row.is_automatic %}<span class="inventory-status deficit">Auto · Closing {{ row.source_date }}</span>{% endif %}
         <div class="muted">{{ row.quantity_display }}</div>
         <div class="muted">{{ row.workstation_name }}</div>
         {% if row.note %}<div class="muted">{{ row.note }}</div>{% endif %}
@@ -138,7 +139,7 @@
     <h4>{{ group.label }}</h4>
     <table>
       <tr><th>Item</th><th>Quantity</th></tr>
-      {% for row in group.items %}<tr><td>{{ row.item_name }}</td><td>{{ "%.3f"|format(row.quantity) }} {{ row.unit }}</td></tr>{% endfor %}
+      {% for row in group["items"] %}<tr><td>{{ row.item_name }}</td><td>{{ "%.3f"|format(row.quantity) }} {{ row.unit }}</td></tr>{% endfor %}
     </table>
     {% else %}<p class="muted">No workstation requests yet.</p>{% endfor %}
   </article>

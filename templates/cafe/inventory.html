@@ -47,13 +47,16 @@
     {% if section == "dashboard" %}
     <section class="panel inventory-card-grid">
       <article class="inventory-kpi"><h4>Total Items</h4><p>{{ inventory_analytics.total_items }}</p></article>
-      <article class="inventory-kpi"><h4>Low Stock</h4><p>{{ inventory_analytics.low_stock_count }}</p></article>
+      <article class="inventory-kpi"><h4>Deficit</h4><p>{{ inventory_analytics.low_stock_count }}</p></article>
+      <article class="inventory-kpi"><h4>Adequate</h4><p>{{ inventory_analytics.adequate_stock_count }}</p></article>
       <article class="inventory-kpi"><h4>Overstock</h4><p>{{ inventory_analytics.overstock_count }}</p></article>
+      <article class="inventory-kpi"><h4>Target Not Set</h4><p>{{ inventory_analytics.unconfigured_stock_count }}</p></article>
       <article class="inventory-kpi"><h4>No Vendor Linked</h4><p>{{ inventory_analytics.unassigned_vendor_count }}</p></article>
       <article class="inventory-kpi"><h4>Stock Value</h4><p>₹{{ "%.2f"|format(inventory_analytics.total_stock_value) }}</p></article>
       <article class="inventory-kpi"><h4>Today Spend</h4><p>₹{{ "%.2f"|format(inventory_analytics.today_purchase_spend) }}</p></article>
       <article class="inventory-kpi"><h4>Today Wastage</h4><p>₹{{ "%.2f"|format(inventory_analytics.today_wastage_value) }}</p></article>
-      <article class="inventory-kpi"><h4>Daily Consumption</h4><p>{{ "%.2f"|format(inventory_analytics.today_consumption) }}</p></article>
+      <article class="inventory-kpi"><h4>Closing Usage Value</h4><p>₹{{ "%.2f"|format(inventory_analytics.closing_consumption_value) }}</p></article>
+      <article class="inventory-kpi"><h4>SOP Expected Value</h4><p>₹{{ "%.2f"|format(inventory_analytics.closing_expected_value) }}</p></article>
       <article class="inventory-kpi"><h4>To Purchase</h4><p>{{ inventory_analytics.to_purchase_count }}</p></article>
     </section>
 
@@ -61,7 +64,7 @@
       <div class="split-head" style="gap:1rem;align-items:flex-start;">
         <div>
           <h3>Quick Inventory Tracking</h3>
-          <p class="muted">Log daily inventory spend in seconds, then review category trends and compare cost against cafe earnings.</p>
+          <p class="muted">Purchases are included automatically. Log only other inventory-related expenses here, then review the complete cost against cafe earnings.</p>
         </div>
         <form method="get" class="grid inventory-inline-form" style="min-width:min(100%, 480px);">
           <input type="hidden" name="section" value="dashboard" />
@@ -115,9 +118,15 @@
           <label>Expense Date <input type="date" name="entry_date" value="{{ closing_date.isoformat() }}" required /></label>
           <label>Transaction Mode
             <select name="transaction_mode" required>
-              <option value="qr">QR</option>
+              <option value="upi">UPI</option>
               <option value="cash">Cash</option>
               <option value="card">Card</option>
+            </select>
+          </label>
+          <label>Money Used
+            <select name="funding_source" required>
+              <option value="cafe_operations">Cafe operations money</option>
+              <option value="owner_personal">Owner's personal money</option>
             </select>
           </label>
           <label>Amount <input type="number" name="amount" min="0" step="0.01" placeholder="0.00" required /></label>
@@ -130,9 +139,13 @@
         <h3>Financial Snapshot</h3>
         <div class="inventory-card-grid">
           <article class="inventory-kpi"><h4>Total Expense</h4><p>₹{{ "%.2f"|format(expense_vs_earning.expense) }}</p></article>
+          <article class="inventory-kpi"><h4>Purchases</h4><p>₹{{ "%.2f"|format(expense_vs_earning.purchase_expense) }}</p></article>
+          <article class="inventory-kpi"><h4>Other Expenses</h4><p>₹{{ "%.2f"|format(expense_vs_earning.manual_expense) }}</p></article>
           <article class="inventory-kpi"><h4>Total Earnings</h4><p>₹{{ "%.2f"|format(expense_vs_earning.revenue) }}</p></article>
           <article class="inventory-kpi"><h4>Net Gap</h4><p>₹{{ "%.2f"|format(expense_vs_earning.difference) }}</p></article>
           <article class="inventory-kpi"><h4>Avg Daily Expense</h4><p>₹{{ "%.2f"|format(average_daily_expense) }}</p></article>
+          <article class="inventory-kpi"><h4>Cafe Funded</h4><p>₹{{ "%.2f"|format(expense_vs_earning.cafe_funded) }}</p></article>
+          <article class="inventory-kpi"><h4>Owner Funded</h4><p>₹{{ "%.2f"|format(expense_vs_earning.owner_funded) }}</p></article>
         </div>
       </article>
     </section>
@@ -149,7 +162,7 @@
     </section>
     <section class="panel">
       <h3>Workstation Financial Detail</h3>
-      <p class="muted">Paid sales and logged inventory expenses for the selected inventory period.</p>
+      <p class="muted">Paid sales compared with purchase invoices and other logged inventory expenses for the selected period.</p>
       <div class="table-scroll">
         <table>
           <tr><th>Workstation</th><th>Paid Sales</th><th>Expenses</th><th>Net</th><th>Expense % of Sales</th></tr>
@@ -167,12 +180,25 @@
         </table>
       </div>
     </section>
+    <section class="inventory-two-col">
+      <article class="panel">
+        <h3>Stock Health</h3>
+        <p class="muted">Each configured item is measured against its adequate quantity with the global ±{{ inventory_settings.stock_tolerance_percent }}% band.</p>
+        <canvas id="inventory-stock-health-chart" height="180"></canvas>
+      </article>
+      <article class="panel">
+        <h3>Physical vs SOP Consumption</h3>
+        <p class="muted">Values use each ingredient's latest purchase price so different units can be compared safely.</p>
+        <canvas id="inventory-efficiency-chart" height="180"></canvas>
+      </article>
+    </section>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.5.0/chart.umd.min.js"></script>
     <script>
       (() => {
         if (!window.Chart) return;
         const financial = {{ workstation_financial_rows|tojson }};
         const purchase = {{ purchase_by_workstation|tojson }};
+        const efficiency = {{ closing_efficiency_timeline|tojson }};
         const colors = ["#6f4a35", "#2d7070", "#d4a574", "#8f6c96", "#4d8b53", "#567fb5"];
         new Chart(document.getElementById("inventory-workstation-financial-chart"), {
           type: "bar",
@@ -188,8 +214,70 @@
           data: {labels: purchase.map(group => group.label), datasets: [{label: "Requested quantity", data: purchaseValues, backgroundColor: colors}]},
           options: {responsive: true, plugins: {legend: {display: false}}, scales: {y: {beginAtZero: true}}}
         });
+        new Chart(document.getElementById("inventory-stock-health-chart"), {
+          type: "doughnut",
+          data: {
+            labels: ["Deficit", "Adequate", "Overstock", "Target not set"],
+            datasets: [{data: [{{ inventory_analytics.low_stock_count }}, {{ inventory_analytics.adequate_stock_count }}, {{ inventory_analytics.overstock_count }}, {{ inventory_analytics.unconfigured_stock_count }}], backgroundColor: ["#c85f4a", "#5b9b72", "#d69a3a", "#9aa6b2"]}]
+          },
+          options: {responsive: true, plugins: {legend: {position: "bottom"}}}
+        });
+        new Chart(document.getElementById("inventory-efficiency-chart"), {
+          type: "line",
+          data: {labels: efficiency.map(row => row.date), datasets: [
+            {label: "Physical use value", data: efficiency.map(row => row.actual_value), borderColor: "#6f4a35", backgroundColor: "#6f4a35", tension: 0.25},
+            {label: "SOP expected value", data: efficiency.map(row => row.expected_value), borderColor: "#4e8f76", backgroundColor: "#4e8f76", tension: 0.25},
+            {label: "Unexplained loss value", data: efficiency.map(row => row.unexplained_value), borderColor: "#c85f4a", backgroundColor: "#c85f4a", tension: 0.25}
+          ]},
+          options: {responsive: true, plugins: {legend: {position: "bottom"}}, scales: {y: {beginAtZero: true}}}
+        });
       })();
     </script>
+
+    <section class="inventory-two-col inventory-main-grid">
+      <article class="panel">
+        <div class="split-head"><div><h3>Restock Recommendations</h3><p class="muted">Deficits are replenished to the adequate target, not merely to the lower boundary.</p></div><a href="{{ url_for('cafe.inventory', section='daily_closing', closing_date=closing_date.isoformat()) }}">Open Closing</a></div>
+        <div class="table-scroll"><table>
+          <tr><th>Item</th><th>Current</th><th>Band</th><th>Buy</th><th>Est. Cost</th></tr>
+          {% for item in low_stock_items[:20] %}{% set band = item_stock_band_map[item.id] %}
+          <tr><td>{{ item.name }}</td><td>{{ band.current }} {{ item.unit }}</td><td>{{ band.lower }}–{{ band.upper }}</td><td><strong>{{ band.suggested_purchase }} {{ item.unit }}</strong></td><td>₹{{ "%.2f"|format(band.suggested_purchase * (item.purchase_price or 0)) }}</td></tr>
+          {% else %}<tr><td colspan="5">No configured item is below its permissible range.</td></tr>{% endfor %}
+        </table></div>
+      </article>
+      <article class="panel">
+        <h3>Overstock Warnings</h3>
+        <p class="muted">Avoid buying these items until stock returns within range, or revise an inadequate target.</p>
+        <div class="table-scroll"><table>
+          <tr><th>Item</th><th>Current</th><th>Upper limit</th><th>Excess</th><th>Coverage</th></tr>
+          {% for item in overstock_items[:20] %}{% set band = item_stock_band_map[item.id] %}{% set coverage = item_coverage_map[item.id] %}
+          <tr><td>{{ item.name }}</td><td>{{ band.current }} {{ item.unit }}</td><td>{{ band.upper }} {{ item.unit }}</td><td>{{ band.excess }} {{ item.unit }}</td><td>{{ coverage.coverage_days if coverage.coverage_days is not none else '-' }} days</td></tr>
+          {% else %}<tr><td colspan="5">No configured item is above its permissible range.</td></tr>{% endfor %}
+        </table></div>
+      </article>
+    </section>
+
+    <section class="inventory-two-col inventory-main-grid">
+      <article class="panel">
+        <h3>Shelf-life &amp; Damage Risk</h3>
+        <p class="muted">Coverage uses the last 30 days of physical closings, falling back to configured average daily usage.</p>
+        <div class="table-scroll"><table>
+          <tr><th>Item</th><th>Daily use</th><th>Coverage</th><th>Shelf life</th><th>Risk</th></tr>
+          {% for row in spoilage_risk_rows %}
+          <tr><td>{{ row.item.name }}</td><td>{{ row.learned_daily_usage }} {{ row.item.unit }}</td><td>{{ row.coverage_days }} days</td><td>{{ row.shelf_life_days }} days</td><td><span class="inventory-status overstock">Likely excess before expiry</span></td></tr>
+          {% else %}<tr><td colspan="5">No shelf-life risk can be identified yet. Configure shelf life and establish closing history.</td></tr>{% endfor %}
+        </table></div>
+      </article>
+      <article class="panel">
+        <h3>Unexplained Consumption</h3>
+        <p class="muted">Physical use minus SOP use minus explicitly logged wastage. Positive values may be staff consumption, unlogged disposal, damage, portion variance, or an incomplete SOP.</p>
+        <div class="table-scroll"><table>
+          <tr><th>Date</th><th>Item</th><th>Physical</th><th>SOP</th><th>Logged waste</th><th>Unexplained</th><th>Value</th></tr>
+          {% for row in closing_variance_rows %}
+          <tr><td>{{ row.date }}</td><td>{{ row.item.name }}</td><td>{{ row.actual }} {{ row.item.unit }}</td><td>{{ row.expected }} {{ row.item.unit }}</td><td>{{ row.explicit_wastage }} {{ row.item.unit }}</td><td class="{% if row.unexplained > 0 %}negative{% else %}positive{% endif %}">{{ row.unexplained }} {{ row.item.unit }}</td><td>₹{{ "%.2f"|format(row.value) }}</td></tr>
+          {% else %}<tr><td colspan="7">No closing variance is recorded for this period.</td></tr>{% endfor %}
+        </table></div>
+      </article>
+    </section>
 
     <section class="inventory-two-col">
       <article class="panel">
@@ -236,22 +324,23 @@
 
     <section class="inventory-two-col">
       <article class="panel">
-        <h3>Recent Inventory Logs</h3>
+        <h3>Unified Expense Ledger</h3>
         <table>
-          <tr><th>Expense Date</th><th>Workstation</th><th>Category</th><th>Vendor</th><th>Mode</th><th>Amount</th><th>Logged By</th><th>Logged At (IST)</th></tr>
+          <tr><th>Date</th><th>Source</th><th>Workstation</th><th>Category</th><th>Vendor</th><th>Mode</th><th>Money Used</th><th>Amount</th><th>Logged By</th></tr>
           {% for row in recent_expense_logs %}
           <tr>
             <td>{{ row.expense_date }}</td>
+            <td>{{ row.source }}</td>
             <td>{{ row.workstation_name }}</td>
             <td>{{ row.category_name }}</td>
             <td>{{ row.vendor_name }}</td>
             <td>{{ row.transaction_mode }}</td>
+            <td>{{ row.funding_source }}</td>
             <td>₹{{ "%.2f"|format(row.amount) }}</td>
             <td>{{ row.logged_by }}</td>
-            <td>{{ row.logged_at_ist }}</td>
           </tr>
           {% else %}
-          <tr><td colspan="8">No inventory expenses logged yet.</td></tr>
+          <tr><td colspan="9">No inventory expenses logged yet.</td></tr>
           {% endfor %}
         </table>
       </article>
@@ -259,7 +348,7 @@
         <h3>Priority Alerts</h3>
         <div class="inventory-alert-list">
           {% for item in low_stock_items[:8] %}
-          <div class="inventory-alert-row low"><strong>{{ item.name }}</strong><span>{{ item.current_amount }} {{ item.unit }} left</span></div>
+          <div class="inventory-alert-row low"><strong>{{ item.name }}</strong><span>{{ item_stock_band_map[item.id].suggested_purchase }} {{ item.unit }} suggested</span></div>
           {% endfor %}
           {% for item in overstock_items[:4] %}
           <div class="inventory-alert-row overstock"><strong>{{ item.name }}</strong><span>{{ item.current_amount }} {{ item.unit }} on hand</span></div>
@@ -273,21 +362,22 @@
     <section class="inventory-two-col">
       <article class="panel">
         <h3>Consumption Drivers</h3>
-        <p class="muted">Latest saved daily-closing consumption compared with each item's expected daily use.</p>
+        <p class="muted">Latest physical closing consumption compared with recipe/SOP consumption from paid sales.</p>
         <div class="table-scroll">
           <table>
-            <tr><th>Item</th><th>Consumed</th><th>Average</th></tr>
+            <tr><th>Item</th><th>Physical</th><th>SOP Expected</th><th>Unexplained</th></tr>
             {% for row in top_consumption_rows %}
-            <tr><td>{{ row.item.name }}</td><td>{{ "%.3f"|format(row.existing.consumed_amount if row.existing else 0) }} {{ row.item.unit }}</td><td>{{ "%.3f"|format(row.item.average_daily_usage or 0) }} {{ row.item.unit }}</td></tr>
-            {% else %}<tr><td colspan="3">No daily closing data yet.</td></tr>{% endfor %}
+            <tr><td>{{ row.item.name }}</td><td>{{ "%.3f"|format(row.metrics.physical_consumption) }} {{ row.item.unit }}</td><td>{{ "%.3f"|format(row.metrics.expected_consumption) }} {{ row.item.unit }}</td><td>{{ "%.3f"|format(row.metrics.unexplained_variance) }} {{ row.item.unit }}</td></tr>
+            {% else %}<tr><td colspan="4">No daily closing data yet.</td></tr>{% endfor %}
           </table>
         </div>
       </article>
       <article class="panel">
         <h3>Operational Risk</h3>
         <div class="inventory-alert-list">
-          <div class="inventory-alert-row low"><strong>Low Stock Items</strong><span>{{ low_stock_items|length }}</span></div>
+          <div class="inventory-alert-row low"><strong>Deficit Items</strong><span>{{ low_stock_items|length }}</span></div>
           <div class="inventory-alert-row overstock"><strong>Overstock Items</strong><span>{{ overstock_items|length }}</span></div>
+          <div class="inventory-alert-row neutral"><strong>Targets Not Set</strong><span>{{ unconfigured_stock_items|length }}</span></div>
           <div class="inventory-alert-row neutral"><strong>Items Without Vendor</strong><span>{{ items_without_vendor|length }}</span></div>
         </div>
       </article>
@@ -353,6 +443,16 @@
           <button type="submit">Load</button>
         </form>
       </div>
+      <p class="muted">Formula: physical use = opening + stock received − closing. Unexplained use = physical use − SOP ingredients for paid sales − explicitly logged wastage.</p>
+      <div class="inventory-card-grid">
+        <article class="inventory-kpi"><h4>Configured</h4><p>{{ closing_summary.configured }}</p></article>
+        <article class="inventory-kpi"><h4>Deficit</h4><p>{{ closing_summary.deficit }}</p></article>
+        <article class="inventory-kpi"><h4>Adequate</h4><p>{{ closing_summary.adequate }}</p></article>
+        <article class="inventory-kpi"><h4>Overstock</h4><p>{{ closing_summary.overstock }}</p></article>
+        <article class="inventory-kpi"><h4>Target Not Set</h4><p>{{ closing_summary.unconfigured }}</p></article>
+        <article class="inventory-kpi"><h4>Suggested Buy Value</h4><p>₹{{ "%.2f"|format(closing_summary.suggested_purchase_value) }}</p></article>
+        <article class="inventory-kpi"><h4>Unexplained Loss Value</h4><p>₹{{ "%.2f"|format(closing_summary.unexplained_wastage_value) }}</p></article>
+      </div>
       <form method="post" class="grid">
         <input type="hidden" name="action" value="daily_closing_save" />
         <input type="hidden" name="closing_date" value="{{ closing_date.isoformat() }}" />
@@ -362,8 +462,8 @@
             <h4>{{ category_name }}</h4>
             <span class="muted">{{ rows|length }} items</span>
           </div>
-          <table>
-            <tr><th>Item</th><th>Opening</th><th>Closing</th><th>Consumed</th><th>Variance</th><th>Note</th></tr>
+          <div class="table-scroll"><table>
+            <tr><th>Item</th><th>Opening + Inbound</th><th>Closing</th><th>Physical / SOP</th><th>Waste &amp; Unexplained</th><th>Stock Band</th><th>Buy</th><th>Note</th></tr>
             {% for row in rows %}
             {% set existing = row.existing %}
             <tr>
@@ -372,20 +472,35 @@
                 <div class="muted">{{ inventory_area_name_map.get((row.item.area or '')|lower, row.item.area or '-') }} | {{ row.item.unit }}</div>
                 <input type="hidden" name="item_id" value="{{ row.item.id }}" />
               </td>
-              <td>{{ "%.3f"|format(row.opening) }}</td>
+              <td>{{ "%.3f"|format(row.opening) }} + {{ "%.3f"|format(row.inbound) }}</td>
               <td><input type="number" step="0.001" min="0" name="closing_stock_{{ row.item.id }}" value="{{ existing.closing_stock if existing else row.item.current_amount }}" /></td>
-              <td>{{ "%.3f"|format(existing.consumed_amount if existing else 0) }}</td>
               <td>
-                {{ "%.3f"|format(existing.variance_amount if existing else 0) }}
+                <strong>{{ "%.3f"|format(row.metrics.physical_consumption) }}</strong> / {{ "%.3f"|format(row.metrics.expected_consumption) }} {{ row.item.unit }}
+                {% for warning in row.unit_warnings %}<div class="muted">{{ warning }}</div>{% endfor %}
+              </td>
+              <td>
+                {{ "%.3f"|format(row.metrics.explicit_wastage) }} logged / <strong>{{ "%.3f"|format(row.metrics.unexplained_variance) }}</strong> unexplained
                 {% if row.variance_warning %}<span class="inventory-status low">Review</span>{% endif %}
               </td>
+              <td>
+                <span class="inventory-status {{ row.band.status }}">{{ row.band.status.replace('_', ' ').title() }}</span>
+                {% if row.band.status != 'unconfigured' %}<div class="muted">{{ row.band.lower }}–{{ row.band.upper }} {{ row.item.unit }}</div>{% endif %}
+              </td>
+              <td>{% if row.band.suggested_purchase > 0 %}<strong>{{ row.band.suggested_purchase }} {{ row.item.unit }}</strong>{% else %}-{% endif %}</td>
               <td><input name="closing_note_{{ row.item.id }}" value="{{ existing.note if existing else '' }}" placeholder="Optional note" /></td>
             </tr>
             {% endfor %}
-          </table>
+          </table></div>
         </div>
         {% endfor %}
-        <button class="inventory-sticky-save" type="submit">Save Daily Closing</button>
+        <label class="inventory-auto-purchase-option"><input type="checkbox" name="auto_add_deficits" value="1" /> After saving, add or refresh every deficit in To Purchase</label>
+        <button class="inventory-sticky-save" type="submit">Save &amp; Analyse Daily Closing</button>
+      </form>
+      <form method="post" class="inventory-inline-form" style="margin-top:0.8rem;">
+        <input type="hidden" name="action" value="add_closing_deficits_to_purchase" />
+        <input type="hidden" name="closing_date" value="{{ closing_date.isoformat() }}" />
+        <button type="submit">Add / Refresh Deficits in To Purchase</button>
+        <a href="{{ url_for('cafe.to_purchase') }}">Review To Purchase →</a>
       </form>
     </section>
     {% endif %}
@@ -419,9 +534,10 @@
           <label>Status
             <select name="status">
               <option value="all" {% if inventory_status_filter == 'all' %}selected{% endif %}>All</option>
-              <option value="healthy" {% if inventory_status_filter == 'healthy' %}selected{% endif %}>Healthy</option>
-              <option value="low" {% if inventory_status_filter == 'low' %}selected{% endif %}>Low Stock</option>
+              <option value="adequate" {% if inventory_status_filter == 'adequate' %}selected{% endif %}>Adequate</option>
+              <option value="deficit" {% if inventory_status_filter == 'deficit' %}selected{% endif %}>Deficit</option>
               <option value="overstock" {% if inventory_status_filter == 'overstock' %}selected{% endif %}>Overstock</option>
+              <option value="unconfigured" {% if inventory_status_filter == 'unconfigured' %}selected{% endif %}>Target Not Set</option>
             </select>
           </label>
           <button type="submit">Apply</button>
@@ -457,6 +573,7 @@
             </select>
           </label>
           <label>Unit <input name="unit" value="{{ inventory_settings.default_unit }}" required /></label>
+          <label>Required Stock <input name="required_amount" type="number" min="0" step="0.001" value="0" /><small>The ±{{ inventory_settings.stock_tolerance_percent }}% range is calculated automatically.</small></label>
           <label>Storage Location <input name="storage_location" /></label>
           <button type="submit">Add Item</button>
         </form>
@@ -499,8 +616,7 @@
           </label>
           <label>Unit <input name="unit" value="{{ selected_item.unit }}" /></label>
           <label>Current Stock <input name="current_amount" type="number" step="0.001" value="{{ selected_item.current_amount }}" /></label>
-          <label>Reorder Level <input name="reorder_level" type="number" step="0.001" value="{{ selected_item.reorder_level }}" /></label>
-          <label>Required Stock <input name="required_amount" type="number" step="0.001" value="{{ selected_item.required_amount }}" /></label>
+          <label>Required Stock <input name="required_amount" type="number" min="0" step="0.001" value="{{ selected_item.required_amount }}" /><small>Deficit below {{ item_stock_band_map[selected_item.id].lower }} and overstock above {{ item_stock_band_map[selected_item.id].upper }} {{ selected_item.unit }}.</small></label>
           <label>Avg Daily Usage <input name="average_daily_usage" type="number" step="0.001" value="{{ selected_item.average_daily_usage }}" /></label>
           <label>Purchase Price <input name="purchase_price" type="number" step="0.01" value="{{ selected_item.purchase_price }}" /></label>
           <label>Shelf Life (days) <input name="shelf_life_days" type="number" value="{{ selected_item.shelf_life_days or '' }}" /></label>
@@ -527,27 +643,41 @@
       </article>
     </section>
     <section class="panel">
-      <div class="split-head"><div><h3>Item &amp; Stock Master</h3><p class="muted">Edit an item to maintain its classification and stock rules. Use adjustments only for documented corrections.</p></div><span class="inventory-badge">{{ filtered_items|length }} shown</span></div>
-      <table>
-        <tr><th>Item</th><th>Area</th><th>Category</th><th>Type</th><th>Current</th><th>Reorder</th><th>Status</th><th>Vendor</th><th>Value</th><th>Open</th></tr>
+      <div class="split-head"><div><h3>Item &amp; Stock Master</h3><p class="muted">Required Stock is maintained manually for now. Save one row immediately or update all shown items together. The permissible range is calculated from the global ±{{ inventory_settings.stock_tolerance_percent }}% rule; closing and usage history will support future recommendations.</p></div><span class="inventory-badge">{{ filtered_items|length }} shown</span></div>
+      <form method="post" class="grid">
+        <input type="hidden" name="action" value="bulk_update_required_stock" />
+        <input type="hidden" name="return_q" value="{{ inventory_search }}" />
+        <input type="hidden" name="return_area" value="{{ inventory_area }}" />
+        <input type="hidden" name="return_category" value="{{ inventory_category_filter }}" />
+        <input type="hidden" name="return_item_type" value="{{ inventory_type_filter }}" />
+        <input type="hidden" name="return_status" value="{{ inventory_status_filter }}" />
+      <div class="table-scroll"><table>
+        <tr><th>Item</th><th>Area</th><th>Category</th><th>Type</th><th>Current Stock</th><th>Unit</th><th>Required Stock</th><th>Permissible Range</th><th>Status</th><th>Coverage</th><th>Vendor</th><th>Value</th><th>Actions</th></tr>
         {% for item in filtered_items %}
-        {% set item_status = item_status_map.get(item.id, 'healthy') %}
+        {% set item_status = item_status_map.get(item.id, 'unconfigured') %}
+        {% set band = item_stock_band_map[item.id] %}
+        {% set coverage = item_coverage_map[item.id] %}
         <tr>
           <td><strong>{{ item.name }}</strong><div class="muted">{{ item.item_code or "-" }}</div></td>
           <td>{{ inventory_area_name_map.get((item.area or '')|lower, item.area or '-') }}</td>
           <td>{{ item_category_display_map.get(item.id) or "-" }}</td>
           <td><span class="inventory-type-badge {{ item.item_type }}">{{ "Perishable" if item.item_type == "perishable" else "Non-perishable" }}</span></td>
-          <td>{{ item.current_amount }} {{ item.unit }}</td>
-          <td>{{ item.reorder_level }} {{ item.unit }}</td>
+          <td>{{ item.current_amount }}</td>
+          <td>{{ item.unit }}</td>
+          <td><input type="hidden" name="adequate_item_id" value="{{ item.id }}" /><input class="inventory-adequate-input" name="adequate_{{ item.id }}" type="number" min="0" step="0.001" value="{{ item.required_amount or 0 }}" aria-label="Required stock for {{ item.name }}" /></td>
+          <td>{% if item_status == 'unconfigured' %}-{% else %}{{ band.lower }}–{{ band.upper }} {{ item.unit }}{% endif %}</td>
           <td><span class="inventory-status {{ item_status }}">{{ item_status.replace('_', ' ').title() }}</span></td>
+          <td>{{ coverage.coverage_days if coverage.coverage_days is not none else '-' }}{% if coverage.coverage_days is not none %} days{% endif %}</td>
           <td>{{ item.vendor.name if item.vendor else "-" }}</td>
           <td>₹{{ "%.2f"|format((item.current_amount or 0) * (item.purchase_price or 0)) }}</td>
-          <td><a href="{{ url_for('cafe.inventory', section='items_stock', edit_item_id=item.id, q=inventory_search, area=inventory_area, category=inventory_category_filter, item_type=inventory_type_filter, status=inventory_status_filter) }}">Edit</a></td>
+          <td class="inventory-stock-actions"><button type="submit" name="save_item_id" value="{{ item.id }}" class="inventory-row-save">Save</button><a href="{{ url_for('cafe.inventory', section='items_stock', edit_item_id=item.id, q=inventory_search, area=inventory_area, category=inventory_category_filter, item_type=inventory_type_filter, status=inventory_status_filter) }}">Edit details</a></td>
         </tr>
         {% else %}
-        <tr><td colspan="10">No items match the current filters.</td></tr>
+        <tr><td colspan="13">No items match the current filters.</td></tr>
         {% endfor %}
-      </table>
+      </table></div>
+      <button type="submit">Save Required Stock for All Shown Items</button>
+      </form>
     </section>
     <section class="panel">
       <div class="split-head">
@@ -668,6 +798,7 @@
     <section class="inventory-two-col">
       <article class="panel">
         <h3>Log Purchase</h3>
+        <p class="muted">Open To Purchase quantities are preselected. Saving the invoice increases stock, includes its cost in the expense dashboard, and completes or reduces the matching requests.</p>
         <form method="post" class="grid">
           <input type="hidden" name="action" value="add_purchase" />
           <div class="grid inventory-form-grid">
@@ -676,14 +807,17 @@
             <label>Invoice # <input name="invoice_number" /></label>
             <label>Tax (GST) <input name="tax_amount" type="number" step="0.01" min="0" value="0" /></label>
             <label>Payment Status <select name="payment_status"><option>pending</option><option>paid</option><option>partial</option></select></label>
+            <label>Payment Mode <select name="payment_mode"><option value="upi">UPI</option><option value="cash">Cash</option><option value="card">Card</option></select></label>
+            <label>Money Used <select name="funding_source"><option value="cafe_operations">Cafe operations money</option><option value="owner_personal">Owner's personal money</option></select></label>
             <label class="full">Note <input name="note" /></label>
           </div>
           <table>
             <tr><th>Item</th><th>Qty</th><th>Unit Price</th></tr>
             {% for item in items %}
+            {% set requested_qty = purchase_prefill_map.get(item.id, 0) %}
             <tr>
-              <td><label><input type="checkbox" name="purchase_item_id" value="{{ item.id }}" /> {{ item.name }}</label></td>
-              <td><input type="number" step="0.001" min="0" name="purchase_qty_{{ item.id }}" /></td>
+              <td><label><input type="checkbox" name="purchase_item_id" value="{{ item.id }}" {% if requested_qty > 0 %}checked{% endif %} /> {{ item.name }}{% if requested_qty > 0 %} <span class="inventory-status deficit">Requested</span>{% endif %}</label></td>
+              <td><input type="number" step="0.001" min="0" name="purchase_qty_{{ item.id }}" value="{{ requested_qty if requested_qty > 0 else '' }}" /></td>
               <td><input type="number" step="0.01" min="0" name="purchase_price_{{ item.id }}" value="{{ item.purchase_price or 0 }}" /></td>
             </tr>
             {% endfor %}
@@ -694,11 +828,11 @@
       <article class="panel">
         <h3>Purchase History</h3>
         <table>
-          <tr><th>Date</th><th>Vendor</th><th>Invoice</th><th>Total</th><th>Status</th></tr>
+          <tr><th>Date</th><th>Vendor</th><th>Invoice</th><th>Total</th><th>Status</th><th>Mode</th><th>Money Used</th><th>Logged By</th></tr>
           {% for p in purchases %}
-          <tr><td>{{ p.purchase_date }}</td><td>{{ p.vendor.name if p.vendor else "-" }}</td><td>{{ p.invoice_number or "-" }}</td><td>₹{{ "%.2f"|format(p.total_amount) }}</td><td>{{ p.payment_status }}</td></tr>
+          <tr><td>{{ p.purchase_date }}</td><td>{{ p.vendor.name if p.vendor else "-" }}</td><td>{{ p.invoice_number or "-" }}</td><td>₹{{ "%.2f"|format(p.total_amount) }}</td><td>{{ p.payment_status }}</td><td>{{ (p.payment_mode or 'upi')|upper }}</td><td>{{ "Owner personal" if p.funding_source == 'owner_personal' else "Cafe operations" }}</td><td>{{ p.created_by.full_name if p.created_by else '-' }}</td></tr>
           {% else %}
-          <tr><td colspan="5">No purchases logged.</td></tr>
+          <tr><td colspan="8">No purchases logged.</td></tr>
           {% endfor %}
         </table>
       </article>
@@ -812,9 +946,9 @@
         </fieldset>
         <fieldset>
           <legend>Stock health rules</legend>
-          <label>Overstock threshold
-            <div class="inventory-input-suffix"><input name="overstock_percent" type="number" min="101" max="500" value="{{ inventory_settings.overstock_percent }}" required /><span>% of required stock</span></div>
-            <small>Low stock still uses each item's reorder level.</small>
+          <label>Permissible range
+            <div class="inventory-input-suffix"><span>±</span><input name="stock_tolerance_percent" type="number" min="0" max="50" value="{{ inventory_settings.stock_tolerance_percent }}" required /><span>% of adequate stock</span></div>
+            <small>At 15%, an adequate quantity of 100 is healthy from 85 through 115. Below 85 is deficit; above 115 is overstock.</small>
           </label>
           <label>Closing variance warning
             <div class="inventory-input-suffix"><input name="variance_warning_percent" type="number" min="0" max="500" value="{{ inventory_settings.variance_warning_percent }}" required /><span>% of average use</span></div>
