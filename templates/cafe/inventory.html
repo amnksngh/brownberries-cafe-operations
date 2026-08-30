@@ -652,11 +652,10 @@
         <input type="hidden" name="return_item_type" value="{{ inventory_type_filter }}" />
         <input type="hidden" name="return_status" value="{{ inventory_status_filter }}" />
       <div class="table-scroll"><table>
-        <tr><th>Item</th><th>Area</th><th>Category</th><th>Type</th><th>Current Stock</th><th>Unit</th><th>Required Stock</th><th>Permissible Range</th><th>Status</th><th>Coverage</th><th>Vendor</th><th>Value</th><th>Actions</th></tr>
+        <tr><th>Item</th><th>Area</th><th>Category</th><th>Type</th><th>Current Stock</th><th>Unit</th><th>Required Stock</th><th>Permissible Range</th><th>Status</th><th>Value</th><th>Actions</th></tr>
         {% for item in filtered_items %}
         {% set item_status = item_status_map.get(item.id, 'unconfigured') %}
         {% set band = item_stock_band_map[item.id] %}
-        {% set coverage = item_coverage_map[item.id] %}
         <tr>
           <td><strong>{{ item.name }}</strong><div class="muted">{{ item.item_code or "-" }}</div></td>
           <td>{{ inventory_area_name_map.get((item.area or '')|lower, item.area or '-') }}</td>
@@ -667,13 +666,11 @@
           <td><input type="hidden" name="adequate_item_id" value="{{ item.id }}" /><input class="inventory-adequate-input" name="adequate_{{ item.id }}" type="number" min="0" step="0.001" value="{{ item.required_amount or 0 }}" aria-label="Required stock for {{ item.name }}" /></td>
           <td>{% if item_status == 'unconfigured' %}-{% else %}{{ band.lower }}–{{ band.upper }} {{ item.unit }}{% endif %}</td>
           <td><span class="inventory-status {{ item_status }}">{{ item_status.replace('_', ' ').title() }}</span></td>
-          <td>{{ coverage.coverage_days if coverage.coverage_days is not none else '-' }}{% if coverage.coverage_days is not none %} days{% endif %}</td>
-          <td>{{ item.vendor.name if item.vendor else "-" }}</td>
           <td>₹{{ "%.2f"|format((item.current_amount or 0) * (item.purchase_price or 0)) }}</td>
           <td class="inventory-stock-actions"><button type="submit" name="save_item_id" value="{{ item.id }}" class="inventory-row-save">Save</button><a href="{{ url_for('cafe.inventory', section='items_stock', edit_item_id=item.id, q=inventory_search, area=inventory_area, category=inventory_category_filter, item_type=inventory_type_filter, status=inventory_status_filter) }}">Edit details</a></td>
         </tr>
         {% else %}
-        <tr><td colspan="13">No items match the current filters.</td></tr>
+        <tr><td colspan="11">No items match the current filters.</td></tr>
         {% endfor %}
       </table></div>
       <button type="submit">Save Required Stock for All Shown Items</button>
