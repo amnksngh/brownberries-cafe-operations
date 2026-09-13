@@ -250,6 +250,14 @@ def _ensure_sqlite_schema_columns():
             "source_type": "TEXT",
             "source_date": "DATE",
         },
+        "reusable_inventory_purchase": {
+            "payment_mode": "TEXT NOT NULL DEFAULT 'upi'",
+            "funding_source": "TEXT NOT NULL DEFAULT 'cafe_operations'",
+            "area_scope_snapshot": "TEXT NOT NULL DEFAULT 'cafe'",
+        },
+        "reusable_inventory_count": {
+            "area_scope_snapshot": "TEXT NOT NULL DEFAULT 'cafe'",
+        },
         "job_opening": {
             "salary_display": "TEXT",
             "vacancies": "INTEGER NOT NULL DEFAULT 1",
@@ -433,6 +441,21 @@ def _ensure_sqlite_schema_columns():
     )
     db.session.execute(
         text("CREATE INDEX IF NOT EXISTS idx_inventory_purchase_date ON inventory_purchase (purchase_date)")
+    )
+    db.session.execute(
+        text("CREATE INDEX IF NOT EXISTS idx_reusable_inventory_asset_scope_name ON reusable_inventory_asset (area_scope, name)")
+    )
+    db.session.execute(
+        text("CREATE INDEX IF NOT EXISTS idx_reusable_inventory_purchase_asset_date ON reusable_inventory_purchase (asset_id, purchase_date)")
+    )
+    db.session.execute(
+        text("CREATE INDEX IF NOT EXISTS idx_reusable_inventory_purchase_scope_date ON reusable_inventory_purchase (area_scope_snapshot, purchase_date)")
+    )
+    db.session.execute(
+        text("CREATE INDEX IF NOT EXISTS idx_reusable_inventory_count_asset_date ON reusable_inventory_count (asset_id, count_date)")
+    )
+    db.session.execute(
+        text("CREATE INDEX IF NOT EXISTS idx_reusable_inventory_count_scope_date ON reusable_inventory_count (area_scope_snapshot, count_date)")
     )
     db.session.execute(
         text("CREATE INDEX IF NOT EXISTS idx_job_opening_status_published ON job_opening (status, published_at)")

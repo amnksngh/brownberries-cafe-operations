@@ -863,6 +863,60 @@ class InventoryToPurchase(TimestampMixin, db.Model):
     closed_by = db.relationship("User", foreign_keys=[closed_by_user_id], backref="closed_inventory_purchase_todos")
 
 
+class ReusableInventoryAsset(TimestampMixin, db.Model):
+    """Reusable serviceware or equipment counted periodically, not consumed by recipes."""
+
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(120), nullable=False)
+    image_url = db.Column(db.String(255), nullable=True)
+    area_scope = db.Column(db.String(100), nullable=False, default="cafe")
+    unit = db.Column(db.String(20), nullable=False, default="pcs")
+    purchased_quantity = db.Column(db.Integer, nullable=False, default=0)
+    current_quantity = db.Column(db.Integer, nullable=False, default=0)
+    average_unit_price = db.Column(db.Float, nullable=False, default=0)
+    active = db.Column(db.Boolean, nullable=False, default=True)
+    note = db.Column(db.String(500), nullable=True)
+
+
+class ReusableInventoryPurchase(TimestampMixin, db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    asset_id = db.Column(db.Integer, db.ForeignKey("reusable_inventory_asset.id"), nullable=False)
+    purchase_date = db.Column(db.Date, nullable=False, default=date.today)
+    quantity = db.Column(db.Integer, nullable=False, default=0)
+    unit_price = db.Column(db.Float, nullable=False, default=0)
+    total_amount = db.Column(db.Float, nullable=False, default=0)
+    area_scope_snapshot = db.Column(db.String(100), nullable=False, default="cafe")
+    payment_mode = db.Column(db.String(20), nullable=False, default="upi")
+    funding_source = db.Column(db.String(30), nullable=False, default="cafe_operations")
+    note = db.Column(db.String(255), nullable=True)
+    created_by_user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=True)
+    asset = db.relationship(
+        "ReusableInventoryAsset",
+        backref=db.backref("purchases", cascade="all, delete-orphan"),
+    )
+    created_by = db.relationship("User", backref="reusable_inventory_purchases")
+
+
+class ReusableInventoryCount(TimestampMixin, db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    asset_id = db.Column(db.Integer, db.ForeignKey("reusable_inventory_asset.id"), nullable=False)
+    count_date = db.Column(db.Date, nullable=False, default=date.today)
+    quantity_before = db.Column(db.Integer, nullable=False, default=0)
+    current_quantity = db.Column(db.Integer, nullable=False, default=0)
+    lost_quantity = db.Column(db.Integer, nullable=False, default=0)
+    recovered_quantity = db.Column(db.Integer, nullable=False, default=0)
+    unit_price_snapshot = db.Column(db.Float, nullable=False, default=0)
+    loss_value = db.Column(db.Float, nullable=False, default=0)
+    area_scope_snapshot = db.Column(db.String(100), nullable=False, default="cafe")
+    note = db.Column(db.String(255), nullable=True)
+    created_by_user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=True)
+    asset = db.relationship(
+        "ReusableInventoryAsset",
+        backref=db.backref("stock_counts", cascade="all, delete-orphan"),
+    )
+    created_by = db.relationship("User", backref="reusable_inventory_counts")
+
+
 class StaffProfile(TimestampMixin, db.Model):
     id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False, unique=True)

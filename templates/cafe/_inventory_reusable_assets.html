@@ -1,0 +1,189 @@
+<section class="panel">
+  <div class="split-head">
+    <div>
+      <h3>Reusable Assets</h3>
+      <p class="muted">Track glasses, cups, plates, cutlery, serviceware, and other reusable items separately from recipe ingredients and consumable stock.</p>
+    </div>
+    <span class="inventory-badge">Weekly physical count</span>
+  </div>
+</section>
+
+<section class="inventory-card-grid">
+  <article class="inventory-kpi"><h4>Item Types</h4><p>{{ reusable_summary.item_types }}</p></article>
+  <article class="inventory-kpi"><h4>Total Purchased</h4><p>{{ reusable_summary.purchased_units }}</p></article>
+  <article class="inventory-kpi"><h4>Currently Usable</h4><p>{{ reusable_summary.current_units }}</p></article>
+  <article class="inventory-kpi"><h4>Lost / Broken</h4><p>{{ reusable_summary.lost_units }}</p></article>
+  <article class="inventory-kpi"><h4>Total Investment</h4><p>₹{{ "%.2f"|format(reusable_summary.investment) }}</p></article>
+  <article class="inventory-kpi"><h4>Current Value</h4><p>₹{{ "%.2f"|format(reusable_summary.current_value) }}</p></article>
+  <article class="inventory-kpi"><h4>Lifetime Loss Value</h4><p>₹{{ "%.2f"|format(reusable_summary.lost_value) }}</p></article>
+  <article class="inventory-kpi {% if reusable_summary.count_due %}inventory-kpi-warning{% endif %}"><h4>Weekly Counts Due</h4><p>{{ reusable_summary.count_due }}</p></article>
+</section>
+
+<section class="inventory-two-col inventory-main-grid">
+  <article class="panel">
+    <h3>Create Reusable Item</h3>
+    <p class="muted">The opening purchase creates the item and its first physical-stock baseline.</p>
+    <form method="post" enctype="multipart/form-data" class="grid inventory-form-grid">
+      <input type="hidden" name="action" value="add_reusable_asset" />
+      <label>Name <input name="name" placeholder="Cappuccino Cup" maxlength="120" required /></label>
+      <label>Image <input name="image_file" type="file" accept="image/jpeg,image/png,image/webp" /><small>JPG, PNG, or WebP.</small></label>
+      <label>Purchase Date <input name="purchase_date" type="date" value="{{ closing_date.isoformat() }}" required /></label>
+      <label>Purchased Quantity <input name="purchased_quantity" type="number" min="1" step="1" required /></label>
+      <label>Unit <input name="unit" value="pcs" maxlength="20" required /></label>
+      <label>Unit Price <input name="unit_price" type="number" min="0" step="0.01" required /></label>
+      <label>Payment Mode <select name="payment_mode" required><option value="upi">UPI</option><option value="cash">Cash</option><option value="card">Card</option></select></label>
+      <label>Money Used <select name="funding_source" required><option value="cafe_operations">Cafe operations money</option><option value="owner_personal">Owner's personal money</option></select></label>
+      <label>Area
+        <select name="area_scope" required>
+          {% for area in reusable_area_options if area.value != 'all' %}<option value="{{ area.value }}" {% if area.value == 'cafe' %}selected{% endif %}>{{ area.label }}</option>{% endfor %}
+        </select>
+      </label>
+      <label class="full">Note <input name="note" placeholder="Brand, size, storage shelf, replacement details..." maxlength="500" /></label>
+      <button type="submit">Create Item &amp; Record Purchase</button>
+    </form>
+  </article>
+
+  <article class="panel">
+    <h3>Record Additional Purchase</h3>
+    <p class="muted">Adds a dated purchase batch, increases usable stock, and recalculates the weighted average unit price.</p>
+    {% if reusable_assets_all %}
+    <form method="post" class="grid inventory-form-grid">
+      <input type="hidden" name="action" value="add_reusable_purchase" />
+      <label>Item
+        <select name="asset_id" required><option value="">Select item</option>{% for asset in reusable_assets_all %}<option value="{{ asset.id }}">{{ asset.name }}</option>{% endfor %}</select>
+      </label>
+      <label>Purchase Date <input name="purchase_date" type="date" value="{{ closing_date.isoformat() }}" required /></label>
+      <label>Quantity <input name="quantity" type="number" min="1" step="1" required /></label>
+      <label>Unit Price <input name="unit_price" type="number" min="0" step="0.01" required /></label>
+      <label>Payment Mode <select name="payment_mode" required><option value="upi">UPI</option><option value="cash">Cash</option><option value="card">Card</option></select></label>
+      <label>Money Used <select name="funding_source" required><option value="cafe_operations">Cafe operations money</option><option value="owner_personal">Owner's personal money</option></select></label>
+      <label class="full">Note <input name="note" placeholder="Invoice, vendor, batch, reason..." maxlength="255" /></label>
+      <button type="submit">Add Purchase Batch</button>
+    </form>
+    {% else %}<p class="muted">Create the first reusable item before recording another purchase.</p>{% endif %}
+  </article>
+</section>
+
+{% if selected_reusable_asset %}
+<section class="panel">
+  <div class="split-head"><div><h3>Edit {{ selected_reusable_asset.name }}</h3><p class="muted">Changing the unit price affects future counts; historic purchase and loss values remain unchanged.</p></div><a href="{{ url_for('cafe.inventory', section='reusable_assets') }}">Close</a></div>
+  <form method="post" enctype="multipart/form-data" class="grid inventory-form-grid">
+    <input type="hidden" name="action" value="update_reusable_asset" />
+    <input type="hidden" name="asset_id" value="{{ selected_reusable_asset.id }}" />
+    <label>Name <input name="name" value="{{ selected_reusable_asset.name }}" maxlength="120" required /></label>
+    <label>Replace Image <input name="image_file" type="file" accept="image/jpeg,image/png,image/webp" /></label>
+    <label>Unit <input name="unit" value="{{ selected_reusable_asset.unit }}" maxlength="20" required /></label>
+    <label>Current Unit Price <input name="unit_price" type="number" min="0" step="0.01" value="{{ selected_reusable_asset.average_unit_price }}" required /></label>
+    <label>Area
+      <select name="area_scope" required>{% for area in reusable_area_options if area.value != 'all' %}<option value="{{ area.value }}" {% if area.value == selected_reusable_asset.area_scope %}selected{% endif %}>{{ area.label }}</option>{% endfor %}</select>
+    </label>
+    <label class="full">Note <input name="note" value="{{ selected_reusable_asset.note or '' }}" maxlength="500" /></label>
+    <button type="submit">Save Item Details</button>
+  </form>
+</section>
+{% endif %}
+
+<section class="panel">
+  <div class="split-head">
+    <div><h3>Reusable Item Register</h3><p class="muted">Filter by ownership area or by purchase-batch date. Open “Weekly count” in any row to update its physical quantity.</p></div>
+    <span class="inventory-badge">{{ reusable_asset_rows|length }} shown</span>
+  </div>
+  <form method="get" class="grid inventory-filter-bar">
+    <input type="hidden" name="section" value="reusable_assets" />
+    <label>Search <input name="reusable_q" value="{{ reusable_search }}" placeholder="Item name" /></label>
+    <label>Area <select name="reusable_area">{% for area in reusable_area_options %}<option value="{{ area.value }}" {% if area.value == reusable_area_filter %}selected{% endif %}>{{ area.label }}</option>{% endfor %}</select></label>
+    <label>Purchased From <input name="purchase_from" type="date" value="{{ reusable_purchase_from.isoformat() if reusable_purchase_from else '' }}" /></label>
+    <label>Purchased To <input name="purchase_to" type="date" value="{{ reusable_purchase_to.isoformat() if reusable_purchase_to else '' }}" /></label>
+    <button type="submit">Apply Filters</button>
+    <a class="button-link inventory-filter-clear" href="{{ url_for('cafe.inventory', section='reusable_assets') }}">Clear</a>
+  </form>
+  <div class="table-scroll">
+    <table class="reusable-asset-table">
+      <tr><th>Item</th><th>Area</th><th>Purchased</th><th>Current</th><th>Lost / Unusable</th><th>Unit Price</th><th>Investment</th><th>Purchase Dates</th><th>Last Count</th><th>Actions</th></tr>
+      {% for row in reusable_asset_rows %}
+      <tr>
+        <td><div class="reusable-item-identity">{% if row.asset.image_url %}<img src="{{ row.asset.image_url }}" alt="{{ row.asset.name }}" loading="lazy" />{% else %}<span class="reusable-image-placeholder" aria-hidden="true">☕</span>{% endif %}<div><strong>{{ row.asset.name }}</strong><div class="muted">{{ row.asset.unit }}</div></div></div></td>
+        <td>{{ row.area_label }}</td>
+        <td>{{ row.composition.purchased }} {{ row.asset.unit }}<div class="muted">{{ row.purchase_count }} batch{% if row.purchase_count != 1 %}es{% endif %}</div></td>
+        <td><strong class="inventory-positive">{{ row.composition.current }}</strong> {{ row.asset.unit }}</td>
+        <td><strong class="inventory-negative">{{ row.composition.lost }}</strong> {{ row.asset.unit }}<div class="muted">₹{{ "%.2f"|format(row.lost_value) }}</div></td>
+        <td>₹{{ "%.2f"|format(row.asset.average_unit_price) }}</td>
+        <td>₹{{ "%.2f"|format(row.investment) }}</td>
+        <td>{{ row.first_purchase_date.strftime('%d %b %Y') if row.first_purchase_date else '-' }}{% if row.last_purchase_date and row.last_purchase_date != row.first_purchase_date %}<div class="muted">Latest {{ row.last_purchase_date.strftime('%d %b %Y') }}</div>{% endif %}</td>
+        <td>{% if row.last_count %}{{ row.last_count.count_date.strftime('%d %b %Y') }}{% else %}Never{% endif %}{% if row.count_due %}<div><span class="inventory-status deficit">Due</span></div>{% endif %}</td>
+        <td class="reusable-actions">
+          <a href="{{ url_for('cafe.inventory', section='reusable_assets', edit_asset_id=row.asset.id) }}">Edit</a>
+          <details>
+            <summary>Weekly count</summary>
+            <form method="post" class="grid reusable-count-form">
+              <input type="hidden" name="action" value="count_reusable_asset" />
+              <input type="hidden" name="asset_id" value="{{ row.asset.id }}" />
+              <label>Date <input name="count_date" type="date" value="{{ closing_date.isoformat() }}" required /></label>
+              <label>Physical Stock <input name="current_quantity" type="number" min="0" max="{{ row.composition.purchased }}" step="1" value="{{ row.composition.current }}" required /></label>
+              <label>Note <input name="note" placeholder="Broken, missing, moved..." maxlength="255" /></label>
+              <button type="submit">Save Count</button>
+            </form>
+          </details>
+        </td>
+      </tr>
+      {% else %}<tr><td colspan="10">No reusable items match these filters.</td></tr>{% endfor %}
+    </table>
+  </div>
+</section>
+
+<section class="panel">
+  <div class="split-head"><div><h3>Usable vs Lost Stock</h3><p class="muted">Every horizontal bar equals 100% of the quantity ever purchased for that item. Green is currently usable; red is broken, lost, or otherwise unavailable.</p></div></div>
+  {% if reusable_composition_chart %}
+  <div class="reusable-native-chart reusable-composition-bars" role="img" aria-label="Usable and lost reusable inventory percentages by item">
+    {% for row in reusable_composition_chart %}
+    <div class="reusable-native-chart-row">
+      <strong title="{{ row.name }}">{{ row.name }}</strong>
+      <div class="reusable-percent-track" aria-label="{{ row.current_percent }} percent usable and {{ row.lost_percent }} percent lost">
+        <span class="usable" style="width:{{ row.current_percent }}%" title="Usable: {{ row.current }} of {{ row.purchased }}"></span>
+        <span class="lost" style="width:{{ row.lost_percent }}%" title="Lost or unusable: {{ row.lost }} of {{ row.purchased }}"></span>
+      </div>
+      <span>{{ row.current }} / {{ row.purchased }}</span>
+    </div>
+    {% endfor %}
+    <div class="reusable-native-chart-axis"><span>0%</span><span>25%</span><span>50%</span><span>75%</span><span>100%</span></div>
+    <div class="reusable-chart-legend"><span><i class="usable"></i>Currently usable</span><span><i class="lost"></i>Broken / lost / unusable</span></div>
+  </div>
+  {% else %}<p class="muted">Create reusable items to see the stock-composition chart.</p>{% endif %}
+</section>
+
+<section class="panel">
+  <div class="split-head"><div><h3>Loss Value Analysis</h3><p class="muted">Shows money lost from weekly count events during the selected duration. Filter one product, all products, or one cafe area/group.</p></div></div>
+  <form method="get" class="grid inventory-filter-bar">
+    <input type="hidden" name="section" value="reusable_assets" />
+    <label>From <input name="loss_from" type="date" value="{{ reusable_loss_from.isoformat() }}" required /></label>
+    <label>To <input name="loss_to" type="date" value="{{ reusable_loss_to.isoformat() }}" required /></label>
+    <label>Product <select name="loss_asset_id"><option value="0">All products</option>{% for asset in reusable_assets_all %}<option value="{{ asset.id }}" {% if reusable_loss_asset_id == asset.id %}selected{% endif %}>{{ asset.name }}</option>{% endfor %}</select></label>
+    <label>Area <select name="loss_area">{% for area in reusable_area_options %}<option value="{{ area.value }}" {% if area.value == reusable_loss_area %}selected{% endif %}>{{ area.label }}</option>{% endfor %}</select></label>
+    <button type="submit">Analyse Loss</button>
+  </form>
+  <div class="inventory-card-grid">
+    <article class="inventory-kpi"><h4>Money Lost</h4><p>₹{{ "%.2f"|format(reusable_loss_summary.loss_value) }}</p></article>
+    <article class="inventory-kpi"><h4>Units Lost</h4><p>{{ reusable_loss_summary.lost_units }}</p></article>
+    <article class="inventory-kpi"><h4>Units Recovered</h4><p>{{ reusable_loss_summary.recovered_units }}</p></article>
+    <article class="inventory-kpi"><h4>Count Events</h4><p>{{ reusable_loss_summary.count_events }}</p></article>
+  </div>
+  {% if reusable_loss_chart %}
+  <div class="reusable-native-chart reusable-loss-bars" role="img" aria-label="Money lost by reusable inventory item">
+    {% for row in reusable_loss_chart %}
+    <div class="reusable-native-chart-row">
+      <strong title="{{ row.name }}">{{ row.name }}</strong>
+      <div class="reusable-loss-track"><span style="width:{{ row.bar_percent }}%"></span></div>
+      <span>₹{{ "%.2f"|format(row.loss_value) }}</span>
+    </div>
+    {% endfor %}
+  </div>
+  {% else %}<p class="muted">No loss was recorded for the selected filters.</p>{% endif %}
+</section>
+
+<section class="panel">
+  <h3>Weekly Count History</h3>
+  <div class="table-scroll"><table>
+    <tr><th>Date</th><th>Item</th><th>Before</th><th>Counted</th><th>Lost</th><th>Recovered</th><th>Loss Value</th><th>Area</th><th>Counted By</th><th>Note</th></tr>
+    {% for count in reusable_loss_counts %}<tr><td>{{ count.count_date.strftime('%d %b %Y') }}</td><td>{{ count.asset.name if count.asset else '-' }}</td><td>{{ count.quantity_before }}</td><td>{{ count.current_quantity }}</td><td>{{ count.lost_quantity }}</td><td>{{ count.recovered_quantity }}</td><td>₹{{ "%.2f"|format(count.loss_value) }}</td><td>{{ reusable_area_labels.get(count.area_scope_snapshot or (count.asset.area_scope if count.asset else 'cafe'), 'Entire Cafe') }}</td><td>{{ count.created_by.full_name if count.created_by else '-' }}</td><td>{{ count.note or '-' }}</td></tr>{% else %}<tr><td colspan="10">No count history for the selected duration.</td></tr>{% endfor %}
+  </table></div>
+</section>

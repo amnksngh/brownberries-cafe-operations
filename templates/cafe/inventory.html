@@ -34,6 +34,7 @@
   <aside class="inventory-sidebar panel">
     <a href="{{ url_for('cafe.inventory', section='dashboard') }}" class="{% if section=='dashboard' %}active{% endif %}">Overview</a>
     <a href="{{ url_for('cafe.inventory', section='items_stock') }}" class="{% if section=='items_stock' %}active{% endif %}">Items &amp; Stock</a>
+    <a href="{{ url_for('cafe.inventory', section='reusable_assets') }}" class="{% if section=='reusable_assets' %}active{% endif %}">Reusable Assets</a>
     <a href="{{ url_for('cafe.inventory', section='purchases') }}" class="{% if section=='purchases' %}active{% endif %}">Purchases</a>
     <a href="{{ url_for('cafe.inventory', section='vendors') }}" class="{% if section=='vendors' %}active{% endif %}">Vendors</a>
     <a href="{{ url_for('cafe.to_purchase') }}">To Purchase ↗</a>
@@ -139,7 +140,8 @@
         <h3>Financial Snapshot</h3>
         <div class="inventory-card-grid">
           <article class="inventory-kpi"><h4>Total Expense</h4><p>₹{{ "%.2f"|format(expense_vs_earning.expense) }}</p></article>
-          <article class="inventory-kpi"><h4>Purchases</h4><p>₹{{ "%.2f"|format(expense_vs_earning.purchase_expense) }}</p></article>
+          <article class="inventory-kpi"><h4>Stock Purchases</h4><p>₹{{ "%.2f"|format(expense_vs_earning.stock_purchase_expense) }}</p></article>
+          <article class="inventory-kpi"><h4>Reusable Assets</h4><p>₹{{ "%.2f"|format(expense_vs_earning.reusable_purchase_expense) }}</p></article>
           <article class="inventory-kpi"><h4>Other Expenses</h4><p>₹{{ "%.2f"|format(expense_vs_earning.manual_expense) }}</p></article>
           <article class="inventory-kpi"><h4>Total Earnings</h4><p>₹{{ "%.2f"|format(expense_vs_earning.revenue) }}</p></article>
           <article class="inventory-kpi"><h4>Net Gap</h4><p>₹{{ "%.2f"|format(expense_vs_earning.difference) }}</p></article>
@@ -920,6 +922,10 @@
         </table>
       </article>
     </section>
+    {% endif %}
+
+    {% if section == "reusable_assets" %}
+      {% include "cafe/_inventory_reusable_assets.html" %}
     {% endif %}
 
     {% if section == "settings" %}

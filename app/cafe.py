@@ -10,7 +10,7 @@ from uuid import uuid4
 from zoneinfo import ZoneInfo
 
 import qrcode
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFont, ImageOps
 from flask import Blueprint, Response, current_app, flash, g, jsonify, redirect, render_template, request, session, url_for
 from openpyxl import Workbook
 from sqlalchemy.orm import joinedload
@@ -38,6 +38,11 @@ from .inventory_control import (
     convert_quantity,
     coverage_metrics,
     stock_band,
+)
+from .reusable_inventory import (
+    reusable_count_change,
+    reusable_stock_composition,
+    weighted_average_unit_price,
 )
 from .leave_logic import (
     apply_leave_decision,
@@ -77,6 +82,9 @@ from .models import (
     InventoryToPurchase,
     InventoryVendor,
     InventoryWastage,
+    ReusableInventoryAsset,
+    ReusableInventoryCount,
+    ReusableInventoryPurchase,
     MenuCategory,
     MenuItem,
     MenuNavGroup,
@@ -279,6 +287,48 @@ def _inventory_area_options(include_all: bool = False) -> list[dict]:
         options.append({"value": station.slug, "label": station.name})
     options.append({"value": "cafe", "label": "Cafe"})
     return options
+
+
+def _reusable_area_options(include_all: bool = False) -> list[dict]:
+    options = []
+    if include_all:
+        options.append({"value": "all", "label": "All areas", "kind": "all"})
+    options.append({"value": "cafe", "label": "Entire Cafe", "kind": "cafe"})
+    for group in _all_workstation_groups(include_inactive=True):
+        options.append(
+            {
+                "value": f"group:{group.slug}",
+                "label": f"Group · {group.name}",
+                "kind": "group",
+            }
+        )
+    for station in _all_workstations(include_inactive=True):
+        options.append(
+            {
+                "value": f"station:{station.slug}",
+                "label": station.name,
+                "kind": "station",
+            }
+        )
+    return options
+
+
+def _normalize_reusable_area(value: str | None, default: str = "cafe") -> str:
+    raw = (value or default or "cafe").strip().lower()
+    allowed = {row["value"] for row in _reusable_area_options(include_all=False)}
+    return raw if raw in allowed else "cafe"
+
+
+def _reusable_area_label(value: str | None) -> str:
+    normalized = (value or "cafe").strip().lower()
+    return next(
+        (
+            row["label"]
+            for row in _reusable_area_options(include_all=False)
+            if row["value"] == normalized
+        ),
+        "Entire Cafe",
+    )
 
 
 def _inventory_area_name_map() -> dict[str, str]:
@@ -1412,6 +1462,25 @@ def _save_menu_image(file_obj):
     except Exception:
         return None
     return f"/static/uploads/menu/{filename}"
+
+
+def _save_reusable_asset_image(file_obj):
+    if not file_obj or not file_obj.filename:
+        return None
+    ext = os.path.splitext(secure_filename(file_obj.filename))[1].lower()
+    if ext not in {".jpg", ".jpeg", ".png", ".webp"}:
+        return None
+    filename = f"reusable-{uuid4().hex[:12]}.webp"
+    folder = os.path.join(current_app.static_folder, "uploads", "inventory-reusable")
+    os.makedirs(folder, exist_ok=True)
+    full_path = os.path.join(folder, filename)
+    try:
+        image = ImageOps.exif_transpose(Image.open(file_obj.stream)).convert("RGB")
+        image.thumbnail((900, 900))
+        image.save(full_path, format="WEBP", quality=80, optimize=True, method=6)
+    except Exception:
+        return None
+    return f"/static/uploads/inventory-reusable/{filename}"
 
 
 def _get_or_create_other_category():
@@ -5965,6 +6034,16 @@ def _inventory_date(raw_value: str | None, default: date | None = None) -> date:
         return fallback
 
 
+def _optional_inventory_date(raw_value: str | None) -> date | None:
+    value = (raw_value or "").strip()
+    if not value:
+        return None
+    try:
+        return date.fromisoformat(value)
+    except ValueError:
+        return None
+
+
 def _normalize_inventory_workstation_slug(raw_value: str | None) -> str:
     """Return a valid workstation slug or the shared unassigned bucket."""
     slug = (raw_value or "").strip().lower() or "unassigned"
@@ -6384,6 +6463,7 @@ def _normalize_inventory_section(raw_value: str | None) -> str:
         "vendors",
         "daily_closing",
         "wastage",
+        "reusable_assets",
         "audit",
         "settings",
     }
@@ -6776,6 +6856,242 @@ def inventory():
 
     if request.method == "POST":
         action = (request.form.get("action") or "").strip().lower()
+        if action == "add_reusable_asset":
+            name = (request.form.get("name") or "").strip()
+            purchased_quantity = max(
+                0, _safe_int(request.form.get("purchased_quantity"), 0)
+            )
+            unit_price = max(0.0, _safe_float(request.form.get("unit_price"), 0))
+            purchase_date = _inventory_date(request.form.get("purchase_date"))
+            unit = (request.form.get("unit") or "pcs").strip()[:20] or "pcs"
+            payment_mode = (request.form.get("payment_mode") or "upi").strip().lower()
+            if payment_mode not in {"cash", "card", "upi"}:
+                payment_mode = "upi"
+            funding_source = (request.form.get("funding_source") or "cafe_operations").strip().lower()
+            if funding_source not in {"cafe_operations", "owner_personal"}:
+                funding_source = "cafe_operations"
+            if not name:
+                flash("Reusable item name is required.", "error")
+                return redirect(url_for("cafe.inventory", section="reusable_assets"))
+            if purchased_quantity <= 0:
+                flash("Purchased quantity must be greater than zero.", "error")
+                return redirect(url_for("cafe.inventory", section="reusable_assets"))
+            if purchase_date > date.today():
+                flash("Purchase date cannot be in the future.", "error")
+                return redirect(url_for("cafe.inventory", section="reusable_assets"))
+            duplicate = ReusableInventoryAsset.query.filter(
+                db.func.lower(ReusableInventoryAsset.name) == name.lower(),
+                ReusableInventoryAsset.active.is_(True),
+            ).first()
+            if duplicate:
+                flash("This reusable item already exists. Add a purchase batch instead.", "error")
+                return redirect(
+                    url_for(
+                        "cafe.inventory",
+                        section="reusable_assets",
+                        edit_asset_id=duplicate.id,
+                    )
+                )
+            image_file = request.files.get("image_file")
+            image_url = _save_reusable_asset_image(image_file)
+            if image_file and image_file.filename and not image_url:
+                flash("Use a valid JPG, PNG, or WebP image.", "error")
+                return redirect(url_for("cafe.inventory", section="reusable_assets"))
+            actor_id = g.current_user.id if g.current_user else None
+            asset = ReusableInventoryAsset(
+                name=name,
+                image_url=image_url,
+                area_scope=_normalize_reusable_area(request.form.get("area_scope")),
+                unit=unit,
+                purchased_quantity=purchased_quantity,
+                current_quantity=purchased_quantity,
+                average_unit_price=round(unit_price, 2),
+                note=(request.form.get("note") or "").strip() or None,
+                active=True,
+            )
+            db.session.add(asset)
+            db.session.flush()
+            db.session.add(
+                ReusableInventoryPurchase(
+                    asset_id=asset.id,
+                    purchase_date=purchase_date,
+                    quantity=purchased_quantity,
+                    unit_price=round(unit_price, 2),
+                    total_amount=round(purchased_quantity * unit_price, 2),
+                    area_scope_snapshot=asset.area_scope,
+                    payment_mode=payment_mode,
+                    funding_source=funding_source,
+                    note="Initial purchase",
+                    created_by_user_id=actor_id,
+                )
+            )
+            db.session.add(
+                ReusableInventoryCount(
+                    asset_id=asset.id,
+                    count_date=purchase_date,
+                    quantity_before=purchased_quantity,
+                    current_quantity=purchased_quantity,
+                    lost_quantity=0,
+                    recovered_quantity=0,
+                    unit_price_snapshot=round(unit_price, 2),
+                    loss_value=0,
+                    area_scope_snapshot=asset.area_scope,
+                    note="Opening purchase count",
+                    created_by_user_id=actor_id,
+                )
+            )
+            db.session.commit()
+            flash("Reusable item and opening purchase recorded.", "success")
+            return redirect(url_for("cafe.inventory", section="reusable_assets"))
+
+        if action == "update_reusable_asset":
+            asset = ReusableInventoryAsset.query.get_or_404(
+                _safe_int(request.form.get("asset_id"), 0)
+            )
+            name = (request.form.get("name") or "").strip()
+            if not name:
+                flash("Reusable item name is required.", "error")
+                return redirect(
+                    url_for("cafe.inventory", section="reusable_assets", edit_asset_id=asset.id)
+                )
+            duplicate = ReusableInventoryAsset.query.filter(
+                db.func.lower(ReusableInventoryAsset.name) == name.lower(),
+                ReusableInventoryAsset.id != asset.id,
+                ReusableInventoryAsset.active.is_(True),
+            ).first()
+            if duplicate:
+                flash("Another reusable item already uses this name.", "error")
+                return redirect(
+                    url_for("cafe.inventory", section="reusable_assets", edit_asset_id=asset.id)
+                )
+            image_file = request.files.get("image_file")
+            image_url = _save_reusable_asset_image(image_file)
+            if image_file and image_file.filename and not image_url:
+                flash("Use a valid JPG, PNG, or WebP image.", "error")
+                return redirect(
+                    url_for("cafe.inventory", section="reusable_assets", edit_asset_id=asset.id)
+                )
+            asset.name = name
+            asset.area_scope = _normalize_reusable_area(request.form.get("area_scope"))
+            asset.unit = (request.form.get("unit") or asset.unit or "pcs").strip()[:20] or "pcs"
+            asset.average_unit_price = round(
+                max(0.0, _safe_float(request.form.get("unit_price"), asset.average_unit_price or 0)),
+                2,
+            )
+            asset.note = (request.form.get("note") or "").strip() or None
+            if image_url:
+                asset.image_url = image_url
+            db.session.commit()
+            flash("Reusable item details updated.", "success")
+            return redirect(
+                url_for("cafe.inventory", section="reusable_assets", edit_asset_id=asset.id)
+            )
+
+        if action == "add_reusable_purchase":
+            asset = ReusableInventoryAsset.query.get_or_404(
+                _safe_int(request.form.get("asset_id"), 0)
+            )
+            quantity = max(0, _safe_int(request.form.get("quantity"), 0))
+            unit_price = max(0.0, _safe_float(request.form.get("unit_price"), 0))
+            purchase_date = _inventory_date(request.form.get("purchase_date"))
+            payment_mode = (request.form.get("payment_mode") or "upi").strip().lower()
+            if payment_mode not in {"cash", "card", "upi"}:
+                payment_mode = "upi"
+            funding_source = (request.form.get("funding_source") or "cafe_operations").strip().lower()
+            if funding_source not in {"cafe_operations", "owner_personal"}:
+                funding_source = "cafe_operations"
+            if quantity <= 0:
+                flash("Purchase quantity must be greater than zero.", "error")
+                return redirect(url_for("cafe.inventory", section="reusable_assets"))
+            if purchase_date > date.today():
+                flash("Purchase date cannot be in the future.", "error")
+                return redirect(url_for("cafe.inventory", section="reusable_assets"))
+            latest_count_date = db.session.query(
+                db.func.max(ReusableInventoryCount.count_date)
+            ).filter(ReusableInventoryCount.asset_id == asset.id).scalar()
+            if latest_count_date and purchase_date < latest_count_date:
+                flash("Purchase date cannot be earlier than the latest physical count.", "error")
+                return redirect(url_for("cafe.inventory", section="reusable_assets"))
+            previous_purchased = int(asset.purchased_quantity or 0)
+            asset.average_unit_price = weighted_average_unit_price(
+                previous_purchased,
+                asset.average_unit_price,
+                quantity,
+                unit_price,
+            )
+            asset.purchased_quantity = previous_purchased + quantity
+            asset.current_quantity = int(asset.current_quantity or 0) + quantity
+            db.session.add(
+                ReusableInventoryPurchase(
+                    asset_id=asset.id,
+                    purchase_date=purchase_date,
+                    quantity=quantity,
+                    unit_price=round(unit_price, 2),
+                    total_amount=round(quantity * unit_price, 2),
+                    area_scope_snapshot=asset.area_scope,
+                    payment_mode=payment_mode,
+                    funding_source=funding_source,
+                    note=(request.form.get("note") or "").strip() or None,
+                    created_by_user_id=g.current_user.id if g.current_user else None,
+                )
+            )
+            db.session.commit()
+            flash("Additional reusable-item purchase recorded.", "success")
+            return redirect(url_for("cafe.inventory", section="reusable_assets"))
+
+        if action == "count_reusable_asset":
+            asset = ReusableInventoryAsset.query.get_or_404(
+                _safe_int(request.form.get("asset_id"), 0)
+            )
+            count_date = _inventory_date(request.form.get("count_date"))
+            current_quantity = max(
+                0, _safe_int(request.form.get("current_quantity"), 0)
+            )
+            if count_date > date.today():
+                flash("Count date cannot be in the future.", "error")
+                return redirect(url_for("cafe.inventory", section="reusable_assets"))
+            if current_quantity > int(asset.purchased_quantity or 0):
+                flash("Current stock cannot exceed the total quantity purchased.", "error")
+                return redirect(url_for("cafe.inventory", section="reusable_assets"))
+            latest_purchase_date = db.session.query(
+                db.func.max(ReusableInventoryPurchase.purchase_date)
+            ).filter(ReusableInventoryPurchase.asset_id == asset.id).scalar()
+            latest_count_date = db.session.query(
+                db.func.max(ReusableInventoryCount.count_date)
+            ).filter(ReusableInventoryCount.asset_id == asset.id).scalar()
+            latest_activity_date = max(
+                [value for value in (latest_purchase_date, latest_count_date) if value],
+                default=None,
+            )
+            if latest_activity_date and count_date < latest_activity_date:
+                flash("Count date cannot be earlier than the latest purchase or count.", "error")
+                return redirect(url_for("cafe.inventory", section="reusable_assets"))
+            quantity_before = int(asset.current_quantity or 0)
+            metrics = reusable_count_change(
+                quantity_before,
+                current_quantity,
+                asset.average_unit_price,
+            )
+            row = ReusableInventoryCount(
+                asset_id=asset.id,
+                count_date=count_date,
+                created_by_user_id=g.current_user.id if g.current_user else None,
+            )
+            for key, value in metrics.items():
+                setattr(row, key, value)
+            row.unit_price_snapshot = round(float(asset.average_unit_price or 0), 2)
+            row.area_scope_snapshot = asset.area_scope
+            row.note = (request.form.get("note") or "").strip() or None
+            db.session.add(row)
+            asset.current_quantity = current_quantity
+            db.session.commit()
+            flash(
+                f"Weekly count saved: {metrics['lost_quantity']} lost, "
+                f"{metrics['recovered_quantity']} recovered.",
+                "success",
+            )
+            return redirect(url_for("cafe.inventory", section="reusable_assets"))
+
         if action == "log_expense":
             category_id = _safe_int(request.form.get("category_id"), 0)
             vendor_id = _safe_int(request.form.get("vendor_id"), 0) or None
@@ -7409,6 +7725,235 @@ def inventory():
     ]
     vendors = InventoryVendor.query.filter_by(active=True).order_by(InventoryVendor.name.asc()).all()
     items = InventoryItem.query.order_by(InventoryItem.category_name.asc(), InventoryItem.name.asc()).all()
+
+    reusable_area_options = _reusable_area_options(include_all=True)
+    reusable_area_labels = {
+        row["value"]: row["label"]
+        for row in _reusable_area_options(include_all=False)
+    }
+    reusable_area_filter = (request.args.get("reusable_area") or "all").strip().lower()
+    if reusable_area_filter not in {row["value"] for row in reusable_area_options}:
+        reusable_area_filter = "all"
+    reusable_search = (request.args.get("reusable_q") or "").strip()
+    reusable_purchase_from = _optional_inventory_date(
+        request.args.get("purchase_from")
+    )
+    reusable_purchase_to = _optional_inventory_date(request.args.get("purchase_to"))
+    if (
+        reusable_purchase_from
+        and reusable_purchase_to
+        and reusable_purchase_to < reusable_purchase_from
+    ):
+        reusable_purchase_from, reusable_purchase_to = (
+            reusable_purchase_to,
+            reusable_purchase_from,
+        )
+    reusable_query = ReusableInventoryAsset.query.filter_by(active=True)
+    if reusable_search:
+        reusable_query = reusable_query.filter(
+            ReusableInventoryAsset.name.ilike(f"%{reusable_search}%")
+        )
+    if reusable_area_filter != "all":
+        reusable_query = reusable_query.filter(
+            ReusableInventoryAsset.area_scope == reusable_area_filter
+        )
+    if reusable_purchase_from or reusable_purchase_to:
+        reusable_query = reusable_query.join(ReusableInventoryPurchase)
+        if reusable_purchase_from:
+            reusable_query = reusable_query.filter(
+                ReusableInventoryPurchase.purchase_date >= reusable_purchase_from
+            )
+        if reusable_purchase_to:
+            reusable_query = reusable_query.filter(
+                ReusableInventoryPurchase.purchase_date <= reusable_purchase_to
+            )
+        reusable_query = reusable_query.distinct()
+    reusable_assets = reusable_query.order_by(
+        ReusableInventoryAsset.name.asc()
+    ).all()
+    reusable_asset_ids = [row.id for row in reusable_assets]
+    reusable_purchase_rows = (
+        ReusableInventoryPurchase.query.filter(
+            ReusableInventoryPurchase.asset_id.in_(reusable_asset_ids)
+        )
+        .order_by(
+            ReusableInventoryPurchase.purchase_date.asc(),
+            ReusableInventoryPurchase.id.asc(),
+        )
+        .all()
+        if reusable_asset_ids
+        else []
+    )
+    reusable_purchase_dates: dict[int, list[date]] = {}
+    reusable_purchase_count_map: dict[int, int] = {}
+    reusable_investment_map: dict[int, float] = {}
+    for purchase in reusable_purchase_rows:
+        reusable_purchase_dates.setdefault(purchase.asset_id, []).append(
+            purchase.purchase_date
+        )
+        reusable_purchase_count_map[purchase.asset_id] = (
+            reusable_purchase_count_map.get(purchase.asset_id, 0) + 1
+        )
+        reusable_investment_map[purchase.asset_id] = round(
+            reusable_investment_map.get(purchase.asset_id, 0.0)
+            + float(purchase.total_amount or 0),
+            2,
+        )
+    reusable_count_rows = (
+        ReusableInventoryCount.query.options(
+            joinedload(ReusableInventoryCount.asset),
+            joinedload(ReusableInventoryCount.created_by),
+        )
+        .filter(ReusableInventoryCount.asset_id.in_(reusable_asset_ids))
+        .order_by(
+            ReusableInventoryCount.count_date.desc(),
+            ReusableInventoryCount.id.desc(),
+        )
+        .all()
+        if reusable_asset_ids
+        else []
+    )
+    reusable_last_count_map: dict[int, ReusableInventoryCount] = {}
+    for count_row in reusable_count_rows:
+        reusable_last_count_map.setdefault(count_row.asset_id, count_row)
+    reusable_asset_rows = []
+    for asset in reusable_assets:
+        composition = reusable_stock_composition(
+            asset.purchased_quantity, asset.current_quantity
+        )
+        dates = reusable_purchase_dates.get(asset.id, [])
+        last_count = reusable_last_count_map.get(asset.id)
+        reusable_asset_rows.append(
+            {
+                "asset": asset,
+                "area_label": reusable_area_labels.get(
+                    asset.area_scope, _reusable_area_label(asset.area_scope)
+                ),
+                "composition": composition,
+                "first_purchase_date": min(dates) if dates else None,
+                "last_purchase_date": max(dates) if dates else None,
+                "purchase_count": reusable_purchase_count_map.get(asset.id, 0),
+                "investment": reusable_investment_map.get(asset.id, 0.0),
+                "last_count": last_count,
+                "count_due": not last_count
+                or last_count.count_date <= date.today() - timedelta(days=7),
+                "lost_value": round(
+                    composition["lost"] * float(asset.average_unit_price or 0), 2
+                ),
+            }
+        )
+    reusable_summary = {
+        "item_types": len(reusable_asset_rows),
+        "purchased_units": sum(
+            row["composition"]["purchased"] for row in reusable_asset_rows
+        ),
+        "current_units": sum(
+            row["composition"]["current"] for row in reusable_asset_rows
+        ),
+        "lost_units": sum(
+            row["composition"]["lost"] for row in reusable_asset_rows
+        ),
+        "investment": round(sum(row["investment"] for row in reusable_asset_rows), 2),
+        "current_value": round(
+            sum(
+                row["composition"]["current"]
+                * float(row["asset"].average_unit_price or 0)
+                for row in reusable_asset_rows
+            ),
+            2,
+        ),
+        "lost_value": round(sum(row["lost_value"] for row in reusable_asset_rows), 2),
+        "count_due": sum(1 for row in reusable_asset_rows if row["count_due"]),
+    }
+    reusable_composition_chart = [
+        {
+            "name": row["asset"].name,
+            "current_percent": row["composition"]["current_percent"],
+            "lost_percent": row["composition"]["lost_percent"],
+            "current": row["composition"]["current"],
+            "lost": row["composition"]["lost"],
+            "purchased": row["composition"]["purchased"],
+        }
+        for row in reusable_asset_rows
+    ]
+    reusable_loss_from = _optional_inventory_date(request.args.get("loss_from")) or date.today().replace(day=1)
+    reusable_loss_to = _optional_inventory_date(request.args.get("loss_to")) or date.today()
+    if reusable_loss_to < reusable_loss_from:
+        reusable_loss_from, reusable_loss_to = reusable_loss_to, reusable_loss_from
+    reusable_loss_area = (request.args.get("loss_area") or "all").strip().lower()
+    if reusable_loss_area not in {row["value"] for row in reusable_area_options}:
+        reusable_loss_area = "all"
+    reusable_loss_asset_id = request.args.get("loss_asset_id", type=int) or 0
+    reusable_loss_query = (
+        ReusableInventoryCount.query.options(
+            joinedload(ReusableInventoryCount.asset),
+            joinedload(ReusableInventoryCount.created_by),
+        )
+        .join(ReusableInventoryAsset)
+        .filter(
+            ReusableInventoryCount.count_date >= reusable_loss_from,
+            ReusableInventoryCount.count_date <= reusable_loss_to,
+            ReusableInventoryAsset.active.is_(True),
+        )
+    )
+    if reusable_loss_area != "all":
+        reusable_loss_query = reusable_loss_query.filter(
+            ReusableInventoryCount.area_scope_snapshot == reusable_loss_area
+        )
+    if reusable_loss_asset_id:
+        reusable_loss_query = reusable_loss_query.filter(
+            ReusableInventoryCount.asset_id == reusable_loss_asset_id
+        )
+    reusable_loss_counts = reusable_loss_query.order_by(
+        ReusableInventoryCount.count_date.desc(),
+        ReusableInventoryCount.id.desc(),
+    ).all()
+    reusable_loss_grouped: dict[int, dict] = {}
+    for count_row in reusable_loss_counts:
+        if int(count_row.lost_quantity or 0) <= 0 and float(count_row.loss_value or 0) <= 0:
+            continue
+        grouped = reusable_loss_grouped.setdefault(
+            count_row.asset_id,
+            {
+                "name": count_row.asset.name if count_row.asset else "Unknown",
+                "lost_units": 0,
+                "recovered_units": 0,
+                "loss_value": 0.0,
+            },
+        )
+        grouped["lost_units"] += int(count_row.lost_quantity or 0)
+        grouped["recovered_units"] += int(count_row.recovered_quantity or 0)
+        grouped["loss_value"] = round(
+            grouped["loss_value"] + float(count_row.loss_value or 0), 2
+        )
+    reusable_loss_chart = sorted(
+        reusable_loss_grouped.values(),
+        key=lambda row: (-row["loss_value"], row["name"].lower()),
+    )
+    reusable_loss_max = max(
+        (float(row["loss_value"] or 0) for row in reusable_loss_chart),
+        default=0.0,
+    )
+    for row in reusable_loss_chart:
+        row["bar_percent"] = round(
+            (float(row["loss_value"] or 0) / reusable_loss_max) * 100, 2
+        ) if reusable_loss_max else 0.0
+    reusable_loss_summary = {
+        "loss_value": round(
+            sum(float(row.loss_value or 0) for row in reusable_loss_counts), 2
+        ),
+        "lost_units": sum(int(row.lost_quantity or 0) for row in reusable_loss_counts),
+        "recovered_units": sum(
+            int(row.recovered_quantity or 0) for row in reusable_loss_counts
+        ),
+        "count_events": len(reusable_loss_counts),
+    }
+    selected_reusable_asset = None
+    edit_asset_id = request.args.get("edit_asset_id", type=int) or 0
+    if edit_asset_id:
+        selected_reusable_asset = ReusableInventoryAsset.query.filter_by(
+            id=edit_asset_id, active=True
+        ).first()
     expense_logs = (
         InventoryExpenseLog.query.options(
             joinedload(InventoryExpenseLog.category),
@@ -7452,6 +7997,17 @@ def inventory():
         .filter(
             InventoryPurchase.purchase_date >= inventory_period_start,
             InventoryPurchase.purchase_date <= inventory_period_end,
+        )
+        .all()
+    )
+    period_reusable_purchases = (
+        ReusableInventoryPurchase.query.options(
+            joinedload(ReusableInventoryPurchase.asset),
+            joinedload(ReusableInventoryPurchase.created_by),
+        )
+        .filter(
+            ReusableInventoryPurchase.purchase_date >= inventory_period_start,
+            ReusableInventoryPurchase.purchase_date <= inventory_period_end,
         )
         .all()
     )
@@ -7758,6 +8314,7 @@ def inventory():
         if (row.name or "").strip()
     }
     period_purchase_expense = 0.0
+    period_reusable_purchase_expense = 0.0
     purchase_expense_by_workstation: dict[str, float] = {}
     purchase_ledger_rows = []
     purchase_funding_totals = {"cafe_operations": 0.0, "owner_personal": 0.0}
@@ -7830,6 +8387,74 @@ def inventory():
             }
         )
 
+    period_stock_purchase_expense = period_purchase_expense
+    if not tracked_category_name:
+        for reusable_purchase in period_reusable_purchases:
+            purchase_amount = round(float(reusable_purchase.total_amount or 0), 2)
+            if purchase_amount <= 0:
+                continue
+            period_reusable_purchase_expense = round(
+                period_reusable_purchase_expense + purchase_amount, 2
+            )
+            period_purchase_expense = round(
+                period_purchase_expense + purchase_amount, 2
+            )
+            timeline_map[reusable_purchase.purchase_date] = round(
+                timeline_map.get(reusable_purchase.purchase_date, 0.0)
+                + purchase_amount,
+                2,
+            )
+            funding_key = (
+                reusable_purchase.funding_source
+                if reusable_purchase.funding_source in purchase_funding_totals
+                else "cafe_operations"
+            )
+            purchase_funding_totals[funding_key] = round(
+                purchase_funding_totals[funding_key] + purchase_amount, 2
+            )
+            asset_scope = reusable_purchase.area_scope_snapshot or (
+                reusable_purchase.asset.area_scope
+                if reusable_purchase.asset
+                else "cafe"
+            )
+            station_slug = "unassigned"
+            if asset_scope.startswith("station:"):
+                station_slug = _normalize_inventory_workstation_slug(
+                    asset_scope.split(":", 1)[1]
+                )
+            purchase_expense_by_workstation[station_slug] = round(
+                purchase_expense_by_workstation.get(station_slug, 0.0)
+                + purchase_amount,
+                2,
+            )
+            purchase_ledger_rows.append(
+                {
+                    "sort_date": reusable_purchase.purchase_date,
+                    "expense_date": reusable_purchase.purchase_date.strftime("%d %b %Y"),
+                    "source": f"Reusable purchase #{reusable_purchase.id}",
+                    "category_name": "Reusable assets",
+                    "vendor_name": "Other",
+                    "amount": purchase_amount,
+                    "transaction_mode": (reusable_purchase.payment_mode or "upi").upper(),
+                    "funding_source": "Owner personal"
+                    if reusable_purchase.funding_source == "owner_personal"
+                    else "Cafe operations",
+                    "logged_by": reusable_purchase.created_by.full_name
+                    if reusable_purchase.created_by
+                    else "-",
+                    "workstation_name": _reusable_area_label(asset_scope),
+                    "logged_at_ist": _format_ist(
+                        reusable_purchase.created_at, "%d %b %Y, %I:%M:%S %p"
+                    ),
+                    "note": reusable_purchase.note
+                    or (
+                        reusable_purchase.asset.name
+                        if reusable_purchase.asset
+                        else "Reusable item"
+                    ),
+                }
+            )
+
     category_spend_rows = []
     for cat in categories:
         total = round(category_spend_map.get(cat.id, 0.0), 2)
@@ -7898,6 +8523,8 @@ def inventory():
         "expense": total_period_expense,
         "manual_expense": manual_period_expense,
         "purchase_expense": period_purchase_expense,
+        "stock_purchase_expense": period_stock_purchase_expense,
+        "reusable_purchase_expense": period_reusable_purchase_expense,
         "revenue": period_revenue,
         "difference": round(period_revenue - total_period_expense, 2),
         "cafe_funded": expense_funding_totals["cafe_operations"],
@@ -8029,6 +8656,26 @@ def inventory():
         average_daily_expense=average_daily_expense,
         workstation_financial_rows=workstation_financial_rows,
         purchase_by_workstation=purchase_by_workstation,
+        reusable_area_options=reusable_area_options,
+        reusable_area_labels=reusable_area_labels,
+        reusable_area_filter=reusable_area_filter,
+        reusable_search=reusable_search,
+        reusable_purchase_from=reusable_purchase_from,
+        reusable_purchase_to=reusable_purchase_to,
+        reusable_assets_all=ReusableInventoryAsset.query.filter_by(active=True).order_by(
+            ReusableInventoryAsset.name.asc()
+        ).all(),
+        reusable_asset_rows=reusable_asset_rows,
+        reusable_summary=reusable_summary,
+        reusable_composition_chart=reusable_composition_chart,
+        reusable_loss_from=reusable_loss_from,
+        reusable_loss_to=reusable_loss_to,
+        reusable_loss_area=reusable_loss_area,
+        reusable_loss_asset_id=reusable_loss_asset_id,
+        reusable_loss_counts=reusable_loss_counts[:100],
+        reusable_loss_chart=reusable_loss_chart,
+        reusable_loss_summary=reusable_loss_summary,
+        selected_reusable_asset=selected_reusable_asset,
         can_manage_inventory_settings=bool(
             g.current_user
             and g.current_user.has_any_role(
