@@ -917,6 +917,72 @@ class ReusableInventoryCount(TimestampMixin, db.Model):
     created_by = db.relationship("User", backref="reusable_inventory_counts")
 
 
+class ReusableInventoryLossEvent(TimestampMixin, db.Model):
+    """Immutable policy snapshot for a reported breakage or an unreported shortage."""
+
+    id = db.Column(db.Integer, primary_key=True)
+    asset_id = db.Column(
+        db.Integer, db.ForeignKey("reusable_inventory_asset.id"), nullable=False
+    )
+    count_id = db.Column(
+        db.Integer, db.ForeignKey("reusable_inventory_count.id"), nullable=False, unique=True
+    )
+    loss_date = db.Column(db.Date, nullable=False, default=date.today)
+    loss_type = db.Column(db.String(30), nullable=False)
+    quantity = db.Column(db.Integer, nullable=False, default=0)
+    unit_price_snapshot = db.Column(db.Float, nullable=False, default=0)
+    total_loss_value = db.Column(db.Float, nullable=False, default=0)
+    staff_charge_total = db.Column(db.Float, nullable=False, default=0)
+    cafe_share_amount = db.Column(db.Float, nullable=False, default=0)
+    shared_staff_count = db.Column(db.Integer, nullable=False, default=0)
+    area_scope_snapshot = db.Column(db.String(100), nullable=False, default="cafe")
+    responsible_user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=True)
+    created_by_user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=True)
+    note = db.Column(db.String(500), nullable=True)
+    asset = db.relationship(
+        "ReusableInventoryAsset", backref="loss_events"
+    )
+    count = db.relationship(
+        "ReusableInventoryCount",
+        backref=db.backref("loss_event", uselist=False),
+    )
+    responsible_user = db.relationship(
+        "User", foreign_keys=[responsible_user_id], backref="reported_reusable_losses"
+    )
+    created_by = db.relationship(
+        "User", foreign_keys=[created_by_user_id], backref="created_reusable_losses"
+    )
+
+
+class ReusableInventoryLossAllocation(TimestampMixin, db.Model):
+    """One staff member's recoverable share of a reusable-asset loss."""
+
+    id = db.Column(db.Integer, primary_key=True)
+    loss_event_id = db.Column(
+        db.Integer, db.ForeignKey("reusable_inventory_loss_event.id"), nullable=False
+    )
+    user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False)
+    charge_amount = db.Column(db.Float, nullable=False, default=0)
+    share_percent = db.Column(db.Float, nullable=False, default=0)
+    settlement_status = db.Column(db.String(20), nullable=False, default="pending")
+    settlement_note = db.Column(db.String(255), nullable=True)
+    settled_at = db.Column(db.DateTime, nullable=True)
+    settled_by_user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=True)
+    loss_event = db.relationship(
+        "ReusableInventoryLossEvent",
+        backref=db.backref("allocations", cascade="all, delete-orphan"),
+    )
+    user = db.relationship(
+        "User", foreign_keys=[user_id], backref="reusable_loss_allocations"
+    )
+    settled_by = db.relationship("User", foreign_keys=[settled_by_user_id])
+    __table_args__ = (
+        db.UniqueConstraint(
+            "loss_event_id", "user_id", name="uq_reusable_loss_event_user"
+        ),
+    )
+
+
 class StaffProfile(TimestampMixin, db.Model):
     id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False, unique=True)

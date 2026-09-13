@@ -7,16 +7,21 @@ from flask import Flask
 from PIL import Image
 from werkzeug.datastructures import FileStorage
 
-from app.cafe import _save_reusable_asset_image
+from app.cafe import _record_reusable_loss_event, _save_reusable_asset_image
 from app.extensions import db
 from app.models import (
     ReusableInventoryAsset,
     ReusableInventoryCount,
+    ReusableInventoryLossAllocation,
+    ReusableInventoryLossEvent,
     ReusableInventoryPurchase,
+    User,
 )
 from app.reusable_inventory import (
+    reported_loss_split,
     reusable_count_change,
     reusable_stock_composition,
+    shared_loss_allocations,
     weighted_average_unit_price,
 )
 
@@ -61,6 +66,84 @@ class ReusableInventoryTests(unittest.TestCase):
             composition["current_percent"] + composition["lost_percent"],
             100.0,
         )
+
+    def test_reported_loss_is_split_without_overcharging_staff(self):
+        self.assertEqual(
+            reported_loss_split(100),
+            {"staff_charge": 50.0, "cafe_share": 50.0},
+        )
+        self.assertEqual(
+            reported_loss_split(99.99),
+            {"staff_charge": 49.99, "cafe_share": 50.0},
+        )
+
+    def test_unreported_loss_shares_every_paise(self):
+        allocations = shared_loss_allocations(100, [3, 2, 1])
+        self.assertEqual([row["user_id"] for row in allocations], [1, 2, 3])
+        self.assertEqual(
+            [row["charge_amount"] for row in allocations], [33.34, 33.33, 33.33]
+        )
+        self.assertEqual(sum(row["charge_amount"] for row in allocations), 100.0)
+
+    def test_unreported_loss_excludes_admin_privilege(self):
+        admin = User(
+            full_name="Cafe Admin",
+            email="admin-test@example.com",
+            password_hash="x",
+            role="admin",
+            active=True,
+        )
+        server = User(
+            full_name="Server One",
+            email="server-test@example.com",
+            password_hash="x",
+            role="server",
+            active=True,
+        )
+        barista = User(
+            full_name="Barista One",
+            email="barista-test@example.com",
+            password_hash="x",
+            role="barista",
+            active=True,
+        )
+        db.session.add_all([admin, server, barista])
+        asset = ReusableInventoryAsset(
+            name="Water Glass",
+            purchased_quantity=10,
+            current_quantity=8,
+            average_unit_price=60,
+        )
+        db.session.add(asset)
+        db.session.flush()
+        count = ReusableInventoryCount(
+            asset_id=asset.id,
+            quantity_before=10,
+            current_quantity=8,
+            lost_quantity=2,
+            recovered_quantity=0,
+            unit_price_snapshot=60,
+            loss_value=120,
+        )
+        db.session.add(count)
+        event = _record_reusable_loss_event(
+            asset=asset,
+            count_row=count,
+            loss_type="unreported_shortage",
+            responsible_user=None,
+            created_by_user=admin,
+            note="Weekly shortage",
+        )
+        db.session.commit()
+
+        self.assertIsInstance(event, ReusableInventoryLossEvent)
+        self.assertEqual(event.shared_staff_count, 2)
+        allocations = ReusableInventoryLossAllocation.query.order_by(
+            ReusableInventoryLossAllocation.user_id
+        ).all()
+        self.assertEqual({row.user_id for row in allocations}, {server.id, barista.id})
+        self.assertEqual(sum(row.charge_amount for row in allocations), 120.0)
+        self.assertEqual(event.cafe_share_amount, 0.0)
 
     def test_purchase_and_count_history_are_preserved_separately(self):
         asset = ReusableInventoryAsset(

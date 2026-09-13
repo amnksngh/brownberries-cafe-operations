@@ -661,10 +661,15 @@
         <label>Year<input type="number" min="2000" max="2100" name="payroll_year" value="{{ payroll_year }}" /></label>
         <button type="submit">Load Summary</button>
       </form>
-      <p><strong>Total Estimated Payroll:</strong> ₹{{ "%.2f"|format(total_payroll_estimate or 0) }}</p>
+      <div class="inventory-card-grid">
+        <article class="inventory-kpi"><h4>Gross Estimated Payroll</h4><p>₹{{ "%.2f"|format(total_payroll_estimate or 0) }}</p></article>
+        <article class="inventory-kpi inventory-kpi-warning"><h4>Asset-Loss Charges</h4><p>₹{{ "%.2f"|format(total_asset_charge or 0) }}</p></article>
+        <article class="inventory-kpi"><h4>Net Estimated Payroll</h4><p>₹{{ "%.2f"|format(total_net_payroll_estimate or 0) }}</p></article>
+      </div>
+      <p class="muted">Pending and payroll-marked asset charges for the selected month are deducted from the estimate. Paid and waived charges are excluded.</p>
       <div style="overflow:auto">
         <table>
-          <thead><tr><th>Staff</th><th>Salary</th><th>Present</th><th>Half Days</th><th>Sick</th><th>Unpaid</th><th>Payable Days</th><th>Per Day</th><th>Estimated Pay</th></tr></thead>
+          <thead><tr><th>Staff</th><th>Salary</th><th>Present</th><th>Half Days</th><th>Sick</th><th>Unpaid</th><th>Payable Days</th><th>Per Day</th><th>Gross Estimate</th><th>Asset Charge</th><th>Net Estimate</th><th>Unrecovered Balance</th></tr></thead>
           <tbody>
             {% for row in payroll_rows %}
             <tr>
@@ -677,9 +682,12 @@
               <td>{{ row.payable_days }}</td>
               <td>₹{{ "%.2f"|format(row.per_day_salary or 0) }}</td>
               <td>₹{{ "%.2f"|format(row.estimated_pay or 0) }}</td>
+              <td>₹{{ "%.2f"|format(row.asset_charge or 0) }}</td>
+              <td><strong>₹{{ "%.2f"|format(row.net_estimated_pay or 0) }}</strong></td>
+              <td>₹{{ "%.2f"|format(row.outstanding_asset_charge or 0) }}</td>
             </tr>
             {% else %}
-            <tr><td colspan="9">No payroll data available.</td></tr>
+            <tr><td colspan="12">No payroll data available.</td></tr>
             {% endfor %}
           </tbody>
         </table>

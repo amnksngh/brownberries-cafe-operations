@@ -47,6 +47,7 @@
         <a href="{{ url_for('main.profile') }}">Profile</a>
         <a href="{{ url_for('cafe.orders') }}">Table Ordering</a>
         <a href="{{ url_for('cafe.to_purchase') }}">To Purchase</a>
+        <a href="{{ url_for('cafe.reusable_breakage_report') }}">Report Breakage</a>
         <a href="{{ url_for('cafe.items_availability') }}">Items Availability</a>
         <a href="{{ url_for('library.home') }}">Library</a>
         <a href="{{ url_for('main.logout') }}">Logout</a>
@@ -55,6 +56,7 @@
         <a href="{{ url_for('cafe.home') }}">Cafe</a>
         <a href="{{ url_for('cafe.orders') }}">Table Ordering</a>
         <a href="{{ url_for('cafe.to_purchase') }}">To Purchase</a>
+        <a href="{{ url_for('cafe.reusable_breakage_report') }}">Report Breakage</a>
         <a href="{{ url_for('cafe.items_availability') }}">Items Availability</a>
         {% if user_has_any_role(g.current_user, "inventory_manager") or user_has_permission(g.current_user, "can_manage_inventory") %}
         <a href="{{ url_for('cafe.inventory') }}">Inventory</a>

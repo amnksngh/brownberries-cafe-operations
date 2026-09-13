@@ -458,6 +458,15 @@ def _ensure_sqlite_schema_columns():
         text("CREATE INDEX IF NOT EXISTS idx_reusable_inventory_count_scope_date ON reusable_inventory_count (area_scope_snapshot, count_date)")
     )
     db.session.execute(
+        text("CREATE INDEX IF NOT EXISTS idx_reusable_loss_asset_date ON reusable_inventory_loss_event (asset_id, loss_date)")
+    )
+    db.session.execute(
+        text("CREATE INDEX IF NOT EXISTS idx_reusable_loss_scope_date ON reusable_inventory_loss_event (area_scope_snapshot, loss_date)")
+    )
+    db.session.execute(
+        text("CREATE INDEX IF NOT EXISTS idx_reusable_loss_allocation_user_status ON reusable_inventory_loss_allocation (user_id, settlement_status)")
+    )
+    db.session.execute(
         text("CREATE INDEX IF NOT EXISTS idx_job_opening_status_published ON job_opening (status, published_at)")
     )
     db.session.execute(

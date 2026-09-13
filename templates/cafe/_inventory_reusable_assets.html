@@ -64,6 +64,31 @@
   </article>
 </section>
 
+<section class="panel reusable-loss-policy">
+  <div class="split-head">
+    <div>
+      <h3>Breakage Reporting &amp; Loss Policy</h3>
+      <p class="muted">Reported breakage is split 50% to the responsible staff member and 50% to the cafe. Any lower quantity discovered during a weekly count is an unreported shortage and its full value is shared equally across active staff without Admin privilege.</p>
+    </div>
+    <a class="button-link" href="{{ url_for('cafe.reusable_breakage_report') }}">Open Staff Report Page</a>
+  </div>
+  {% if can_manage_reusable_losses %}
+  <details>
+    <summary>Record a staff-reported breakage on their behalf</summary>
+    <form method="post" class="grid inventory-form-grid reusable-manager-loss-form">
+      <input type="hidden" name="action" value="report_reusable_breakage" />
+      <label>Item <select name="asset_id" required><option value="">Select item</option>{% for asset in reusable_assets_all if asset.current_quantity > 0 %}<option value="{{ asset.id }}">{{ asset.name }} · {{ asset.current_quantity }} usable</option>{% endfor %}</select></label>
+      <label>Responsible Staff <select name="responsible_user_id" required><option value="">Select staff</option>{% for user in reusable_loss_staff_options %}<option value="{{ user.id }}">{{ user.full_name }} · {{ user.display_roles() }}</option>{% endfor %}</select></label>
+      <label>Quantity Broken <input name="quantity" type="number" min="1" step="1" required /></label>
+      <label>Date <input name="loss_date" type="date" max="{{ closing_date.isoformat() }}" value="{{ closing_date.isoformat() }}" required /></label>
+      <label class="full">Incident Note <textarea name="note" rows="2" maxlength="500" placeholder="What happened, where, and who reported it?" required></textarea></label>
+      <label class="full reusable-policy-confirm"><input type="checkbox" name="policy_confirmed" value="1" required /> I confirm the staff member reported this incident and was informed that 50% of its recorded value will be charged to them.</label>
+      <button type="submit">Record Reported Breakage</button>
+    </form>
+  </details>
+  {% endif %}
+</section>
+
 {% if selected_reusable_asset %}
 <section class="panel">
   <div class="split-head"><div><h3>Edit {{ selected_reusable_asset.name }}</h3><p class="muted">Changing the unit price affects future counts; historic purchase and loss values remain unchanged.</p></div><a href="{{ url_for('cafe.inventory', section='reusable_assets') }}">Close</a></div>
@@ -121,12 +146,58 @@
               <label>Date <input name="count_date" type="date" value="{{ closing_date.isoformat() }}" required /></label>
               <label>Physical Stock <input name="current_quantity" type="number" min="0" max="{{ row.composition.purchased }}" step="1" value="{{ row.composition.current }}" required /></label>
               <label>Note <input name="note" placeholder="Broken, missing, moved..." maxlength="255" /></label>
+              <label class="reusable-policy-confirm"><input type="checkbox" name="loss_policy_confirmed" value="1" /> If this count is lower, I confirm the difference is unreported and must be shared across active non-admin staff.</label>
               <button type="submit">Save Count</button>
             </form>
           </details>
         </td>
       </tr>
       {% else %}<tr><td colspan="10">No reusable items match these filters.</td></tr>{% endfor %}
+    </table>
+  </div>
+</section>
+
+<section class="panel">
+  <div class="split-head"><div><h3>Staff Liability &amp; Cafe Share</h3><p class="muted">Policy records created after this feature was enabled. Historic count losses are preserved but are not charged retroactively.</p></div><span class="inventory-badge">{{ reusable_policy_loss_rows|length }} incidents</span></div>
+  <div class="inventory-card-grid">
+    <article class="inventory-kpi"><h4>Reported Loss</h4><p>₹{{ "%.2f"|format(reusable_policy_summary.reported_value) }}</p></article>
+    <article class="inventory-kpi"><h4>Unreported Loss</h4><p>₹{{ "%.2f"|format(reusable_policy_summary.unreported_value) }}</p></article>
+    <article class="inventory-kpi"><h4>Staff Liability</h4><p>₹{{ "%.2f"|format(reusable_policy_summary.staff_charge) }}</p></article>
+    <article class="inventory-kpi"><h4>Cafe Share</h4><p>₹{{ "%.2f"|format(reusable_policy_summary.cafe_share) }}</p></article>
+    <article class="inventory-kpi inventory-kpi-warning"><h4>Pending Collection</h4><p>₹{{ "%.2f"|format(reusable_policy_summary.pending_charge) }}</p></article>
+    <article class="inventory-kpi"><h4>Paid / Payroll</h4><p>₹{{ "%.2f"|format(reusable_policy_summary.recovered_charge) }}</p></article>
+  </div>
+  <div class="table-scroll">
+    <table class="reusable-loss-ledger">
+      <tr><th>Date</th><th>Item / Incident</th><th>Loss Value</th><th>Policy Split</th><th>Staff Allocations &amp; Recovery</th><th>Recorded By</th></tr>
+      {% for loss in reusable_policy_loss_rows %}
+      <tr>
+        <td>{{ loss.loss_date.strftime('%d %b %Y') }}</td>
+        <td><strong>{{ loss.asset.name if loss.asset else '-' }}</strong><div>{{ loss.quantity }} unit{% if loss.quantity != 1 %}s{% endif %} · {{ 'Reported' if loss.loss_type == 'reported_breakage' else 'Unreported shortage' }}</div><div class="muted">{{ loss.note or '-' }}</div></td>
+        <td>₹{{ "%.2f"|format(loss.total_loss_value) }}<div class="muted">₹{{ "%.2f"|format(loss.unit_price_snapshot) }} each</div></td>
+        <td>Staff ₹{{ "%.2f"|format(loss.staff_charge_total) }}<div class="muted">Cafe ₹{{ "%.2f"|format(loss.cafe_share_amount) }}</div></td>
+        <td>
+          <details>
+            <summary>{{ loss.allocations|length }} staff allocation{% if loss.allocations|length != 1 %}s{% endif %}</summary>
+            <div class="reusable-allocation-list">
+              {% for allocation in loss.allocations %}
+              <form method="post" class="reusable-allocation-row">
+                <input type="hidden" name="action" value="update_reusable_loss_charge" />
+                <input type="hidden" name="allocation_id" value="{{ allocation.id }}" />
+                <span><strong>{{ allocation.user.full_name if allocation.user else '-' }}</strong><br />₹{{ "%.2f"|format(allocation.charge_amount) }} · {{ "%.2f"|format(allocation.share_percent) }}%</span>
+                {% if g.current_user.has_any_role('owner', 'admin', 'manager') %}
+                <select name="settlement_status"><option value="pending" {% if allocation.settlement_status == 'pending' %}selected{% endif %}>Pending</option><option value="deducted" {% if allocation.settlement_status == 'deducted' %}selected{% endif %}>Payroll deduction</option><option value="paid" {% if allocation.settlement_status == 'paid' %}selected{% endif %}>Paid directly</option><option value="waived" {% if allocation.settlement_status == 'waived' %}selected{% endif %}>Waived</option></select>
+                <input name="settlement_note" value="{{ allocation.settlement_note or '' }}" maxlength="255" placeholder="Reference / reason" />
+                <button type="submit">Save</button>
+                {% else %}<span class="inventory-status {{ 'adequate' if allocation.settlement_status in ['paid', 'waived'] else 'deficit' }}">{{ allocation.settlement_status|title }}</span>{% endif %}
+              </form>
+              {% else %}<p class="muted">No eligible non-admin staff existed; the cafe bears this loss.</p>{% endfor %}
+            </div>
+          </details>
+        </td>
+        <td>{{ loss.created_by.full_name if loss.created_by else '-' }}</td>
+      </tr>
+      {% else %}<tr><td colspan="6">No policy-based asset loss was recorded for this period.</td></tr>{% endfor %}
     </table>
   </div>
 </section>

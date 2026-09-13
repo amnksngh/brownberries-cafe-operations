@@ -40,8 +40,10 @@ from .inventory_control import (
     stock_band,
 )
 from .reusable_inventory import (
+    reported_loss_split,
     reusable_count_change,
     reusable_stock_composition,
+    shared_loss_allocations,
     weighted_average_unit_price,
 )
 from .leave_logic import (
@@ -84,6 +86,8 @@ from .models import (
     InventoryWastage,
     ReusableInventoryAsset,
     ReusableInventoryCount,
+    ReusableInventoryLossAllocation,
+    ReusableInventoryLossEvent,
     ReusableInventoryPurchase,
     MenuCategory,
     MenuItem,
@@ -328,6 +332,154 @@ def _reusable_area_label(value: str | None) -> str:
             if row["value"] == normalized
         ),
         "Entire Cafe",
+    )
+
+
+def _eligible_shared_loss_staff() -> list[User]:
+    """Active staff snapshot used when an asset shortage was not reported."""
+    excluded_emails = {
+        "qr.guest@brownberries.local",
+        "delivery.guest@brownberries.local",
+    }
+    eligible = []
+    for user in User.query.filter_by(active=True).order_by(User.id.asc()).all():
+        if (user.email or "").strip().lower() in excluded_emails:
+            continue
+        if user.has_role("admin") or not _is_staff_user(user):
+            continue
+        if user.staff_profile and user.staff_profile.archived:
+            continue
+        eligible.append(user)
+    return eligible
+
+
+def _record_reusable_loss_event(
+    *,
+    asset: ReusableInventoryAsset,
+    count_row: ReusableInventoryCount,
+    loss_type: str,
+    responsible_user: User | None,
+    created_by_user: User | None,
+    note: str | None = None,
+) -> ReusableInventoryLossEvent | None:
+    """Create the policy and staff-liability snapshot for one stock-loss count."""
+    quantity = max(0, int(count_row.lost_quantity or 0))
+    if quantity <= 0:
+        return None
+    normalized_type = (
+        "reported_breakage" if loss_type == "reported_breakage" else "unreported_shortage"
+    )
+    unit_price = round(float(count_row.unit_price_snapshot or 0), 2)
+    total_loss_value = round(quantity * unit_price, 2)
+    event = ReusableInventoryLossEvent(
+        asset_id=asset.id,
+        count=count_row,
+        loss_date=count_row.count_date,
+        loss_type=normalized_type,
+        quantity=quantity,
+        unit_price_snapshot=unit_price,
+        total_loss_value=total_loss_value,
+        area_scope_snapshot=count_row.area_scope_snapshot or asset.area_scope,
+        responsible_user_id=(
+            responsible_user.id if normalized_type == "reported_breakage" and responsible_user else None
+        ),
+        created_by_user_id=created_by_user.id if created_by_user else None,
+        note=(note or "").strip()[:500] or None,
+    )
+    db.session.add(event)
+    db.session.flush()
+
+    if normalized_type == "reported_breakage" and responsible_user:
+        split = reported_loss_split(total_loss_value)
+        event.staff_charge_total = split["staff_charge"]
+        event.cafe_share_amount = split["cafe_share"]
+        event.shared_staff_count = 1
+        if split["staff_charge"] > 0:
+            db.session.add(
+                ReusableInventoryLossAllocation(
+                    loss_event_id=event.id,
+                    user_id=responsible_user.id,
+                    charge_amount=split["staff_charge"],
+                    share_percent=50.0,
+                    settlement_status="pending",
+                )
+            )
+        return event
+
+    eligible_staff = _eligible_shared_loss_staff()
+    allocations = shared_loss_allocations(
+        total_loss_value, [user.id for user in eligible_staff]
+    )
+    event.shared_staff_count = len(allocations)
+    event.staff_charge_total = round(
+        sum(float(row["charge_amount"]) for row in allocations), 2
+    )
+    event.cafe_share_amount = round(
+        max(0.0, total_loss_value - event.staff_charge_total), 2
+    )
+    for row in allocations:
+        db.session.add(
+            ReusableInventoryLossAllocation(
+                loss_event_id=event.id,
+                user_id=int(row["user_id"]),
+                charge_amount=float(row["charge_amount"]),
+                share_percent=float(row["share_percent"]),
+                settlement_status="pending",
+            )
+        )
+    return event
+
+
+def _record_reported_reusable_breakage(
+    *,
+    asset: ReusableInventoryAsset,
+    quantity: int,
+    loss_date: date,
+    responsible_user: User,
+    created_by_user: User,
+    note: str | None,
+) -> ReusableInventoryLossEvent:
+    quantity_before = max(0, int(asset.current_quantity or 0))
+    current_quantity = quantity_before - quantity
+    metrics = reusable_count_change(
+        quantity_before, current_quantity, asset.average_unit_price
+    )
+    count_note = f"Reported breakage by {responsible_user.full_name}" + (
+        f": {note.strip()}" if note and note.strip() else ""
+    )
+    count_row = ReusableInventoryCount(
+        asset_id=asset.id,
+        count_date=loss_date,
+        unit_price_snapshot=round(float(asset.average_unit_price or 0), 2),
+        area_scope_snapshot=asset.area_scope,
+        note=count_note[:255],
+        created_by_user_id=created_by_user.id,
+    )
+    for key, value in metrics.items():
+        setattr(count_row, key, value)
+    db.session.add(count_row)
+    asset.current_quantity = current_quantity
+    event = _record_reusable_loss_event(
+        asset=asset,
+        count_row=count_row,
+        loss_type="reported_breakage",
+        responsible_user=responsible_user,
+        created_by_user=created_by_user,
+        note=note,
+    )
+    return event
+
+
+def _latest_reusable_activity_date(asset_id: int) -> date | None:
+    latest_purchase_date = db.session.query(
+        db.func.max(ReusableInventoryPurchase.purchase_date)
+    ).filter(ReusableInventoryPurchase.asset_id == asset_id).scalar()
+    latest_count_date = db.session.query(
+        db.func.max(ReusableInventoryCount.count_date)
+    ).filter(ReusableInventoryCount.asset_id == asset_id).scalar()
+    return max(
+        [value for value in (latest_purchase_date, latest_count_date) if value],
+        default=None,
     )
 
 
@@ -6845,6 +6997,87 @@ def to_purchase():
     )
 
 
+@bp.route("/reusable-assets/report-breakage", methods=["GET", "POST"])
+@login_required
+def reusable_breakage_report():
+    user = g.current_user
+    if not user.active or not _is_staff_user(user):
+        flash("This page is available only to active cafe staff.", "error")
+        return redirect(url_for("main.dashboard"))
+    assets = ReusableInventoryAsset.query.filter(
+        ReusableInventoryAsset.active.is_(True),
+        ReusableInventoryAsset.current_quantity > 0,
+    ).order_by(ReusableInventoryAsset.name.asc()).all()
+    if request.method == "POST":
+        asset = ReusableInventoryAsset.query.get_or_404(
+            _safe_int(request.form.get("asset_id"), 0)
+        )
+        quantity = max(0, _safe_int(request.form.get("quantity"), 0))
+        loss_date = _inventory_date(request.form.get("loss_date"))
+        if not asset.active:
+            flash("This reusable item is no longer active.", "error")
+            return redirect(url_for("cafe.reusable_breakage_report"))
+        if quantity <= 0 or quantity > int(asset.current_quantity or 0):
+            flash("Breakage quantity must be between 1 and the current usable stock.", "error")
+            return redirect(url_for("cafe.reusable_breakage_report"))
+        if loss_date > date.today():
+            flash("Breakage date cannot be in the future.", "error")
+            return redirect(url_for("cafe.reusable_breakage_report"))
+        latest_activity_date = _latest_reusable_activity_date(asset.id)
+        if latest_activity_date and loss_date < latest_activity_date:
+            flash("Breakage date cannot be earlier than the latest purchase or count.", "error")
+            return redirect(url_for("cafe.reusable_breakage_report"))
+        if request.form.get("policy_confirmed") != "1":
+            flash("Please confirm the displayed 50/50 breakage policy.", "error")
+            return redirect(url_for("cafe.reusable_breakage_report"))
+        event = _record_reported_reusable_breakage(
+            asset=asset,
+            quantity=quantity,
+            loss_date=loss_date,
+            responsible_user=user,
+            created_by_user=user,
+            note=(request.form.get("note") or "").strip() or None,
+        )
+        db.session.commit()
+        flash(
+            f"Thank you for reporting it. Your charge is ₹{event.staff_charge_total:.2f} "
+            f"and the cafe share is ₹{event.cafe_share_amount:.2f}.",
+            "success",
+        )
+        return redirect(url_for("cafe.reusable_breakage_report"))
+
+    personal_allocations = (
+        ReusableInventoryLossAllocation.query.options(
+            joinedload(ReusableInventoryLossAllocation.loss_event).joinedload(
+                ReusableInventoryLossEvent.asset
+            )
+        )
+        .join(ReusableInventoryLossEvent)
+        .filter(ReusableInventoryLossAllocation.user_id == user.id)
+        .order_by(
+            ReusableInventoryLossEvent.loss_date.desc(),
+            ReusableInventoryLossAllocation.id.desc(),
+        )
+        .limit(100)
+        .all()
+    )
+    personal_pending_charge = round(
+        sum(
+            float(row.charge_amount or 0)
+            for row in personal_allocations
+            if row.settlement_status in {"pending", "deducted"}
+        ),
+        2,
+    )
+    return render_template(
+        "cafe/reusable_breakage_report.html",
+        reusable_assets=assets,
+        personal_allocations=personal_allocations,
+        personal_pending_charge=personal_pending_charge,
+        today_date=date.today(),
+    )
+
+
 @bp.route("/inventory", methods=["GET", "POST"])
 @roles_required("owner", "admin", "manager", "accountant", "barista", "inventory_manager")
 def inventory():
@@ -7039,6 +7272,78 @@ def inventory():
             flash("Additional reusable-item purchase recorded.", "success")
             return redirect(url_for("cafe.inventory", section="reusable_assets"))
 
+        if action == "report_reusable_breakage":
+            if not g.current_user or not g.current_user.has_any_role(
+                "owner", "admin", "manager", "inventory_manager"
+            ):
+                flash("Only managers and inventory managers can report for another staff member.", "error")
+                return redirect(url_for("cafe.inventory", section="reusable_assets"))
+            asset = ReusableInventoryAsset.query.get_or_404(
+                _safe_int(request.form.get("asset_id"), 0)
+            )
+            responsible_user = User.query.get_or_404(
+                _safe_int(request.form.get("responsible_user_id"), 0)
+            )
+            quantity = max(0, _safe_int(request.form.get("quantity"), 0))
+            loss_date = _inventory_date(request.form.get("loss_date"))
+            if not responsible_user.active or not _is_staff_user(responsible_user):
+                flash("Choose an active staff member.", "error")
+                return redirect(url_for("cafe.inventory", section="reusable_assets"))
+            if quantity <= 0 or quantity > int(asset.current_quantity or 0):
+                flash("Breakage quantity must be between 1 and the current usable stock.", "error")
+                return redirect(url_for("cafe.inventory", section="reusable_assets"))
+            if loss_date > date.today():
+                flash("Breakage date cannot be in the future.", "error")
+                return redirect(url_for("cafe.inventory", section="reusable_assets"))
+            latest_activity_date = _latest_reusable_activity_date(asset.id)
+            if latest_activity_date and loss_date < latest_activity_date:
+                flash("Breakage date cannot be earlier than the latest purchase or count.", "error")
+                return redirect(url_for("cafe.inventory", section="reusable_assets"))
+            if request.form.get("policy_confirmed") != "1":
+                flash("Confirm that the staff member was informed about the 50% charge.", "error")
+                return redirect(url_for("cafe.inventory", section="reusable_assets"))
+            event = _record_reported_reusable_breakage(
+                asset=asset,
+                quantity=quantity,
+                loss_date=loss_date,
+                responsible_user=responsible_user,
+                created_by_user=g.current_user,
+                note=(request.form.get("note") or "").strip() or None,
+            )
+            db.session.commit()
+            flash(
+                f"Reported breakage saved. {responsible_user.full_name}: "
+                f"₹{event.staff_charge_total:.2f}; cafe: ₹{event.cafe_share_amount:.2f}.",
+                "success",
+            )
+            return redirect(url_for("cafe.inventory", section="reusable_assets"))
+
+        if action == "update_reusable_loss_charge":
+            if not g.current_user or not g.current_user.has_any_role(
+                "owner", "admin", "manager"
+            ):
+                flash("Only owners, admins, and managers can update charge recovery.", "error")
+                return redirect(url_for("cafe.inventory", section="reusable_assets"))
+            allocation = ReusableInventoryLossAllocation.query.get_or_404(
+                _safe_int(request.form.get("allocation_id"), 0)
+            )
+            settlement_status = (request.form.get("settlement_status") or "pending").strip().lower()
+            if settlement_status not in {"pending", "deducted", "paid", "waived"}:
+                settlement_status = "pending"
+            allocation.settlement_status = settlement_status
+            allocation.settlement_note = (
+                request.form.get("settlement_note") or ""
+            ).strip()[:255] or None
+            if settlement_status == "pending":
+                allocation.settled_at = None
+                allocation.settled_by_user_id = None
+            else:
+                allocation.settled_at = datetime.utcnow()
+                allocation.settled_by_user_id = g.current_user.id
+            db.session.commit()
+            flash("Asset-loss charge status updated.", "success")
+            return redirect(url_for("cafe.inventory", section="reusable_assets"))
+
         if action == "count_reusable_asset":
             asset = ReusableInventoryAsset.query.get_or_404(
                 _safe_int(request.form.get("asset_id"), 0)
@@ -7053,16 +7358,7 @@ def inventory():
             if current_quantity > int(asset.purchased_quantity or 0):
                 flash("Current stock cannot exceed the total quantity purchased.", "error")
                 return redirect(url_for("cafe.inventory", section="reusable_assets"))
-            latest_purchase_date = db.session.query(
-                db.func.max(ReusableInventoryPurchase.purchase_date)
-            ).filter(ReusableInventoryPurchase.asset_id == asset.id).scalar()
-            latest_count_date = db.session.query(
-                db.func.max(ReusableInventoryCount.count_date)
-            ).filter(ReusableInventoryCount.asset_id == asset.id).scalar()
-            latest_activity_date = max(
-                [value for value in (latest_purchase_date, latest_count_date) if value],
-                default=None,
-            )
+            latest_activity_date = _latest_reusable_activity_date(asset.id)
             if latest_activity_date and count_date < latest_activity_date:
                 flash("Count date cannot be earlier than the latest purchase or count.", "error")
                 return redirect(url_for("cafe.inventory", section="reusable_assets"))
@@ -7072,6 +7368,15 @@ def inventory():
                 current_quantity,
                 asset.average_unit_price,
             )
+            if (
+                metrics["lost_quantity"] > 0
+                and request.form.get("loss_policy_confirmed") != "1"
+            ):
+                flash(
+                    "Confirm the unreported-loss sharing rule before saving a lower physical count.",
+                    "error",
+                )
+                return redirect(url_for("cafe.inventory", section="reusable_assets"))
             row = ReusableInventoryCount(
                 asset_id=asset.id,
                 count_date=count_date,
@@ -7084,12 +7389,28 @@ def inventory():
             row.note = (request.form.get("note") or "").strip() or None
             db.session.add(row)
             asset.current_quantity = current_quantity
-            db.session.commit()
-            flash(
-                f"Weekly count saved: {metrics['lost_quantity']} lost, "
-                f"{metrics['recovered_quantity']} recovered.",
-                "success",
+            loss_event = _record_reusable_loss_event(
+                asset=asset,
+                count_row=row,
+                loss_type="unreported_shortage",
+                responsible_user=None,
+                created_by_user=g.current_user,
+                note=row.note,
             )
+            db.session.commit()
+            message = (
+                f"Weekly count saved: {metrics['lost_quantity']} lost, "
+                f"{metrics['recovered_quantity']} recovered."
+            )
+            if loss_event:
+                if loss_event.shared_staff_count:
+                    message += (
+                        f" Unreported loss of ₹{loss_event.total_loss_value:.2f} was shared "
+                        f"across {loss_event.shared_staff_count} non-admin staff."
+                    )
+                else:
+                    message += " No eligible non-admin staff were found, so the cafe bears this loss."
+            flash(message, "success")
             return redirect(url_for("cafe.inventory", section="reusable_assets"))
 
         if action == "log_expense":
@@ -7948,6 +8269,87 @@ def inventory():
         ),
         "count_events": len(reusable_loss_counts),
     }
+    reusable_policy_loss_query = (
+        ReusableInventoryLossEvent.query.options(
+            joinedload(ReusableInventoryLossEvent.asset),
+            joinedload(ReusableInventoryLossEvent.responsible_user),
+            joinedload(ReusableInventoryLossEvent.created_by),
+            joinedload(ReusableInventoryLossEvent.allocations).joinedload(
+                ReusableInventoryLossAllocation.user
+            ),
+        )
+        .filter(
+            ReusableInventoryLossEvent.loss_date >= reusable_loss_from,
+            ReusableInventoryLossEvent.loss_date <= reusable_loss_to,
+        )
+    )
+    if reusable_loss_area != "all":
+        reusable_policy_loss_query = reusable_policy_loss_query.filter(
+            ReusableInventoryLossEvent.area_scope_snapshot == reusable_loss_area
+        )
+    if reusable_loss_asset_id:
+        reusable_policy_loss_query = reusable_policy_loss_query.filter(
+            ReusableInventoryLossEvent.asset_id == reusable_loss_asset_id
+        )
+    reusable_policy_loss_rows = reusable_policy_loss_query.order_by(
+        ReusableInventoryLossEvent.loss_date.desc(),
+        ReusableInventoryLossEvent.id.desc(),
+    ).limit(100).all()
+    reusable_policy_allocations = [
+        allocation
+        for loss_event in reusable_policy_loss_rows
+        for allocation in loss_event.allocations
+    ]
+    reusable_policy_summary = {
+        "reported_value": round(
+            sum(
+                float(row.total_loss_value or 0)
+                for row in reusable_policy_loss_rows
+                if row.loss_type == "reported_breakage"
+            ),
+            2,
+        ),
+        "unreported_value": round(
+            sum(
+                float(row.total_loss_value or 0)
+                for row in reusable_policy_loss_rows
+                if row.loss_type == "unreported_shortage"
+            ),
+            2,
+        ),
+        "staff_charge": round(
+            sum(float(row.staff_charge_total or 0) for row in reusable_policy_loss_rows),
+            2,
+        ),
+        "cafe_share": round(
+            sum(float(row.cafe_share_amount or 0) for row in reusable_policy_loss_rows),
+            2,
+        ),
+        "pending_charge": round(
+            sum(
+                float(row.charge_amount or 0)
+                for row in reusable_policy_allocations
+                if row.settlement_status == "pending"
+            ),
+            2,
+        ),
+        "recovered_charge": round(
+            sum(
+                float(row.charge_amount or 0)
+                for row in reusable_policy_allocations
+                if row.settlement_status in {"deducted", "paid"}
+            ),
+            2,
+        ),
+    }
+    reusable_loss_staff_options = [
+        user
+        for user in User.query.filter_by(active=True).order_by(User.full_name.asc()).all()
+        if _is_staff_user(user)
+        and (user.email or "").strip().lower()
+        not in {"qr.guest@brownberries.local", "delivery.guest@brownberries.local"}
+        and not (user.staff_profile and user.staff_profile.archived)
+    ]
     selected_reusable_asset = None
     edit_asset_id = request.args.get("edit_asset_id", type=int) or 0
     if edit_asset_id:
@@ -8675,7 +9077,16 @@ def inventory():
         reusable_loss_counts=reusable_loss_counts[:100],
         reusable_loss_chart=reusable_loss_chart,
         reusable_loss_summary=reusable_loss_summary,
+        reusable_policy_loss_rows=reusable_policy_loss_rows,
+        reusable_policy_summary=reusable_policy_summary,
+        reusable_loss_staff_options=reusable_loss_staff_options,
         selected_reusable_asset=selected_reusable_asset,
+        can_manage_reusable_losses=bool(
+            g.current_user
+            and g.current_user.has_any_role(
+                "owner", "admin", "manager", "inventory_manager"
+            )
+        ),
         can_manage_inventory_settings=bool(
             g.current_user
             and g.current_user.has_any_role(
@@ -10889,6 +11300,8 @@ def staff():
     payroll_end = date(payroll_year, payroll_month, payroll_days)
     payroll_rows = []
     total_payroll_estimate = 0.0
+    total_asset_charge = 0.0
+    total_net_payroll_estimate = 0.0
     today_attendance_rows = StaffAttendance.query.filter_by(attendance_date=today_ist).all()
     doc_pending_count = StaffDocument.query.filter(
         StaffDocument.verification_status.in_(["pending", "rejected"])
@@ -10911,6 +11324,22 @@ def staff():
         row.user_id: row
         for row in LeaveBalance.query.join(User).filter(User.active.is_(True)).all()
     }
+    payroll_asset_allocations = (
+        ReusableInventoryLossAllocation.query.join(ReusableInventoryLossEvent)
+        .filter(
+            ReusableInventoryLossEvent.loss_date >= payroll_start,
+            ReusableInventoryLossEvent.loss_date <= payroll_end,
+            ReusableInventoryLossAllocation.settlement_status.in_(["pending", "deducted"]),
+        )
+        .all()
+    )
+    payroll_asset_charge_map: dict[int, float] = {}
+    for allocation in payroll_asset_allocations:
+        payroll_asset_charge_map[allocation.user_id] = round(
+            payroll_asset_charge_map.get(allocation.user_id, 0.0)
+            + float(allocation.charge_amount or 0),
+            2,
+        )
     for staff_user in staff_users:
         profile = staff_user.staff_profile
         payroll_attendance_rows = StaffAttendance.query.filter(
@@ -10926,7 +11355,12 @@ def staff():
         salary_amount = float(profile.salary_amount or 0)
         per_day_salary = round((salary_amount / payroll_days), 2) if salary_amount else 0.0
         estimated_pay = round(payable_days * per_day_salary, 2)
+        asset_charge = payroll_asset_charge_map.get(staff_user.id, 0.0)
+        net_estimated_pay = round(max(0.0, estimated_pay - asset_charge), 2)
+        outstanding_asset_charge = round(max(0.0, asset_charge - estimated_pay), 2)
         total_payroll_estimate += estimated_pay
+        total_asset_charge += asset_charge
+        total_net_payroll_estimate += net_estimated_pay
         payroll_rows.append(
             {
                 "user": staff_user,
@@ -10938,6 +11372,9 @@ def staff():
                 "payable_days": round(payable_days, 2),
                 "per_day_salary": per_day_salary,
                 "estimated_pay": estimated_pay,
+                "asset_charge": asset_charge,
+                "net_estimated_pay": net_estimated_pay,
+                "outstanding_asset_charge": outstanding_asset_charge,
             }
         )
 
@@ -10968,6 +11405,8 @@ def staff():
         payroll_month=payroll_month,
         payroll_year=payroll_year,
         total_payroll_estimate=round(total_payroll_estimate, 2),
+        total_asset_charge=round(total_asset_charge, 2),
+        total_net_payroll_estimate=round(total_net_payroll_estimate, 2),
         today_attendance_count=len(today_attendance_rows),
         document_pending_count=doc_pending_count,
         pending_documents=pending_documents,

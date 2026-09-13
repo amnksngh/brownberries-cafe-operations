@@ -1,0 +1,93 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="panel reusable-report-hero">
+  <div>
+    <h2>Report Broken Reusable Asset</h2>
+    <p class="muted">Report a broken glass, cup, plate, utensil, or other reusable item as soon as it happens.</p>
+  </div>
+  <a class="button-link" href="{{ url_for('main.profile') }}">Back to Profile</a>
+</section>
+
+<section class="inventory-two-col inventory-main-grid">
+  <article class="panel">
+    <h3>Report Breakage</h3>
+    <div class="flash success">
+      <strong>Reported honestly:</strong> You pay 50% of the recorded item cost and the cafe bears 50%.
+    </div>
+    <div class="flash error">
+      <strong>Not reported:</strong> A shortage found during physical counting is shared equally among all active staff who do not have Admin privilege.
+    </div>
+    {% if reusable_assets %}
+    <form method="post" class="grid inventory-form-grid" id="self-breakage-form">
+      <label>Broken Item
+        <select name="asset_id" id="self-breakage-asset" required>
+          <option value="">Select item</option>
+          {% for asset in reusable_assets %}
+          <option value="{{ asset.id }}" data-price="{{ asset.average_unit_price }}" data-stock="{{ asset.current_quantity }}">{{ asset.name }} · {{ asset.current_quantity }} {{ asset.unit }} usable</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>Quantity Broken <input name="quantity" id="self-breakage-quantity" type="number" min="1" step="1" value="1" required /></label>
+      <label>Date <input name="loss_date" type="date" max="{{ today_date.isoformat() }}" value="{{ today_date.isoformat() }}" required /></label>
+      <label class="full">What happened? <textarea name="note" rows="3" maxlength="500" placeholder="Briefly explain where and how it broke." required></textarea></label>
+      <div class="full reusable-charge-preview" id="self-breakage-preview">Select an item to see the estimated split.</div>
+      <label class="full reusable-policy-confirm"><input type="checkbox" name="policy_confirmed" value="1" required /> I confirm this report is correct and understand that 50% of the recorded loss value will be charged to me.</label>
+      <button type="submit">Submit Breakage Report</button>
+    </form>
+    {% else %}
+    <p class="muted">There are no reusable items with usable stock available to report.</p>
+    {% endif %}
+  </article>
+
+  <article class="panel">
+    <h3>My Asset Charges</h3>
+    <div class="inventory-card-grid">
+      <article class="inventory-kpi"><h4>Pending / Payroll</h4><p>₹{{ "%.2f"|format(personal_pending_charge) }}</p></article>
+    </div>
+    <p class="muted">“Pending” is awaiting collection. “Payroll” means marked for salary deduction. “Paid” has been collected, and “Waived” requires a manager exception.</p>
+    <div class="table-scroll">
+      <table>
+        <tr><th>Date</th><th>Item</th><th>Reason</th><th>Total Loss</th><th>My Charge</th><th>Status</th></tr>
+        {% for allocation in personal_allocations %}
+        {% set loss = allocation.loss_event %}
+        <tr>
+          <td>{{ loss.loss_date.strftime('%d %b %Y') }}</td>
+          <td>{{ loss.asset.name if loss.asset else '-' }}<div class="muted">{{ loss.quantity }} unit{% if loss.quantity != 1 %}s{% endif %}</div></td>
+          <td>{{ 'Reported breakage · 50%' if loss.loss_type == 'reported_breakage' else 'Unreported shortage · shared' }}</td>
+          <td>₹{{ "%.2f"|format(loss.total_loss_value) }}</td>
+          <td><strong>₹{{ "%.2f"|format(allocation.charge_amount) }}</strong></td>
+          <td><span class="inventory-status {{ 'adequate' if allocation.settlement_status in ['paid', 'waived'] else 'deficit' }}">{{ 'Payroll' if allocation.settlement_status == 'deducted' else allocation.settlement_status|title }}</span></td>
+        </tr>
+        {% else %}<tr><td colspan="6">No asset-loss charge has been assigned to you.</td></tr>{% endfor %}
+      </table>
+    </div>
+  </article>
+</section>
+
+<script>
+(() => {
+  const asset = document.getElementById("self-breakage-asset");
+  const quantity = document.getElementById("self-breakage-quantity");
+  const preview = document.getElementById("self-breakage-preview");
+  if (!asset || !quantity || !preview) return;
+  const render = () => {
+    const option = asset.options[asset.selectedIndex];
+    const price = Number(option?.dataset?.price || 0);
+    const stock = Number(option?.dataset?.stock || 0);
+    const qty = Math.max(0, Number(quantity.value || 0));
+    quantity.max = stock || 1;
+    if (!asset.value || qty < 1) {
+      preview.textContent = "Select an item to see the estimated split.";
+      return;
+    }
+    const total = price * qty;
+    const staff = Math.floor((total * 100) / 2) / 100;
+    const cafe = Math.round((total - staff) * 100) / 100;
+    preview.textContent = `Recorded loss ₹${total.toFixed(2)} · Your 50% ₹${staff.toFixed(2)} · Cafe 50% ₹${cafe.toFixed(2)}`;
+  };
+  asset.addEventListener("change", render);
+  quantity.addEventListener("input", render);
+  render();
+})();
+</script>
+{% endblock %}

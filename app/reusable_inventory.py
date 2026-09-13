@@ -1,6 +1,47 @@
 from __future__ import annotations
 
 
+from decimal import Decimal, ROUND_DOWN, ROUND_HALF_UP
+
+
+def _money(value) -> Decimal:
+    return Decimal(str(value or 0)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
+
+def reported_loss_split(total_loss_value: float) -> dict[str, float]:
+    """Split a reported breakage equally while keeping the paise total exact."""
+    total = max(Decimal("0.00"), _money(total_loss_value))
+    staff = (total * Decimal("0.50")).quantize(
+        Decimal("0.01"), rounding=ROUND_DOWN
+    )
+    return {
+        "staff_charge": float(staff),
+        "cafe_share": float(total - staff),
+    }
+
+
+def shared_loss_allocations(
+    total_loss_value: float, staff_user_ids: list[int] | tuple[int, ...]
+) -> list[dict[str, float | int]]:
+    """Allocate an unreported loss equally and exactly across eligible staff."""
+    user_ids = sorted({int(value) for value in staff_user_ids if int(value) > 0})
+    total_paise = int(max(Decimal("0.00"), _money(total_loss_value)) * 100)
+    if not user_ids or total_paise <= 0:
+        return []
+    base_paise, remainder = divmod(total_paise, len(user_ids))
+    allocations = []
+    for index, user_id in enumerate(user_ids):
+        charge_paise = base_paise + (1 if index < remainder else 0)
+        allocations.append(
+            {
+                "user_id": user_id,
+                "charge_amount": charge_paise / 100,
+                "share_percent": round(100 / len(user_ids), 4),
+            }
+        )
+    return allocations
+
+
 def weighted_average_unit_price(
     existing_quantity: int | float,
     existing_unit_price: int | float,

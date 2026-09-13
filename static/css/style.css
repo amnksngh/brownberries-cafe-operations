@@ -5377,6 +5377,70 @@ body.cashier-shell.cashier-tablet-portrait .cashier-selected-sections {
   background: #fffdfa;
 }
 
+.reusable-report-hero,
+.reusable-loss-policy .split-head {
+  align-items: flex-start;
+}
+
+.reusable-charge-preview {
+  padding: 0.7rem;
+  border: 1px solid #c9dbcd;
+  border-radius: 8px;
+  background: #f1f8f2;
+  color: #285b36;
+  font-weight: 700;
+}
+
+.reusable-policy-confirm {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.55rem;
+  padding: 0.65rem;
+  border: 1px solid #e3ad7b;
+  border-radius: 8px;
+  background: #fff7e8;
+  font-size: 0.84rem;
+  line-height: 1.35;
+}
+
+.reusable-policy-confirm input {
+  width: auto;
+  flex: 0 0 auto;
+  margin-top: 0.15rem;
+}
+
+.reusable-manager-loss-form {
+  margin-top: 0.7rem;
+}
+
+.reusable-loss-ledger {
+  min-width: 1180px;
+}
+
+.reusable-allocation-list {
+  display: grid;
+  gap: 0.45rem;
+  min-width: 470px;
+  margin-top: 0.55rem;
+}
+
+.reusable-allocation-row {
+  display: grid;
+  grid-template-columns: minmax(135px, 1fr) minmax(130px, 0.8fr) minmax(145px, 1fr) auto;
+  gap: 0.4rem;
+  align-items: center;
+  padding: 0.45rem;
+  border: 1px solid #e7ddd2;
+  border-radius: 7px;
+  background: #fffdfa;
+}
+
+.reusable-allocation-row button {
+  width: auto;
+  min-height: 2.2rem;
+  padding: 0.4rem 0.65rem;
+}
+
 .reusable-native-chart {
   display: grid;
   gap: 0.65rem;
@@ -5458,6 +5522,11 @@ body.cashier-shell.cashier-tablet-portrait .cashier-selected-sections {
 }
 
 @media (max-width: 720px) {
+  .reusable-report-hero {
+    display: grid;
+    gap: 0.65rem;
+  }
+
   .reusable-native-chart-row {
     grid-template-columns: minmax(90px, 115px) minmax(150px, 1fr) 62px;
     gap: 0.4rem;
