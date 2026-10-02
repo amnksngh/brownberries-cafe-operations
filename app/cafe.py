@@ -58,6 +58,7 @@ from .leave_logic import (
     weekly_off_config,
 )
 from .menu_schedule import menu_item_window_is_open, menu_period_settings
+from .payment_summary import summarize_payments
 from .menu_navigation import (
     COLLECTION_KINDS,
     build_menu_navigation,
@@ -4170,6 +4171,7 @@ def mark_order_paid(order_id):
         else:
             sms_message = " SMS not sent: mobile missing."
     db.session.commit()
+    _STATS_CACHE.clear()
     payload = _serialize_order(order)
     if order.table_id:
         payload["settlement_access"] = _settlement_access_payload(order)
@@ -4338,6 +4340,7 @@ def _clear_table_orders_impl(table_id: int, next_url: str = ""):
             )
     table.service_charge_opt_out_requested = False
     db.session.commit()
+    _STATS_CACHE.clear()
     settlement_access = _settlement_access_payload(
         payable_orders[0],
         settlement_total=selected_total,
@@ -9210,6 +9213,10 @@ def export_stats():
     ws3.append(["Total Sales", kpi["revenue"]["total_sales"]])
     ws3.append(["Total Orders", kpi["revenue"]["total_orders"]])
     ws3.append(["Average Order Value", kpi["revenue"]["average_order_value"]])
+    ws3.append(["Total Payments Collected", kpi["payments"]["total_collected"]])
+    for payment in kpi["payments"]["rows"]:
+        ws3.append([f'{payment["label"]} Payments', payment["amount"]])
+    ws3.append(["Payment basis", "Paid order totals including service charge; category/workstation filters are proportionally allocated."])
     for row in kpi["operations"]["workstation_rows"]:
         ws3.append([f'{row["label"]} Sales', row["sales"]])
     ws4 = wb.create_sheet(title="Sales Patterns")
@@ -10464,6 +10471,9 @@ def _build_stats_payload(filters, use_cache=True):
         )
 
     summary = {
+        "payments": summarize_payments(
+            filtered_orders, allocated=(sales_source != "all" or selected_category != "all")
+        ),
         "revenue": {
             "total_sales": round(total_sales, 2),
             "total_orders": total_orders,

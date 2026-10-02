@@ -10,12 +10,14 @@ import subprocess
 from html.parser import HTMLParser
 from unittest.mock import patch
 from pathlib import Path
+from contextlib import ExitStack
+from datetime import datetime
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from sqlalchemy import event
 from app import create_app
 from app.extensions import db
-from app.models import User, CafeTable
+from app.models import User, CafeTable, CafeOrder, CafeOrderItem
 
 
 class InlineScripts(HTMLParser):
@@ -47,7 +49,7 @@ def main():
     parser.add_argument("--check-js", action="store_true", help="Compile rendered inline JavaScript with Node (no execution)")
     args = parser.parse_args()
     results = []
-    with tempfile.TemporaryDirectory(prefix="brownberries-audit-") as folder:
+    with tempfile.TemporaryDirectory(prefix="brownberries-audit-") as folder, ExitStack() as cleanup:
         source_dir = Path(args.instance)
         source = sqlite3.connect(f"file:{(source_dir / 'brownberries.db').as_posix()}?mode=ro", uri=True)
         target = sqlite3.connect(str(Path(folder) / "brownberries.db"))
@@ -65,6 +67,11 @@ def main():
             table = CafeTable.query.filter_by(active=True).first()
             table_slug = table.qr_slug if table else None
             engine = db.engine
+        def close_database():
+            with app.app_context():
+                db.session.remove()
+                engine.dispose()
+        cleanup.callback(close_database)
         counter = [0]
         def counted(*args):
             counter[0] += 1
@@ -135,6 +142,25 @@ def main():
                 if snapshots[0] != snapshots[1]:
                     raise AssertionError("Stock/financial baseline mismatch: " + period)
                 print("Baseline stock and financial comparison passed: " + period, flush=True)
+        from app.cafe import _build_stats_payload, _parse_stats_filters
+        for preset in ("today", "last_month"):
+            with app.test_request_context("/cafe/stats?preset=" + preset):
+                payload = _build_stats_payload(_parse_stats_filters({"preset": preset}), use_cache=False)
+                payments = payload["summary"].get("payments")
+                if payments:
+                    # The UI's order list is capped at 400; totals are not.
+                    recorded = db.session.query(db.func.sum(CafeOrder.total_amount)).filter(
+                        CafeOrder.status == "paid",
+                        CafeOrder.paid_at >= datetime.fromisoformat(payload["period"]["start"]),
+                        CafeOrder.paid_at < datetime.fromisoformat(payload["period"]["end"]),
+                        CafeOrder.order_items.any(db.and_(
+                            db.func.coalesce(CafeOrderItem.approval_status, "pending") != "rejected",
+                            CafeOrderItem.menu_item.has(),
+                        )),
+                    ).scalar() or 0
+                    assert round(recorded, 2) == payments["total_collected"], "Collected total does not reconcile"
+                    assert round(sum(row["amount"] for row in payments["rows"]), 2) == payments["total_collected"]
+                    print("Payments reconcile to recorded paid orders: " + preset, flush=True)
         # Render each common staff role on the snapshot; no real sessions or
         # transactions are changed on the running service.
         with app.app_context():
@@ -152,9 +178,6 @@ def main():
                 row = dict(role=role, url=url, status=response.status_code)
                 results.append(row)
                 print(json.dumps(row), flush=True)
-        with app.app_context():
-            db.session.remove()
-            engine.dispose()
     Path(args.output).write_text(json.dumps(results, indent=2), encoding="utf-8")
     if any(row["status"] >= 500 for row in results):
         raise SystemExit(1)

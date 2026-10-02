@@ -65,6 +65,29 @@
   </form>
 </section>
 
+<section class="panel" aria-labelledby="stats-payments-heading">
+  <h3 id="stats-payments-heading">Payments Collected</h3>
+  <p class="muted">For the selected period and filters. Includes service charge and other billed charges; cash is net of change returned. QR payments are included in UPI.</p>
+  {% if stats_payload.summary.payments.allocated %}
+  <p class="muted">Category/workstation amounts are allocated proportionally from each order's payment mix, not separate payment transactions.</p>
+  {% endif %}
+  <div class="stats-kpi-grid">
+    <article class="metric kpi-card">
+      <h3>Total Collected</h3>
+      <p>₹{{ "%.2f"|format(stats_payload.summary.payments.total_collected) }}</p>
+      <small>Settled orders only</small>
+    </article>
+    {% for payment in stats_payload.summary.payments.rows %}
+    <article class="metric kpi-card" data-payment-method="{{ payment.key }}">
+      <h3>{{ payment.label }}</h3>
+      <p>₹{{ "%.2f"|format(payment.amount) }}</p>
+      <small>{{ "%.1f"|format(payment.percentage) }}% of collected payments</small>
+      {% if payment.key == 'unknown' %}<small>Payment method missing or split details unavailable.</small>{% endif %}
+    </article>
+    {% endfor %}
+  </div>
+</section>
+
 <section class="stats-kpi-grid">
   <article class="metric kpi-card">
     <h3>Total Sales</h3>
