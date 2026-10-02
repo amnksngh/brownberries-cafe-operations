@@ -464,18 +464,11 @@
     <button type="button" id="od-close">Close</button>
   </div>
 </div>
-<script src="{{ url_for('static', filename='js/socket.io.min.js') }}"></script>
 <script id="cashier-all-orders-payload" type="application/json">{{ all_orders_payload|tojson }}</script>
 <script>
   const cashierUserId = {{ g.current_user.id if g.current_user else 0 }};
   const notifSoundUrl = "{{ url_for('static', filename='sounds/notification.wav') }}";
-  const cashierSocket = io("/table", {
-    transports: ["polling"],
-    upgrade: false,
-    reconnection: true,
-    reconnectionAttempts: 50,
-    reconnectionDelay: 800,
-  });
+  const cashierSocket = window.bbSocket("/table");
   const selectedTableId = {{ selected_table.id if selected_table else 0 }};
   const activeTab = "{{ tab }}";
   const cashCounterSnapshot = {{ cash_counter_snapshot|tojson }};
@@ -1127,6 +1120,12 @@
         }
       });
   }
+
+  let cashierWasConnected = false;
+  cashierSocket.on("connect", () => {
+    if (cashierWasConnected) refreshCashierRunningView();
+    cashierWasConnected = true;
+  });
 
   hydrateAllOrdersPayload(document);
   bindCashierDynamicHandlers(document);

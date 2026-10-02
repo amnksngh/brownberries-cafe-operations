@@ -576,9 +576,8 @@
   setupOrderingTopbarAutoHide();
   setupSearchFocusMode();
 </script>
-<script src="{{ url_for('static', filename='js/socket.io.min.js') }}"></script>
 <script>
-  const orderSocket = io("/table", { transports: ["polling"], upgrade: false, reconnection: true });
+  const orderSocket = window.bbSocket("/table");
   const activeTableId = Number(document.getElementById("selected-table-id-input")?.value || 0);
   const currentIstDayKey = () => {
     const parts = new Intl.DateTimeFormat("en-GB", {

@@ -40,8 +40,8 @@ for %%P in (
 
 if defined CLOUDFLARED_CONFIG (
   echo [%date% %time%] Starting cloudflared with config "%CLOUDFLARED_CONFIG%" using "%CLOUDFLARED_EXE%". >> "%LOG_FILE%"
-  "%CLOUDFLARED_EXE%" --config "%CLOUDFLARED_CONFIG%" tunnel run brownberries >> "%LOG_FILE%" 2>&1
+  "%CLOUDFLARED_EXE%" --config "%CLOUDFLARED_CONFIG%" tunnel --protocol http2 run brownberries >> "%LOG_FILE%" 2>&1
 ) else (
   echo [%date% %time%] No config.yml found. Falling back to default cloudflared lookup using "%CLOUDFLARED_EXE%". >> "%LOG_FILE%"
-  "%CLOUDFLARED_EXE%" tunnel run brownberries >> "%LOG_FILE%" 2>&1
+  "%CLOUDFLARED_EXE%" tunnel --protocol http2 run brownberries >> "%LOG_FILE%" 2>&1
 )

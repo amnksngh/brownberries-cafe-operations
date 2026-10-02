@@ -8,6 +8,7 @@ remain readable and every new balance change is auditable.
 import calendar
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
+from sqlalchemy.orm import joinedload
 
 from .extensions import db
 from .models import (
@@ -74,7 +75,7 @@ def ensure_leave_defaults() -> None:
 
 def _eligible_users():
     return (
-        User.query.filter(User.active.is_(True))
+        User.query.options(joinedload(User.staff_profile)).filter(User.active.is_(True))
         .order_by(User.full_name.asc())
         .all()
     )
@@ -110,8 +111,11 @@ def _month_dates(start: date, end: date):
             cursor = date(cursor.year, cursor.month + 1, 1)
 
 
-def _credit_once(user: User, balance: LeaveBalance, leave_type: str, amount: float, period_key: str, note: str):
-    if amount <= 0 or LeaveTransaction.query.filter_by(user_id=user.id, period_key=period_key).first():
+def _credit_once(user: User, balance: LeaveBalance, leave_type: str, amount: float, period_key: str, note: str, existing_keys=None):
+    exists = (user.id, period_key) in existing_keys if existing_keys is not None else (
+        LeaveTransaction.query.filter_by(user_id=user.id, period_key=period_key).first()
+    )
+    if amount <= 0 or exists:
         return False
     if leave_type == "earned":
         balance.earned_balance = round(float(balance.earned_balance or 0) + amount, 2)
@@ -127,6 +131,8 @@ def _credit_once(user: User, balance: LeaveBalance, leave_type: str, amount: flo
             note=note,
         )
     )
+    if existing_keys is not None:
+        existing_keys.add((user.id, period_key))
     return True
 
 
@@ -140,11 +146,14 @@ def run_leave_maintenance(as_of: date | None = None) -> None:
     policy = leave_policy()
     weekly_off_config()
     changed = False
+    existing_keys = set(db.session.query(LeaveTransaction.user_id, LeaveTransaction.period_key)
+                        .filter(LeaveTransaction.period_key.isnot(None)).all())
+    balances = {row.user_id: row for row in LeaveBalance.query.all()}
     for user in _eligible_users():
         profile = getattr(user, "staff_profile", None)
         if not profile or profile.archived:
             continue
-        balance = ensure_leave_balance(user)
+        balance = balances.get(user.id) or ensure_leave_balance(user)
         # A balance row may have been created during a later migration or
         # first login.  It must not erase leave earned since the staff
         # member's actual joining date.  Use the joining date when available;
@@ -161,6 +170,7 @@ def run_leave_maintenance(as_of: date | None = None) -> None:
                     float(policy.monthly_earned_credit or 0),
                     f"earned:{month.year:04d}-{month.month:02d}-15",
                     "Monthly earned leave credit",
+                    existing_keys,
                 ) or changed
             if credit_start <= month_end <= as_of:
                 changed = _credit_once(
@@ -170,6 +180,7 @@ def run_leave_maintenance(as_of: date | None = None) -> None:
                     float(policy.month_end_earned_credit or 0),
                     f"earned:{month.year:04d}-{month.month:02d}-end",
                     "End-of-month earned leave credit",
+                    existing_keys,
                 ) or changed
 
         if balance.urgent_year != as_of.year:

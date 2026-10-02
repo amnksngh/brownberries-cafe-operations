@@ -15,6 +15,19 @@
     <link rel="apple-touch-icon" sizes="180x180" href="{{ url_for('static', filename='images/pwa-icon-180.png') }}" />
     {% block extra_head %}{% endblock %}
     <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}" />
+    <script src="{{ url_for('static', filename='js/socket.io.min.js') }}"></script>
+    <script>
+      // Reuse a namespace within this page: the global notifier and ordering
+      // screen must not each hold a separate long-polling server worker.
+      window.bbSocket = (namespace) => {
+        const sockets = window.__bbSockets || (window.__bbSockets = {});
+        return sockets[namespace] || (sockets[namespace] = io(namespace, {
+          transports: ["polling"], upgrade: false, reconnection: true,
+          reconnectionDelay: 1000, reconnectionDelayMax: 10000,
+          randomizationFactor: 0.5,
+        }));
+      };
+    </script>
   </head>
   <body class="{% block body_class %}{% endblock %}">
     {% set app_shell = request.args.get('mobile_app') == '1' %}
@@ -97,7 +110,6 @@
       }
     </script>
     {% if g.current_user and not hide_staff_nav|default(false) and not app_shell and (user_has_any_role(g.current_user, "cashier") or user_has_permission(g.current_user, "can_manage_cashier")) %}
-    <script src="{{ url_for('static', filename='js/socket.io.min.js') }}"></script>
     <script>
       window.__bbGlobalNotifierInstalled = true;
       (() => {
@@ -313,13 +325,7 @@
           }, { once: true });
         });
 
-        const socket = io("/table", {
-          transports: ["polling"],
-          upgrade: false,
-          reconnection: true,
-          reconnectionAttempts: 50,
-          reconnectionDelay: 800,
-        });
+        const socket = window.bbSocket("/table");
 
         socket.on("order_created", (payload) => {
           if (payload?.created_on_ist && payload.created_on_ist !== currentIstDayKey()) return;

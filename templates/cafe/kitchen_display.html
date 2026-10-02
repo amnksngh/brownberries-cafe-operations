@@ -184,17 +184,10 @@
 <script id="kds-sop-library-payload" type="application/json">{{ sop_library|tojson }}</script>
 <script id="kds-responsibility-candidates-payload" type="application/json">{{ responsibility_candidates|tojson }}</script>
 <script id="kds-responsibility-reasons-payload" type="application/json">{{ responsibility_reasons|tojson }}</script>
-<script src="{{ url_for('static', filename='js/socket.io.min.js') }}"></script>
 <script>
   const notifSoundUrl = "{{ url_for('static', filename='sounds/notification.wav') }}";
   const board = document.getElementById("kitchen-board");
-  const socket = io("/kitchen", {
-    transports: ["polling"],
-    upgrade: false,
-    reconnection: true,
-    reconnectionAttempts: 50,
-    reconnectionDelay: 800,
-  });
+  const socket = window.bbSocket("/kitchen");
   const station = "{{ station }}";
   const stationName = {{ station_name|tojson }};
   const groupedDisplay = {{ 'true' if display_group_slug else 'false' }};
@@ -1112,6 +1105,8 @@
 
   socket.on("connect", () => {
     if (socketState) socketState.textContent = "Live";
+    // Recover any orders/edits missed while the network was unavailable.
+    refreshBoardData();
   });
   socket.on("disconnect", () => {
     if (socketState) socketState.textContent = "Reconnecting...";

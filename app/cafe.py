@@ -11,7 +11,7 @@ from zoneinfo import ZoneInfo
 
 import qrcode
 from PIL import Image, ImageDraw, ImageFont, ImageOps
-from flask import Blueprint, Response, current_app, flash, g, jsonify, redirect, render_template, request, session, url_for
+from flask import Blueprint, Response, current_app, flash, g, has_request_context, jsonify, redirect, render_template, request, session, url_for
 from openpyxl import Workbook
 from sqlalchemy.orm import joinedload
 from werkzeug.security import check_password_hash, generate_password_hash
@@ -188,6 +188,32 @@ CASH_COUNTER_REASON_OPTIONS = (
 )
 
 
+def _inventory_closing_snapshots(closing_date):
+    """Fetch today's and the most recent preceding closing in two queries."""
+    current = InventoryDailyClosing.query.filter_by(closing_date=closing_date).order_by(InventoryDailyClosing.id.asc()).all()
+    latest = (
+        db.session.query(
+            InventoryDailyClosing.item_id,
+            db.func.max(InventoryDailyClosing.closing_date).label("closing_date"),
+        )
+        .filter(InventoryDailyClosing.closing_date < closing_date)
+        .group_by(InventoryDailyClosing.item_id)
+        .subquery()
+    )
+    previous = InventoryDailyClosing.query.join(
+        latest,
+        db.and_(InventoryDailyClosing.item_id == latest.c.item_id,
+                InventoryDailyClosing.closing_date == latest.c.closing_date),
+    ).order_by(InventoryDailyClosing.id.asc()).all()
+    # Retain the first row if a legacy database has duplicate same-day entries.
+    current_map, previous_map = {}, {}
+    for row in current:
+        current_map.setdefault(row.item_id, row)
+    for row in previous:
+        previous_map.setdefault(row.item_id, row)
+    return current_map, previous_map
+
+
 def _slugify_workstation(value: str) -> str:
     value = "".join(ch.lower() if ch.isalnum() else "-" for ch in str(value or "").strip())
     slug = "-".join(part for part in value.split("-") if part)
@@ -207,6 +233,8 @@ def _workstation_group_slug_set(include_inactive: bool = False) -> set[str]:
 
 
 def _ensure_workstations_seeded():
+    if has_request_context() and getattr(g, "workstations_seeded", False):
+        return
     changed = False
     for index, (slug, name) in enumerate(DEFAULT_WORKSTATIONS, start=1):
         station = Workstation.query.filter_by(slug=slug).first()
@@ -225,14 +253,24 @@ def _ensure_workstations_seeded():
             changed = True
     if changed:
         db.session.commit()
+    if has_request_context():
+        g.workstations_seeded = True
 
 
 def _all_workstations(include_inactive: bool = False):
     _ensure_workstations_seeded()
+    # GET-only, request-local caching avoids hundreds of repeated lookups in
+    # sales/stock loops without hiding edits made by a later request.
+    cacheable = has_request_context() and request.method == "GET"
+    cache = g.setdefault("workstation_rows", {}) if cacheable else {}
+    if include_inactive in cache:
+        return cache[include_inactive]
     query = Workstation.query
     if not include_inactive:
         query = query.filter_by(active=True)
-    return query.order_by(Workstation.display_order.asc(), Workstation.name.asc()).all()
+    rows = query.order_by(Workstation.display_order.asc(), Workstation.name.asc()).all()
+    cache[include_inactive] = rows
+    return rows
 
 
 def _chef_options(include_inactive: bool = False) -> list[User]:
@@ -8467,17 +8505,11 @@ def inventory():
     inbound_map, explicit_wastage_map, opening_hints = _inventory_closing_activity_maps(
         closing_date
     )
+    current_closings, previous_closings = _inventory_closing_snapshots(closing_date)
     daily_rows = []
     for item in items:
-        existing = InventoryDailyClosing.query.filter_by(item_id=item.id, closing_date=closing_date).first()
-        prev_row = (
-            InventoryDailyClosing.query.filter(
-                InventoryDailyClosing.item_id == item.id,
-                InventoryDailyClosing.closing_date < closing_date,
-            )
-            .order_by(InventoryDailyClosing.closing_date.desc())
-            .first()
-        )
+        existing = current_closings.get(item.id)
+        prev_row = previous_closings.get(item.id)
         opening = (
             float(existing.opening_stock)
             if existing
@@ -8881,7 +8913,11 @@ def inventory():
 
     paid_orders = (
         CafeOrder.query.options(joinedload(CafeOrder.order_items).joinedload(CafeOrderItem.menu_item))
-        .filter(CafeOrder.status == "paid")
+        .filter(
+            CafeOrder.status == "paid",
+            db.func.coalesce(CafeOrder.paid_at, CafeOrder.created_at) >= movement_start_utc,
+            db.func.coalesce(CafeOrder.paid_at, CafeOrder.created_at) < movement_end_utc,
+        )
         .all()
     )
     period_revenue = 0.0

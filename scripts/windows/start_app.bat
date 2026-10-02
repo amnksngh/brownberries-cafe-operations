@@ -23,4 +23,5 @@ if not exist ".venv\Scripts\waitress-serve.exe" (
   exit /b 1
 )
 
-"%REPO_DIR%\.venv\Scripts\waitress-serve.exe" --listen=127.0.0.1:5050 --threads=12 wsgi:app >> "%REPO_DIR%\logs\windows-app.log" 2>&1
+rem Long-polling displays hold one worker each; reserve capacity for normal requests.
+"%REPO_DIR%\.venv\Scripts\waitress-serve.exe" --listen=127.0.0.1:5050 --threads=64 wsgi:app >> "%REPO_DIR%\logs\windows-app.log" 2>&1

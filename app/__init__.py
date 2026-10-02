@@ -21,6 +21,7 @@ from .cafe import (
 )
 from .deploy_config import load_deployment_config
 from .extensions import db, socketio
+from .reliability import configure_sqlite, DisconnectedPollingSession, register_request_timing
 from .library import bp as library_bp
 from .leave_logic import ensure_leave_defaults, run_leave_maintenance
 from .main import bp as main_bp
@@ -601,12 +602,13 @@ def _ensure_default_workstations():
         db.session.commit()
 
 
-def create_app():
+def create_app(*, instance_path=None):
     app = Flask(
         __name__,
         instance_relative_config=True,
         template_folder="../templates",
         static_folder="../static",
+        **({"instance_path": str(instance_path)} if instance_path else {}),
     )
     deploy_cfg = load_deployment_config(app.instance_path)
     app.config.update(
@@ -633,8 +635,11 @@ def create_app():
     app.config["UPLOADS_ROOT"] = str(uploads_root)
 
     db.init_app(app)
+    register_request_timing(app)
     socketio.init_app(app)
+    app.wsgi_app = DisconnectedPollingSession(app.wsgi_app)
     with app.app_context():
+        configure_sqlite(db.engine)
         db.create_all()
         _ensure_sqlite_schema_columns()
         _ensure_protected_menu_categories()

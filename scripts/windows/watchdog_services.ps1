@@ -7,6 +7,7 @@ $LogFile = Join-Path $LogDir "windows-watchdog.log"
 $LocalHealthUrl = "http://127.0.0.1:5050/healthz"
 $PublicHealthUrl = "https://brownberriescafe.com/healthz"
 $AppRestartRequestFile = Join-Path $RepoDir "instance\restart_app.request"
+$TunnelRestartRequestFile = Join-Path $RepoDir "instance\restart_tunnel.request"
 $InternetProbeHost = "one.one.one.one"
 $AppServiceName = "BrownberriesApp"
 $TunnelServiceCandidates = @(
@@ -57,15 +58,18 @@ function Ensure-ServiceRunning {
 function Test-UrlOk {
   param(
     [string]$Url,
-    [int]$TimeoutSec = 10
+    [int]$TimeoutSec = 10,
+    [int]$Attempts = 1
   )
 
-  try {
-    $response = Invoke-WebRequest -Uri $Url -UseBasicParsing -TimeoutSec $TimeoutSec
-    return ($response.StatusCode -ge 200 -and $response.StatusCode -lt 500)
-  } catch {
-    return $false
+  for ($attempt = 1; $attempt -le $Attempts; $attempt++) {
+    try {
+      $response = Invoke-WebRequest -Uri $Url -UseBasicParsing -TimeoutSec $TimeoutSec
+      if ($response.StatusCode -eq 200) { return $true }
+    } catch {}
+    if ($attempt -lt $Attempts) { Start-Sleep -Seconds 3 }
   }
+  return $false
 }
 
 function Restart-ServiceSafe {
@@ -106,11 +110,16 @@ if (Test-Path -LiteralPath $AppRestartRequestFile) {
 
 if ($null -ne $TunnelServiceName) {
   [void](Ensure-ServiceRunning -ServiceName $TunnelServiceName)
+  if (Test-Path -LiteralPath $TunnelRestartRequestFile) {
+    Write-Log "One-shot tunnel restart requested"
+    Remove-Item -LiteralPath $TunnelRestartRequestFile -Force -ErrorAction SilentlyContinue
+    Restart-ServiceSafe -ServiceName $TunnelServiceName
+  }
 } else {
   Write-Log "No tunnel service found. Checked: $($TunnelServiceCandidates -join ', ')"
 }
 
-if (-not (Test-UrlOk -Url $LocalHealthUrl -TimeoutSec 10)) {
+if (-not (Test-UrlOk -Url $LocalHealthUrl -TimeoutSec 10 -Attempts 3)) {
   Write-Log "Local health check failed at $LocalHealthUrl"
   Restart-ServiceSafe -ServiceName $AppServiceName
   Start-Sleep -Seconds 5
@@ -133,7 +142,7 @@ try {
 
 if ($internetOk) {
   Write-Log "Internet probe passed"
-  if (-not (Test-UrlOk -Url $PublicHealthUrl -TimeoutSec 15)) {
+  if (-not (Test-UrlOk -Url $PublicHealthUrl -TimeoutSec 15 -Attempts 3)) {
     Write-Log "Public health check failed at $PublicHealthUrl"
     if ($null -ne $TunnelServiceName) {
       Restart-ServiceSafe -ServiceName $TunnelServiceName

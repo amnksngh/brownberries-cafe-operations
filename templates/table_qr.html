@@ -687,7 +687,6 @@
   </div>
 </div>
 
-<script src="{{ url_for('static', filename='js/socket.io.min.js') }}"></script>
 <script src="{{ url_for('static', filename='js/menu-navigation.js') }}"></script>
 <script>
   const isPreview = {{ "true" if is_preview else "false" }};
@@ -1670,7 +1669,7 @@
         });
       } catch (_) {}
     });
-    const socket = io("/table", { transports: ["polling"], upgrade: false, reconnection: true });
+    const socket = window.bbSocket("/table");
     socket.on("order_created", (payload) => {
       if (payload?.created_on_ist && payload.created_on_ist !== currentIstDayKey()) return;
       upsertOrderRow(payload);

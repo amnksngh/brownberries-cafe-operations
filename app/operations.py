@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import date, datetime
 
 from flask import Blueprint, flash, g, jsonify, redirect, render_template, request, url_for
+from sqlalchemy.orm import selectinload
 
 from .auth_helpers import roles_required
 from .extensions import db
@@ -131,7 +132,11 @@ def index():
         OperationalItem.internally_produced.is_(True),
         OperationalItem.sellable.is_(True),
     )
-    item_query = OperationalItem.query.filter(menu_managed_filter).order_by(
+    profile_options = (
+        selectinload(OperationalItem.recipe_versions),
+        selectinload(OperationalItem.sop_versions),
+    )
+    item_query = OperationalItem.query.options(*profile_options).filter(menu_managed_filter).order_by(
         OperationalItem.name.asc()
     )
     if query_text:
@@ -163,7 +168,7 @@ def index():
     certifications = (
         EmployeeOperationalSkill.query.order_by(EmployeeOperationalSkill.updated_at.desc()).all()
     )
-    all_profiles = OperationalItem.query.filter(menu_managed_filter).all()
+    all_profiles = OperationalItem.query.options(*profile_options).filter(menu_managed_filter).all()
     readiness = {"ready": 0, "warning": 0, "error": 0}
     for profile in all_profiles:
         levels = {row["level"] for row in validation_messages(profile)}

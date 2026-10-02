@@ -6,4 +6,6 @@ socketio = SocketIO(
     async_mode="threading",
     cors_allowed_origins="*",
     allow_upgrades=False,
+    ping_interval=10,
+    ping_timeout=30,
 )

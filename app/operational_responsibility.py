@@ -143,6 +143,9 @@ def _menu_variants(menu_item: MenuItem) -> list[tuple[str, float, str]]:
 def ensure_operational_items_seeded() -> None:
     """Create non-destructive internal profiles for existing menu/inventory data."""
 
+    links = db.session.query(OperationalItem.menu_item_id, OperationalItem.inventory_item_id).all()
+    linked_menu_ids = {row.menu_item_id for row in links if row.menu_item_id is not None}
+    linked_inventory_ids = {row.inventory_item_id for row in links if row.inventory_item_id is not None}
     inventory_rows = InventoryItem.query.order_by(InventoryItem.id).all()
     inventory_by_name: dict[str, list[InventoryItem]] = defaultdict(list)
     for row in inventory_rows:
@@ -150,14 +153,13 @@ def ensure_operational_items_seeded() -> None:
 
     changed = False
     for menu_item in MenuItem.query.order_by(MenuItem.id).all():
-        profile = OperationalItem.query.filter_by(menu_item_id=menu_item.id).first()
-        if profile:
+        if menu_item.id in linked_menu_ids:
             continue
         matching_inventory = next(
             (
                 row
                 for row in inventory_by_name.get((menu_item.name or "").strip().lower(), [])
-                if not OperationalItem.query.filter_by(inventory_item_id=row.id).first()
+                if row.id not in linked_inventory_ids
             ),
             None,
         )
@@ -180,6 +182,9 @@ def ensure_operational_items_seeded() -> None:
         )
         db.session.add(profile)
         db.session.flush()
+        linked_menu_ids.add(menu_item.id)
+        if matching_inventory:
+            linked_inventory_ids.add(matching_inventory.id)
         for name, quantity, unit in _menu_variants(menu_item):
             db.session.add(
                 OperationalItemVariant(
@@ -192,7 +197,7 @@ def ensure_operational_items_seeded() -> None:
         changed = True
 
     for inventory_item in inventory_rows:
-        if OperationalItem.query.filter_by(inventory_item_id=inventory_item.id).first():
+        if inventory_item.id in linked_inventory_ids:
             continue
         workstation = _workstation_for_slug(inventory_item.area)
         profile = OperationalItem(
@@ -212,6 +217,7 @@ def ensure_operational_items_seeded() -> None:
         )
         db.session.add(profile)
         db.session.flush()
+        linked_inventory_ids.add(inventory_item.id)
         db.session.add(
             OperationalItemVariant(
                 item_id=profile.id,
