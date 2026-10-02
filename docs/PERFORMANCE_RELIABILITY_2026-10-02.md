@@ -69,11 +69,35 @@ orders/edits made after the backup. WAL is compatible with the previous code and
 does not need disabling for code rollback. Restore data only for confirmed data
 damage, with the app stopped and explicit reconciliation of newer transactions.
 
-## Limits / follow-up
+## Live release verification
+
+- Released commit `c2472af` on main and experimental branch; pushed both and
+  rollback tag `rollback-before-performance-20261002-0732` to origin.
+- Backup: `C:/Brownberries/brownberries-cafe-operations/instance_windows_backup/20261002-0732-performance`.
+  Online backup integrity check passed; 8,032 orders preserved, plus configuration
+  and uploaded files. Production quick-check and order count matched after restart.
+- SYSTEM watchdog restarted app at 07:33 and tunnel at 07:33 on 2 October 2026 IST.
+  Both services running; local/public health passed. Live Engine.IO advertises the
+  new 10-second ping / 30-second timeout. SQLite reports WAL. All four tunnel
+  connections registered HTTP/2.
+- Snapshot audit: 71 read requests, 70 HTTP 200 and one expected customer-login
+  redirect; no server errors. Rendered inline JavaScript passed syntax checks.
+  Browser checks confirmed public category/subcategory filtering and KDS `Live`
+  status; no console warnings/errors in these checked tabs.
+- Public latency remains variable: health probes ranged about 1.3–11 seconds;
+  a Cloudflare edge-only response took 3.1 seconds (2.9 seconds through TLS),
+  while the local menu took 0.031 seconds. Both IPv4 and IPv6 showed delays.
+  This indicates network-path overhead remains; it is not a claim that every
+  customer now receives sub-second pages. One HTTP/2 stream-close error was
+  observed during checking; no full tunnel disconnect was observed after restart.
+
+## Remaining limits
 
 The host has approximately 4 GB RAM and less than 1 GB free during this audit.
 Browser/API checks and unit tests do not prove every workflow or future peak load.
 Internet/Wi-Fi outages, sleep and Windows restarts can still interrupt service.
+AC idle sleep is disabled, but battery idle sleep is currently 15 minutes; keep
+this server plugged in. No power or network security settings were changed.
 This pass does not change attendance/payroll business rules, financial policies,
 customer menu visibility, or remote account permissions. Longer-term resilience
 requires a dedicated always-on host/reliable network and off-machine backups.
