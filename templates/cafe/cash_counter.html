@@ -18,9 +18,10 @@
 
 <section class="cash-counter-summary-grid">
   <article class="panel cash-counter-total-card">
-    <p class="eyebrow">Current cash</p>
-    <strong>₹{{ "%.2f"|format(cash_snapshot.total) }}</strong>
-    <span class="muted">All recorded deposits less withdrawals</span>
+    <p class="eyebrow">Tracked cash in counter</p>
+    <strong>₹{{ "%.2f"|format(cash_snapshot.total - cash_snapshot.unallocated) }}</strong>
+    <span class="muted">Value of recorded notes and coins remaining after withdrawals</span>
+    <span class="muted">Ledger balance: ₹{{ "%.2f"|format(cash_snapshot.total) }}</span>
   </article>
   <article class="panel">
     <p class="eyebrow">{{ cash_period_start.strftime('%d %b %Y') }} to {{ cash_period_end.strftime('%d %b %Y') }}</p>
@@ -40,8 +41,11 @@
       <p class="eyebrow">Live denomination balance</p>
       <h3>Notes and coins in the counter</h3>
     </div>
-    <span class="cash-counter-unallocated">Unallocated: ₹{{ "%.2f"|format(cash_snapshot.unallocated) }}</span>
+    <span class="cash-counter-unallocated">Unreconciled ledger difference: ₹{{ "%.2f"|format(cash_snapshot.unallocated) }}</span>
   </div>
+  {% if cash_snapshot.unallocated|abs > 0.005 %}
+  <p role="status">The cash ledger and tracked notes/coins differ by ₹{{ "%.2f"|format(cash_snapshot.unallocated) }}. Cash recorded without denominations or incomplete movement records can cause this. This difference is not confirmed cash in the counter. Review the movement history before making any accounting correction; sales and historical entries have not been changed.</p>
+  {% endif %}
   <div class="cash-denomination-grid">
     <div>
       <h4>Notes</h4>

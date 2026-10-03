@@ -2489,6 +2489,7 @@ def _cash_counter_snapshot() -> dict:
                 counts[key] += sign * int(value or 0)
     return {
         "total": round(total, 2),
+        "tracked_cash": round(_cash_denominations_amount(counts), 2),
         "counts": counts,
         "unallocated": round(total - _cash_denominations_amount(counts), 2),
     }
@@ -4149,6 +4150,7 @@ def mark_order_paid(order_id):
     order.payment_type = payment_type
     order.payment_reference = payment_reference
     if payment_type.lower() == "cash" and not was_already_paid:
+        flash("This payment records cash without note/coin counts. It will appear as an unreconciled ledger difference. Use the Cashier table settlement with denominations to track physical cash.", "warning")
         db.session.add(
             CashCounterEntry(
                 entry_type="deposit",
