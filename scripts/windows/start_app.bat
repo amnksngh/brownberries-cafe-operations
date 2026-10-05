@@ -5,6 +5,7 @@ set "SCRIPT_DIR=%~dp0"
 for %%I in ("%SCRIPT_DIR%..\..") do set "REPO_DIR=%%~fI"
 
 cd /d "%REPO_DIR%"
+if exist "instance\cloud_production.active" exit /b 0
 if not exist "logs" mkdir "logs"
 
 if not exist ".venv\Scripts\python.exe" (

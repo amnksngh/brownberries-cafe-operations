@@ -2,6 +2,9 @@ $ErrorActionPreference = "Stop"
 
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $RepoDir = [System.IO.Path]::GetFullPath((Join-Path $ScriptDir "..\.."))
+if (Test-Path -LiteralPath (Join-Path $RepoDir "instance\cloud_production.active")) {
+  exit 0
+}
 $LogDir = Join-Path $RepoDir "logs"
 $LogFile = Join-Path $LogDir "windows-watchdog.log"
 $LocalHealthUrl = "http://127.0.0.1:5050/healthz"
