@@ -11,7 +11,7 @@ from app.models import MenuCategory, MenuItem, MenuNavGroup, MenuNavSection
 from app.menu_classification import backfill_menu_classification, is_customer_visible, navigation_label, apply_navigation_filter
 from app.menu_schedule import menu_item_serving_periods, menu_item_window_is_open
 from app.main import _is_public_menu_item
-from app.cafe import _apply_menu_item_form_values, _menu_item_category_names_for_stats
+from app.cafe import bp, _apply_menu_item_form_values, _menu_item_category_names_for_stats
 from app.mobile_staff import _menu_payload
 
 
@@ -20,6 +20,9 @@ class MenuClassificationTests(unittest.TestCase):
         self.temp = TemporaryDirectory()
         self.app = Flask(__name__, instance_path=self.temp.name)
         self.app.config.update(SQLALCHEMY_DATABASE_URI="sqlite://", TESTING=True)
+        self.app.secret_key = "test-only"
+        self.app.register_blueprint(bp)
+        self.app.before_request(lambda: setattr(g, "current_user", SimpleNamespace(role="admin", active=True)))
         db.init_app(self.app)
         self.context = self.app.app_context()
         self.context.push()
@@ -112,6 +115,28 @@ class MenuClassificationTests(unittest.TestCase):
         self.assertEqual(apply_navigation_filter(MenuItem.query, 12).count(), 1)
         self.assertEqual(navigation_label(item), "Beverages / Hot Coffee")
         self.assertEqual(_menu_item_category_names_for_stats(item, {}), ["Beverages / Hot Coffee"])
+
+    def test_grid_single_save_json_and_clear_optional_fields(self):
+        item = self.item(description="Old description", calories=100)
+        response = self.app.test_client().post(f"/cafe/menu/items/{item.id}/update", data={
+            "name": "Updated Coffee", "price": "125", "description": "", "calories": "", "available": "on"
+        }, headers={"Accept": "application/json"})
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json["ok"])
+        self.assertEqual((item.name, item.price, item.description, item.calories), ("Updated Coffee", 125, None, None))
+
+    def test_grid_bulk_save_is_atomic_on_invalid_second_row(self):
+        first, second = self.item(), self.item()
+        data = {"item_ids": [str(first.id), str(second.id)], f"{first.id}__price": "125", f"{second.id}__price": "-2"}
+        client = self.app.test_client()
+        response = client.post("/cafe/menu/items/bulk-update", data=data, headers={"Accept": "application/json"})
+        self.assertEqual(response.status_code, 400)
+        self.assertFalse(response.json["ok"])
+        self.assertEqual(first.price, 100)
+        data[f"{second.id}__price"] = "150"
+        response = client.post("/cafe/menu/items/bulk-update", data=data, headers={"Accept": "application/json"})
+        self.assertTrue(response.json["ok"])
+        self.assertEqual((first.price, second.price), (125, 150))
 
 
 if __name__ == "__main__":

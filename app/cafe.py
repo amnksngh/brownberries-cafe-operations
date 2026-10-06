@@ -2021,7 +2021,9 @@ def _apply_menu_item_form_values(item: MenuItem, form, files, prefix: str = "") 
         item.navigation_section_id = section.id
 
     item_name = _menu_form_value(form, "name", prefix)
-    if item_name:
+    if _menu_form_has(form, "name", prefix):
+        if not item_name:
+            return "Please enter the item name."
         item.name = item_name
 
     uploaded_image = _save_menu_image(files.get(f"{prefix}image_file"))
@@ -2029,27 +2031,35 @@ def _apply_menu_item_form_values(item: MenuItem, form, files, prefix: str = "") 
         item.image_url = uploaded_image
     else:
         image_url = _menu_form_value(form, "image_url", prefix)
-        if image_url:
-            item.image_url = image_url
+        if _menu_form_has(form, "image_url", prefix):
+            item.image_url = image_url or None
 
     description = _menu_form_value(form, "description", prefix)
-    if description:
-        item.description = description
+    if _menu_form_has(form, "description", prefix):
+        item.description = description or None
     short_description = _menu_form_value(form, "short_description", prefix)
-    if short_description:
-        item.short_description = short_description
+    if _menu_form_has(form, "short_description", prefix):
+        item.short_description = short_description or None
 
     calories_raw = _menu_form_value(form, "calories", prefix)
+    if _menu_form_has(form, "calories", prefix) and not calories_raw:
+        item.calories = None
     if calories_raw:
         try:
             item.calories = int(calories_raw)
+            if item.calories < 0:
+                return "Calories cannot be negative."
         except ValueError:
             return f"Calories must be a whole number for {item.name}."
 
     price_raw = _menu_form_value(form, "price", prefix)
+    if _menu_form_has(form, "price", prefix) and not price_raw:
+        return "Please enter an item price."
     if price_raw:
         try:
             item.price = float(price_raw)
+            if not math.isfinite(item.price) or item.price < 0:
+                return "Price must be a non-negative number."
         except ValueError:
             return f"Please enter a valid price for {item.name}."
 
@@ -3933,11 +3943,15 @@ def update_menu_item(item_id):
     error = _apply_menu_item_form_values(item, request.form, request.files)
     if error:
         db.session.rollback()
+        if request.accept_mimetypes.best == "application/json":
+            return jsonify(ok=False, error=error), 400
         flash(error, "error")
         return redirect(url_for("cafe.menu", section="items"))
     db.session.commit()
-    flash("Menu item updated.", "success")
     _STATS_CACHE.clear()
+    if request.accept_mimetypes.best == "application/json":
+        return jsonify(ok=True, images={str(item.id): item.image_url})
+    flash("Menu item updated.", "success")
     return redirect(url_for("cafe.menu", section="items"))
 
 
@@ -3953,12 +3967,16 @@ def bulk_update_menu_items():
         if item_id not in item_ids:
             item_ids.append(item_id)
     if not item_ids:
+        if request.accept_mimetypes.best == "application/json":
+            return jsonify(ok=False, error="No changed items selected."), 400
         flash("Open an item and change at least one field before using Save All.", "error")
         return redirect(url_for("cafe.menu", section="items"))
 
     items = {item.id: item for item in MenuItem.query.filter(MenuItem.id.in_(item_ids)).all()}
     if len(items) != len(item_ids):
         db.session.rollback()
+        if request.accept_mimetypes.best == "application/json":
+            return jsonify(ok=False, error="An item could not be found. Nothing was saved."), 400
         flash("One or more menu items could not be found. Nothing was saved.", "error")
         return redirect(url_for("cafe.menu", section="items"))
 
@@ -3971,12 +3989,16 @@ def bulk_update_menu_items():
         )
         if error:
             db.session.rollback()
+            if request.accept_mimetypes.best == "application/json":
+                return jsonify(ok=False, error=f"Nothing was saved. {error}"), 400
             flash(f"Nothing was saved. {error}", "error")
             return redirect(url_for("cafe.menu", section="items"))
 
     db.session.commit()
-    flash(f"Saved {len(item_ids)} menu item(s).", "success")
     _STATS_CACHE.clear()
+    if request.accept_mimetypes.best == "application/json":
+        return jsonify(ok=True, images={str(item.id): item.image_url for item in items.values()})
+    flash(f"Saved {len(item_ids)} menu item(s).", "success")
     return redirect(url_for("cafe.menu", section="items"))
 
 

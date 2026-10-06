@@ -263,44 +263,20 @@
     {% endif %}
 
     {% if active_menu_section == 'items' %}
-    <section class="panel">
-      <div class="menu-items-toolbar">
-        <div>
-          <h3>Menu Items</h3>
-          <p class="muted">Open and edit as many items as needed, then save all changed items together.</p>
-        </div>
-        <div class="menu-items-save-all">
-          <span id="menu-items-dirty-status" class="muted">No unsaved item changes</span>
-          <button type="button" id="menu-items-save-all" disabled>Save All</button>
-        </div>
-      </div>
-      <label>Search Item <input id="menu-item-search" placeholder="Search by name/category/type..." /></label>
-      <form id="bulk-menu-items-form" method="post" action="{{ url_for('cafe.bulk_update_menu_items') }}" enctype="multipart/form-data"></form>
-      <table id="menu-items-table">
-        <tr><th>Category</th><th>Item</th><th>Type</th><th>Workstation</th><th>Responsible Staff</th><th>Price</th><th>Image</th><th>Actions</th></tr>
-        {% for item in items %}
-        {% set selected_cats = item_category_map.get(item.id, []) %}
-        <tr>
-          <td>{{ navigation_label(item) }}</td>
-          <td>{{ item.name }}</td>
-          <td>{{ item.item_type }}</td>
-          <td>{{ workstation_name_map.get(item.prep_station, 'No workstation') }}</td>
-          <td>{{ chef_name_map.get(item.chef_user_id, 'Unassigned') }}</td>
-          <td>₹{{ "%.2f"|format(item.price) }}</td>
-          <td>{% if item.image_url %}<a href="{{ item.image_url }}" target="_blank" class="button-link">View Image</a>{% else %}-{% endif %}</td>
-          <td>
-            <button type="button" class="menu-preview-btn"
-              data-name="{{ item.name }}"
-              data-image="{{ item.image_url or '' }}"
-              data-meta="{{ navigation_label(item) }}{% if item.item_type %}, {{ item.item_type }}{% endif %}"
-              data-short-description="{{ item.short_description or '' }}"
-              data-description="{{ item.description or 'No description available.' }}"
-              data-calories="{{ item.calories or '-' }}"
-              data-price="{{ '%.2f'|format(item.price) }}"
-            >Preview</button>
-            <details style="margin-top:0.35rem;">
-              <summary>Edit</summary>
-              <form method="post" action="{{ url_for('cafe.update_menu_item', item_id=item.id) }}" class="grid grid-4 menu-item-edit-form" data-item-id="{{ item.id }}" enctype="multipart/form-data">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/menu_editor_grid.css') }}" />
+    <section class="panel menu-sheet-panel">
+      <div class="menu-items-toolbar"><div><h3>Menu Items</h3><p class="muted">Edit cells directly. Scroll sideways for more fields. Save each row or all changed items, including rows hidden by search.</p></div><div class="menu-items-save-all"><span class="menu-grid-dirty-status muted" role="status">No unsaved changes</span><button type="button" class="menu-grid-save-all" disabled>Save All</button></div></div>
+      <label>Search Items <input id="menu-grid-search" placeholder="Name, menu location, type or workstation" /></label>
+      <form id="menu-grid-bulk-form" method="post" action="{{ url_for('cafe.bulk_update_menu_items') }}"></form>
+      {% for item in items %}
+      <form id="delete-menu-{{ item.id }}" method="post" action="{{ url_for('cafe.delete_menu_item', item_id=item.id) }}" class="confirm-delete-form" data-confirm-message="Move {{ item.name }} to Deleted Items? Unsaved edits will be lost."></form>
+      {% endfor %}
+      <div class="menu-sheet-scroll" tabindex="0" aria-label="Menu editor; scroll horizontally to see all fields">
+        <div class="menu-sheet" role="table" aria-label="Editable menu items">
+          <div class="menu-sheet-header" role="row"><div role="columnheader">Item</div><div role="columnheader">Serving Hours</div><div role="columnheader">Customer-facing</div><div role="columnheader">Menu Location</div><div role="columnheader">Type</div><div role="columnheader">Workstation</div><div role="columnheader">Responsible Staff</div><div role="columnheader">Image URL</div><div role="columnheader">Upload Image</div><div role="columnheader">Short Description</div><div role="columnheader">Description</div><div role="columnheader">Calories</div><div role="columnheader">Price (₹)</div><div role="columnheader">Multiple Sizes</div><div role="columnheader">Size Prices</div><div role="columnheader">Available</div><div role="columnheader">Special</div><div role="columnheader">Actions</div></div>
+          {% for item in items %}
+          <form method="post" action="{{ url_for('cafe.update_menu_item', item_id=item.id) }}" class="menu-item-edit-form menu-sheet-row" role="row" data-item-id="{{ item.id }}" enctype="multipart/form-data">
+<label>Name <input name="name" value="{{ item.name }}" required /></label>
                 <label>Serving Hours
                   <select name="serving_hours" required>{% for value, label in serving_hours_options %}<option value="{{ value }}" {% if item.serving_hours == value %}selected{% endif %}>{{ label }}</option>{% endfor %}</select>
                 </label>
@@ -323,7 +299,6 @@
                     {% for t in menu_types %}<option value="{{ t.id }}" {% if item.item_type == t.name %}selected{% endif %}>{{ t.name }}</option>{% endfor %}
                   </select>
                 </label>
-                <label>Name <input name="name" value="{{ item.name }}" required /></label>
                 <label>Workstation
                   <select name="prep_station">
                     <option value="" {% if not item.prep_station %}selected{% endif %}>No workstation</option>
@@ -344,6 +319,7 @@
                 <label>Price <input name="price" type="number" min="0" step="0.01" value="{{ item.price }}" required /></label>
                 <label><input type="checkbox" name="has_size_variants" {% if item.has_size_variants %}checked{% endif %} /> Item has multiple serving sizes</label>
                 <div class="full size-pricing-edit {% if not item.has_size_variants %}hidden{% endif %}">
+                  <details><summary>Edit size prices</summary>
                   {% set existing_sizes = item_size_map.get(item.id, []) %}
                   {% set rows = existing_sizes if existing_sizes|length > 0 else [{'size': '', 'price': ''}, {'size': '', 'price': ''}] %}
                   <div class="grid grid-4 size-rows" data-next-index="{{ rows|length + 1 }}">
@@ -353,20 +329,26 @@
                     {% endfor %}
                   </div>
                   <button type="button" class="add-size-row-btn" style="margin-top:0.5rem;">Add 1 Serving Size</button>
+                  </details>
                 </div>
                 <label><input type="checkbox" name="available" {% if item.available %}checked{% endif %} /> Available</label>
                 <label><input type="checkbox" name="is_brownberries_special" {% if item.is_brownberries_special %}checked{% endif %} /> Brownberries Special</label>
-                <button type="submit">Save</button>
+                <div class="menu-sheet-actions" role="cell"><button type="submit" class="menu-row-save">Save</button><button type="button" class="menu-preview-btn"
+              data-name="{{ item.name }}"
+              data-image="{{ item.image_url or '' }}"
+              data-meta="{{ navigation_label(item) }}{% if item.item_type %}, {{ item.item_type }}{% endif %}"
+              data-short-description="{{ item.short_description or '' }}"
+              data-description="{{ item.description or 'No description available.' }}"
+              data-calories="{{ item.calories or '-' }}"
+              data-price="{{ '%.2f'|format(item.price) }}"
+            >Preview</button><button type="submit" form="delete-menu-{{ item.id }}">Delete</button><small class="menu-row-status" role="status"></small></div>
               </form>
-            </details>
-            <form method="post" action="{{ url_for('cafe.delete_menu_item', item_id=item.id) }}" class="inline confirm-delete-form" data-confirm-message="Are you sure you want to move '{{ item.name }}' to Deleted Items?">
-              <button type="submit">Delete</button>
-            </form>
-          </td>
-        </tr>
-        {% endfor %}
-      </table>
+          {% else %}<p>No menu items yet.</p>{% endfor %}
+        </div>
+      </div>
+      <div class="menu-items-toolbar menu-sheet-bottom"><div class="menu-items-save-all"><span class="menu-grid-dirty-status muted" role="status">No unsaved changes</span><button type="button" class="menu-grid-save-all" disabled>Save All</button></div></div>
     </section>
+    <script defer src="{{ url_for('static', filename='js/menu_editor_grid.js') }}"></script>
     {% endif %}
 
     {% if active_menu_section == 'deleted_items' %}
@@ -478,70 +460,6 @@
     const sync = () => sizeWrap.classList.toggle("hidden", !hasSizes.checked);
     hasSizes.addEventListener("change", sync);
     sync();
-  });
-  const bulkMenuForm = document.getElementById("bulk-menu-items-form");
-  const saveAllMenuItemsButton = document.getElementById("menu-items-save-all");
-  const dirtyMenuItemsStatus = document.getElementById("menu-items-dirty-status");
-  const menuItemEditors = Array.from(document.querySelectorAll(".menu-item-edit-form"));
-  const syncBulkMenuState = () => {
-    const dirtyCount = menuItemEditors.filter((form) => form.dataset.dirty === "1").length;
-    if (saveAllMenuItemsButton) {
-      saveAllMenuItemsButton.disabled = dirtyCount === 0;
-      saveAllMenuItemsButton.textContent = dirtyCount ? `Save All (${dirtyCount})` : "Save All";
-    }
-    if (dirtyMenuItemsStatus) {
-      dirtyMenuItemsStatus.textContent = dirtyCount
-        ? `${dirtyCount} item${dirtyCount === 1 ? "" : "s"} ready to save`
-        : "No unsaved item changes";
-    }
-  };
-  menuItemEditors.forEach((form) => {
-    const markDirty = () => {
-      form.dataset.dirty = "1";
-      form.classList.add("is-dirty");
-      syncBulkMenuState();
-    };
-    form.addEventListener("input", markDirty);
-    form.addEventListener("change", markDirty);
-  });
-  saveAllMenuItemsButton?.addEventListener("click", async () => {
-    const dirtyForms = menuItemEditors.filter((form) => form.dataset.dirty === "1");
-    if (!dirtyForms.length || !bulkMenuForm) return;
-    saveAllMenuItemsButton.disabled = true;
-    saveAllMenuItemsButton.textContent = "Saving...";
-    const payload = new FormData();
-    dirtyForms.forEach((form) => {
-      const itemId = form.dataset.itemId;
-      payload.append("item_ids", itemId);
-      for (const [name, value] of new FormData(form).entries()) {
-        if (value instanceof File && !value.name) continue;
-        payload.append(`${itemId}__${name}`, value);
-      }
-    });
-    try {
-      const response = await fetch(bulkMenuForm.action, {
-        method: "POST",
-        body: payload,
-        credentials: "same-origin",
-        headers: { "X-Requested-With": "XMLHttpRequest" },
-      });
-      if (!response.ok) throw new Error(`Save failed (${response.status})`);
-      window.location.assign(response.url);
-    } catch (error) {
-      saveAllMenuItemsButton.disabled = false;
-      saveAllMenuItemsButton.textContent = `Save All (${dirtyForms.length})`;
-      window.alert(error.message || "Could not save menu items.");
-    }
-  });
-  syncBulkMenuState();
-  const menuSearch = document.getElementById("menu-item-search");
-  menuSearch?.addEventListener("input", () => {
-    const q = menuSearch.value.trim().toLowerCase();
-    document.querySelectorAll("#menu-items-table tr").forEach((row, idx) => {
-      if (idx === 0) return;
-      const text = row.textContent.toLowerCase();
-      row.style.display = !q || text.includes(q) ? "" : "none";
-    });
   });
   const previewModal = document.getElementById("menu-preview-modal");
   const previewTitle = document.getElementById("menu-preview-title");
