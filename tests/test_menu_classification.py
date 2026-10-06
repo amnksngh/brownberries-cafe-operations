@@ -13,6 +13,7 @@ from app.menu_schedule import menu_item_serving_periods, menu_item_window_is_ope
 from app.main import _is_public_menu_item
 from app.cafe import bp, _apply_menu_item_form_values, _menu_item_category_names_for_stats
 from app.mobile_staff import _menu_payload
+from app.menu_navigation import load_menu_navigation_configuration
 
 
 class MenuClassificationTests(unittest.TestCase):
@@ -137,6 +138,32 @@ class MenuClassificationTests(unittest.TestCase):
         response = client.post("/cafe/menu/items/bulk-update", data=data, headers={"Accept": "application/json"})
         self.assertTrue(response.json["ok"])
         self.assertEqual((first.price, second.price), (125, 150))
+
+    def test_navigation_reorder_and_single_default(self):
+        self.section.is_default = True
+        other = MenuNavSection(id=13, group_id=1, slug="tea", label="Tea", active=True)
+        db.session.add(other)
+        db.session.commit()
+        response = self.app.test_client().post('/cafe/menu/navigation/groups/1/layout', json={
+            'section_ids': [13, 12], 'default_section_id': 13})
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(self.section.is_default)
+        self.assertTrue(other.is_default)
+        config = load_menu_navigation_configuration()
+        self.assertEqual([s['id'] for s in config['groups'][0]['sections']], [13, 12])
+        self.assertEqual(config['groups'][0]['default_section'], 'tea')
+
+    def test_navigation_reorder_rejects_missing_duplicate_and_foreign_ids(self):
+        client = self.app.test_client()
+        for ids in ([], [12, 12], [999], ['12']):
+            response = client.post('/cafe/menu/navigation/groups/1/layout', json={
+                'section_ids': ids, 'default_section_id': 12})
+            self.assertEqual(response.status_code, 409)
+        self.section.active = False
+        db.session.commit()
+        response = client.post('/cafe/menu/navigation/groups/1/layout', json={
+            'section_ids': [12], 'default_section_id': 12})
+        self.assertEqual(response.status_code, 400)
 
 
 if __name__ == "__main__":

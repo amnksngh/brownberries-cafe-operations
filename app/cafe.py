@@ -3459,6 +3459,28 @@ def delete_menu_navigation_group(group_id):
     return _navigation_redirect()
 
 
+@bp.route("/menu/navigation/groups/<int:group_id>/layout", methods=["POST"])
+@roles_required("admin", "manager")
+def update_menu_navigation_layout(group_id):
+    group = MenuNavGroup.query.get_or_404(group_id)
+    payload = request.get_json(silent=True) or {}
+    if not isinstance(payload, dict):
+        return jsonify(ok=False, error="Invalid navigation layout."), 400
+    ids = payload.get("section_ids")
+    default_id = payload.get("default_section_id")
+    sections = {section.id: section for section in group.sections}
+    if (not isinstance(ids, list) or any(type(value) is not int for value in ids)
+            or len(ids) != len(set(ids)) or set(ids) != set(sections)):
+        return jsonify(ok=False, error="The subcategory list changed. Reload before saving."), 409
+    if type(default_id) is not int or default_id not in sections or not sections[default_id].active:
+        return jsonify(ok=False, error="Choose one active default subcategory."), 400
+    for position, section_id in enumerate(ids, start=1):
+        sections[section_id].display_order = position * 10
+        sections[section_id].is_default = section_id == default_id
+    db.session.commit()
+    return jsonify(ok=True)
+
+
 @bp.route("/menu/navigation/sections", methods=["POST"])
 @roles_required("admin", "manager")
 def add_menu_navigation_section():

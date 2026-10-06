@@ -19,6 +19,16 @@
 
   <div class="library-content">
     {% if active_menu_section == 'navigation' %}
+    <script defer src="{{ url_for('static', filename='js/menu_navigation_editor.js') }}"></script>
+    <style>
+      .nav-sort-wrap { overflow-x: auto; max-width: 100%; margin-top: 1rem; }
+      .nav-sort-table { margin: 0; }
+      .nav-sort-handle { touch-action: none; cursor: grab; }
+      .nav-sort-table tr.is-dragging { background: #fff0bf; outline: 2px solid #b08968; }
+      .nav-sort-controls { display: flex; gap: .25rem; align-items: center; }
+      .nav-sort-controls button { padding: .3rem .5rem; }
+      .nav-layout-status { margin-left: .75rem; }
+    </style>
     <section class="panel">
       <h3>Menu Navigation</h3>
       <p class="muted">Controls the two navigation rows used by QR ordering, staff-assisted ordering, and menu browsing. The global default opens first; each main category has its own default subcategory.</p>
@@ -45,13 +55,18 @@
         <button type="submit">Delete Main Category</button>
       </form>
 
-      <table style="margin-top:1rem;">
+      <p class="muted">Drag the ↕ handle up or down, or use the arrow buttons. Select one default, then save the order and default below. Other field edits use the row's Save button.</p>
+      <form id="nav-layout-{{ group.id }}" class="nav-layout-form" data-group-id="{{ group.id }}" action="{{ url_for('cafe.update_menu_navigation_layout', group_id=group.id) }}" method="post"></form>
+      <div class="nav-sort-wrap">
+      <table class="nav-sort-table" data-group-id="{{ group.id }}">
+        <thead>
         <tr><th>Subcategory</th><th>Main Category</th><th>Order</th><th>Content</th><th>Active / Default</th><th>Assigned Items</th><th>Actions</th></tr>
+        </thead><tbody>
         {% for subsection in group.sections %}
-        <tr>
+        <tr data-section-id="{{ subsection.id }}">
           <td><input form="nav-section-{{ subsection.id }}" name="label" value="{{ subsection.label }}" required /></td>
           <td><select form="nav-section-{{ subsection.id }}" name="group_id">{% for target_group in navigation_groups %}<option value="{{ target_group.id }}" {% if target_group.id == group.id %}selected{% endif %}>{{ target_group.label }}</option>{% endfor %}</select></td>
-          <td><input form="nav-section-{{ subsection.id }}" name="display_order" type="number" value="{{ subsection.display_order }}" style="max-width:6rem;" /></td>
+          <td><div class="nav-sort-controls"><button type="button" class="nav-sort-handle" aria-label="Drag {{ subsection.label }} to reorder">↕</button><button type="button" class="nav-sort-up" aria-label="Move {{ subsection.label }} up">↑</button><button type="button" class="nav-sort-down" aria-label="Move {{ subsection.label }} down">↓</button></div><input type="hidden" form="nav-section-{{ subsection.id }}" name="display_order" value="{{ subsection.display_order }}" /></td>
           <td>
             <select form="nav-section-{{ subsection.id }}" name="collection_kind">
               {% for kind, label in navigation_collection_kinds.items() %}
@@ -61,7 +76,7 @@
           </td>
           <td>
             <label><input form="nav-section-{{ subsection.id }}" type="checkbox" name="active" {% if subsection.active %}checked{% endif %} /> Active</label>
-            <label><input form="nav-section-{{ subsection.id }}" type="checkbox" name="is_default" {% if subsection.is_default %}checked{% endif %} /> Default for {{ group.label }}</label>
+            <label><input form="nav-layout-{{ group.id }}" type="radio" name="default_section_id" value="{{ subsection.id }}" {% if subsection.is_default %}checked{% endif %} {% if not subsection.active %}disabled{% endif %} /> Default for {{ group.label }}</label>
           </td>
           <td>{{ subsection.menu_items|length if subsection.collection_kind == 'catalog' else 'Automatic' }}</td>
           <td>
@@ -72,7 +87,9 @@
         {% else %}
         <tr><td colspan="7" class="muted">No subcategories yet.</td></tr>
         {% endfor %}
-      </table>
+        </tbody>
+      </table></div>
+      {% if group.sections %}<button type="submit" form="nav-layout-{{ group.id }}">Save Order &amp; Default</button><span class="nav-layout-status" data-group-id="{{ group.id }}" role="status"></span>{% endif %}
     </section>
     {% endfor %}
 
