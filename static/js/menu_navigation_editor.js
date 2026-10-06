@@ -6,7 +6,6 @@
     const body = table.tBodies[0];
     const status = document.querySelector(`.nav-layout-status[data-group-id="${group}"]`);
     const save = document.querySelector(`button[form="${form.id}"]`);
-    let dragging = null;
     let busy = false;
     const changed = () => { dirty.add(group); status.textContent = 'Unsaved order/default'; };
     table.querySelectorAll('input[type=radio]').forEach(radio => radio.addEventListener('change', changed));
@@ -20,29 +19,6 @@
       if (event.target.closest('.nav-sort-down') && row.nextElementSibling) {
         body.insertBefore(row.nextElementSibling, row); changed();
       }
-    });
-    body.querySelectorAll('.nav-sort-handle').forEach(handle => {
-      handle.addEventListener('pointerdown', event => {
-        if (busy || event.button !== 0) return;
-        dragging = handle.closest('tr');
-        dragging.classList.add('is-dragging');
-        handle.setPointerCapture(event.pointerId);
-        event.preventDefault();
-      });
-      handle.addEventListener('pointermove', event => {
-        if (!dragging) return;
-        const target = document.elementFromPoint(event.clientX, event.clientY)?.closest('tr[data-section-id]');
-        if (!target || target === dragging || target.parentElement !== body) return;
-        const bounds = target.getBoundingClientRect();
-        const before = event.clientY < bounds.top + bounds.height / 2 ? target : target.nextSibling;
-        if (before === dragging || before === dragging.nextSibling) return;
-        body.insertBefore(dragging, before);
-        handle.setPointerCapture(event.pointerId);
-        changed();
-      });
-      const end = () => { dragging?.classList.remove('is-dragging'); dragging = null; };
-      handle.addEventListener('pointerup', end);
-      handle.addEventListener('pointercancel', end);
     });
     form.addEventListener('submit', async event => {
       event.preventDefault();
