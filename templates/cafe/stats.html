@@ -44,7 +44,7 @@
     </label>
     <label>Category
       <select name="category">
-        <option value="all" {% if filters.category|lower == "all" %}selected{% endif %}>All Categories</option>
+        <option value="all" {% if filters.category|lower == "all" %}selected{% endif %}>All Menu Locations</option>
         {% for category_name in category_options %}
         <option value="{{ category_name }}" {% if filters.category|lower == category_name|lower %}selected{% endif %}>{{ category_name }}</option>
         {% endfor %}

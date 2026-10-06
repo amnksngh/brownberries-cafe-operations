@@ -53,6 +53,8 @@ def _ensure_sqlite_schema_columns():
         "menu_item": {
             "prep_station": "TEXT NOT NULL DEFAULT 'kitchen'",
             "category_ids_json": "TEXT",
+            "serving_hours": "VARCHAR(20)",
+            "customer_visible": "BOOLEAN",
             "navigation_section_id": "INTEGER",
             "has_size_variants": "BOOLEAN NOT NULL DEFAULT 0",
             "size_pricing_json": "TEXT",
@@ -643,6 +645,8 @@ def create_app(*, instance_path=None):
         db.create_all()
         _ensure_sqlite_schema_columns()
         _ensure_protected_menu_categories()
+        from .menu_classification import backfill_menu_classification
+        backfill_menu_classification()
         ensure_menu_navigation_seeded()
         _backfill_order_codes()
         _backfill_paid_timestamps()

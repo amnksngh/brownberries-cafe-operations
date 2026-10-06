@@ -58,6 +58,7 @@ from .leave_logic import (
     weekly_off_config,
 )
 from .menu_schedule import menu_item_window_is_open, menu_period_settings
+from .menu_classification import SERVING_HOURS_OPTIONS, is_customer_visible, navigation_label, navigation_filter_options, apply_navigation_filter
 from .payment_summary import summarize_payments
 from .menu_navigation import (
     COLLECTION_KINDS,
@@ -1197,6 +1198,8 @@ def _menu_form_state_from_request():
         size_rows = [{"size": "", "price": ""}, {"size": "", "price": ""}]
     return {
         "selected_category_ids": selected_category_ids,
+        "serving_hours": form.get("serving_hours", "regular"),
+        "customer_visible": bool(form.get("customer_visible")),
         "menu_type_id": form.get("menu_type_id", "").strip(),
         "navigation_section_id": form.get("navigation_section_id", "").strip(),
         "name": form.get("name", "").strip(),
@@ -1217,6 +1220,8 @@ def _menu_form_state_from_request():
 def _default_menu_form_state():
     return {
         "selected_category_ids": [],
+        "serving_hours": "regular",
+        "customer_visible": True,
         "menu_type_id": "",
         "navigation_section_id": "",
         "name": "",
@@ -1276,8 +1281,8 @@ def _render_menu_page(active_menu_section: str = "catalog", add_form_state: dict
                 sizes = []
         item_size_map[item.id] = sizes
 
-    selected_category_filter = request.args.get("category_filter", type=int)
-    availability_items = _apply_category_filter(
+    selected_category_filter = request.args.get("navigation_section_id", type=int)
+    availability_items = apply_navigation_filter(
         MenuItem.query.filter(MenuItem.is_deleted.is_(False)).order_by(MenuItem.name.asc()),
         selected_category_filter,
     ).all()
@@ -1375,6 +1380,9 @@ def _render_menu_page(active_menu_section: str = "catalog", add_form_state: dict
         chef_name_map=chef_name_map,
         navigation_groups=navigation_groups,
         catalog_navigation_groups=catalog_navigation_groups,
+        serving_hours_options=SERVING_HOURS_OPTIONS,
+        navigation_label=navigation_label,
+        navigation_filter_options=navigation_filter_options(),
         navigation_collection_kinds=COLLECTION_KINDS,
         item_category_map=item_category_map,
         item_size_map=item_size_map,
@@ -1737,6 +1745,8 @@ def _menu_item_category_ids(item: MenuItem) -> list[int]:
 
 
 def _get_item_category_names(item: MenuItem, category_name_by_id: dict[int, str], include_protected: bool = True) -> list[str]:
+    if getattr(item, "navigation_section_id", None):
+        return [navigation_label(item)]
     names: list[str] = []
     names_seen: set[str] = set()
     for cid in _menu_item_category_ids(item):
@@ -1993,23 +2003,20 @@ def _apply_menu_item_form_values(item: MenuItem, form, files, prefix: str = "") 
             return "Please select a valid type."
         item.item_type = menu_type.name
 
-    category_ids = []
-    for value in _menu_form_list(form, "category_ids", prefix):
-        try:
-            category_id = int(value)
-        except (TypeError, ValueError):
-            continue
-        if category_id not in category_ids:
-            category_ids.append(category_id)
-    if category_ids:
-        item.category_id = category_ids[0]
-        item.category_ids_json = json.dumps(category_ids)
-    item.subcategory_id = None
+    if _menu_form_has(form, "serving_hours", prefix):
+        serving_hours = _menu_form_value(form, "serving_hours", prefix)
+        if serving_hours not in dict(SERVING_HOURS_OPTIONS):
+            return "Please select valid serving hours."
+        item.serving_hours = serving_hours
+    if _menu_form_has(form, "visibility_present", prefix):
+        item.customer_visible = _menu_form_has(form, "customer_visible", prefix)
 
     if _menu_form_has(form, "navigation_section_id", prefix):
         navigation_section_id = _menu_form_value(form, "navigation_section_id", prefix)
         section = MenuNavSection.query.get(int(navigation_section_id)) if navigation_section_id.isdigit() else None
-        if not section or not section.active or not section.group.active or section.collection_kind != "catalog":
+        if not section or (section.id != item.navigation_section_id and (
+            not section.active or not section.group.active or section.collection_kind != "catalog"
+        )):
             return f"Please select a valid menu navigation subcategory for {item.name}."
         item.navigation_section_id = section.id
 
@@ -2156,7 +2163,7 @@ def _parse_line_items_from_request():
         item
         for item in items
         if menu_item_window_is_open(item)
-        and bool(_public_menu_category_ids(item, all_category_name_by_id))
+        and is_customer_visible(item, all_category_name_by_id)
     ]
     item_by_id = {item.id: item for item in items}
     line_items = []
@@ -3166,12 +3173,6 @@ def menu():
     _ensure_protected_menu_categories()
     _ensure_menu_types_seeded()
     _ensure_workstations_seeded()
-    stale_count = MenuItem.query.filter(MenuItem.subcategory_id.isnot(None)).count()
-    if stale_count:
-        MenuItem.query.filter(MenuItem.subcategory_id.isnot(None)).update(
-            {MenuItem.subcategory_id: None}, synchronize_session=False
-        )
-        db.session.commit()
     if request.method == "POST":
         form_state = _menu_form_state_from_request()
         menu_type_id_raw = request.form.get("menu_type_id", "").strip()
@@ -3182,10 +3183,13 @@ def menu():
         if not menu_type:
             flash("Please select a valid item type.", "error")
             return _render_menu_page("add_item", form_state)
-        category_ids = _parse_category_ids_from_form()
-        if not category_ids:
-            flash("Please select at least one category.", "error")
+        serving_hours = request.form.get("serving_hours", "regular")
+        if serving_hours not in dict(SERVING_HOURS_OPTIONS):
+            flash("Please select valid serving hours.", "error")
             return _render_menu_page("add_item", form_state)
+        # Keep the required legacy FK without using it to determine visibility.
+        legacy_category = MenuCategory.query.filter(db.func.lower(MenuCategory.name) == "other").first()
+        category_ids = [legacy_category.id]
         navigation_section_id_raw = request.form.get("navigation_section_id", "").strip()
         navigation_section = (
             MenuNavSection.query.get(int(navigation_section_id_raw))
@@ -3229,6 +3233,8 @@ def menu():
             subcategory_id=None,
             item_type=menu_type.name,
             category_ids_json=json.dumps(category_ids),
+            serving_hours=serving_hours,
+            customer_visible=bool(request.form.get("customer_visible")),
             navigation_section_id=navigation_section.id,
             name=name,
             image_url=image_url,
@@ -3549,9 +3555,15 @@ def delete_menu_navigation_section(section_id):
 @bp.route("/menu/availability", methods=["POST"])
 @login_required
 def update_menu_availability():
-    category_filter = request.form.get("category_filter", "").strip()
+    if request.form.get("category_filter"):
+        flash("Please reload Items Availability before saving with the new navigation filters.", "error")
+        return redirect(url_for("cafe.items_availability"))
+    category_filter = request.form.get("navigation_section_id", "").strip()
+    if category_filter and not category_filter.isdigit():
+        flash("Please select a valid menu navigation location.", "error")
+        return redirect(url_for("cafe.items_availability"))
     category_filter_id = int(category_filter) if category_filter.isdigit() else None
-    scoped_items = _apply_category_filter(MenuItem.query.filter(MenuItem.is_deleted.is_(False)), category_filter_id).all()
+    scoped_items = apply_navigation_filter(MenuItem.query.filter(MenuItem.is_deleted.is_(False)), category_filter_id).all()
     scoped_items = [item for item in scoped_items if menu_item_window_is_open(item)]
     selected_ids = {
         int(x) for x in request.form.getlist("available_item_ids") if str(x).isdigit()
@@ -3563,15 +3575,15 @@ def update_menu_availability():
     next_url = request.form.get("next", "").strip()
     if next_url:
         return redirect(next_url)
-    return redirect(url_for("cafe.items_availability", category_filter=category_filter or ""))
+    return redirect(url_for("cafe.items_availability", navigation_section_id=category_filter or ""))
 
 
 @bp.route("/items-availability")
 @login_required
 def items_availability():
-    selected_category_filter = request.args.get("category_filter", type=int)
-    categories = MenuCategory.query.order_by(MenuCategory.name.asc()).all()
-    availability_items = _apply_category_filter(
+    selected_category_filter = request.args.get("navigation_section_id", type=int)
+    categories = navigation_filter_options()
+    availability_items = apply_navigation_filter(
         MenuItem.query.filter(MenuItem.is_deleted.is_(False)).order_by(MenuItem.name.asc()),
         selected_category_filter,
     ).all()
@@ -3925,6 +3937,7 @@ def update_menu_item(item_id):
         return redirect(url_for("cafe.menu", section="items"))
     db.session.commit()
     flash("Menu item updated.", "success")
+    _STATS_CACHE.clear()
     return redirect(url_for("cafe.menu", section="items"))
 
 
@@ -3963,6 +3976,7 @@ def bulk_update_menu_items():
 
     db.session.commit()
     flash(f"Saved {len(item_ids)} menu item(s).", "success")
+    _STATS_CACHE.clear()
     return redirect(url_for("cafe.menu", section="items"))
 
 
@@ -4023,7 +4037,7 @@ def _render_orders_view(kiosk_mode: bool = False, access_key: str = ""):
         return redirect(url_for("cafe.orders", table_id=selected_table_id, mobile_app="1" if mobile_app_mode else None))
 
     table_id = request.args.get("table_id", type=int)
-    category_id = request.args.get("category_id", type=int)
+    category_id = request.args.get("navigation_section_id", type=int)
     item_type = (request.args.get("item_type") or "").strip()
     today_start, today_end = _current_ist_day_bounds()
     tables = CafeTable.query.filter_by(active=True).order_by(CafeTable.name).all()
@@ -4031,7 +4045,7 @@ def _render_orders_view(kiosk_mode: bool = False, access_key: str = ""):
         table_id = tables[0].id
 
     menu_query = MenuItem.query.filter_by(available=True, is_deleted=False)
-    menu_query = _apply_category_filter(menu_query, category_id)
+    menu_query = apply_navigation_filter(menu_query, category_id)
     if item_type:
         menu_query = menu_query.filter(MenuItem.item_type == item_type)
     all_category_rows = MenuCategory.query.order_by(MenuCategory.name.asc()).all()
@@ -4041,7 +4055,7 @@ def _render_orders_view(kiosk_mode: bool = False, access_key: str = ""):
         item
         for item in filtered_items
         if menu_item_window_is_open(item)
-        and bool(_public_menu_category_ids(item, all_category_name_by_id))
+        and is_customer_visible(item, all_category_name_by_id)
     ]
 
     item_frequency = recent_paid_item_frequency()
@@ -9909,21 +9923,12 @@ def _parse_stats_filters(args):
 
 
 def _stats_category_options():
-    defaults = ["Coffee", "Tea", "Shake", "Mocktail", "Pizza", "Pasta", "Noodles", "Snacks", "Other"]
-    from_db = [c.name for c in MenuCategory.query.order_by(MenuCategory.name.asc()).all() if c.name]
-    out = []
-    seen = set()
-    for name in (defaults + from_db):
-        key = name.strip().lower()
-        if key and key not in seen:
-            out.append(name.strip())
-            seen.add(key)
-    return out
+    return [row["name"] for row in navigation_filter_options()] + ["Unassigned"]
 
 
 def _menu_item_category_names_for_stats(item: MenuItem, category_map: dict[int, str]):
-    names = _get_item_category_names(item, category_map)
-    return names or ["Other"]
+    # One canonical placement avoids double counting multi-category items.
+    return [navigation_label(item)]
 
 
 def _order_type_key(order: CafeOrder, approved_items):

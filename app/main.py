@@ -42,6 +42,7 @@ from .leave_logic import (
     validate_leave_request,
 )
 from .menu_schedule import menu_item_window_is_open
+from .menu_classification import is_customer_visible, navigation_label, navigation_filter_options, apply_navigation_filter
 from .menu_navigation import (
     build_menu_navigation,
     load_menu_navigation_configuration,
@@ -441,6 +442,8 @@ def _public_menu_category_ids(item: MenuItem, category_name_by_id: dict[int, str
 
 
 def _get_item_category_names(item: MenuItem, category_name_by_id: dict[int, str], include_protected: bool = True) -> list[str]:
+    if getattr(item, "navigation_section_id", None):
+        return [navigation_label(item)]
     names: list[str] = []
     names_seen: set[str] = set()
     if item.category_ids_json:
@@ -477,9 +480,8 @@ def _is_public_menu_item(
     respect_serving_hours: bool = True,
 ) -> bool:
     # Browsing may ignore serving hours, but it must never bypass the
-    # customer-facing category boundary.  Utility/Other records are internal
-    # helpers (for example packaging lines), not dishes customers can order.
-    if not _public_menu_category_ids(item, category_name_by_id):
+    # explicit customer-facing boundary, backfilled from legacy categories.
+    if not is_customer_visible(item, category_name_by_id):
         return False
     return not respect_serving_hours or menu_item_window_is_open(item)
 
@@ -1363,9 +1365,9 @@ def customer_menu():
         flash("Delivery order placed successfully.", "success")
         return redirect(url_for("main.customer_menu"))
 
-    category_id = request.args.get("category_id", type=int)
+    category_id = request.args.get("navigation_section_id", type=int)
     item_type = (request.args.get("item_type") or "").strip()
-    menu_query = _apply_menu_category_filter(MenuItem.query.filter_by(available=True, is_deleted=False), category_id)
+    menu_query = apply_navigation_filter(MenuItem.query.filter_by(available=True, is_deleted=False), category_id)
     if item_type:
         menu_query = menu_query.filter(MenuItem.item_type == item_type)
     menu_items = (
@@ -1375,15 +1377,9 @@ def customer_menu():
     )
     all_category_rows = MenuCategory.query.order_by(MenuCategory.name.asc()).all()
     all_category_name_by_id = {c.id: c.name for c in all_category_rows}
-    if category_id:
-        menu_items = [
-            item
-            for item in menu_items
-            if category_id in _public_menu_category_ids(item, all_category_name_by_id)
-        ]
     menu_items = [item for item in menu_items if _is_public_menu_item(item, all_category_name_by_id)]
-    categories = _visible_categories_for_available_menu()
-    category_name_by_id = {c.id: c.name for c in categories}
+    categories = navigation_filter_options()
+    category_name_by_id = all_category_name_by_id
     item_category_names_map = {
         item.id: _get_item_category_names(item, category_name_by_id, include_protected=False) for item in menu_items
     }

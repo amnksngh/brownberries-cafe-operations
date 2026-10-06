@@ -95,37 +95,8 @@
 
     {% if active_menu_section == 'catalog' %}
     <section class="panel">
-      <h3>Categories</h3>
-      <form method="post" action="{{ url_for('cafe.add_category') }}" class="grid">
-        <label>Add Category <input name="name" required /></label>
-        <button type="submit">Add Category</button>
-      </form>
-      <table>
-        <tr><th>Name</th><th>Actions</th></tr>
-        {% for c in categories %}
-        <tr>
-          <td>
-            {% if c.id in protected_category_ids %}
-            <strong>{{ c.name }}</strong>
-            {% else %}
-            <form method="post" action="{{ url_for('cafe.update_category', category_id=c.id) }}" class="inline">
-              <input name="name" value="{{ c.name }}" required />
-              <button type="submit">Save</button>
-            </form>
-            {% endif %}
-          </td>
-          <td>
-            {% if c.id in protected_category_ids %}
-            <span class="muted">Protected</span>
-            {% else %}
-            <form method="post" action="{{ url_for('cafe.delete_category', category_id=c.id) }}" class="inline">
-              <button type="submit">Delete</button>
-            </form>
-            {% endif %}
-          </td>
-        </tr>
-        {% endfor %}
-      </table>
+      <h3>Menu Organisation</h3>
+      <p>Use <a href="{{ url_for('cafe.menu', section='navigation') }}">Menu Navigation</a> to manage main categories and subcategories. Set serving hours separately on each item. Workstations control where items are prepared.</p>
     </section>
 
     <section class="panel">
@@ -235,14 +206,11 @@
     <section class="panel">
       <h3>Add Menu Item</h3>
       <form method="post" class="grid grid-4" enctype="multipart/form-data">
-        <fieldset class="full">
-          <legend>Categories (Select one or more)</legend>
-          <div class="grid grid-4">
-            {% for c in categories %}
-            <label><input type="checkbox" name="category_ids" value="{{ c.id }}" {% if c.id in add_form.selected_category_ids %}checked{% endif %} /> {{ c.name }}</label>
-            {% endfor %}
-          </div>
-        </fieldset>
+        <label>Serving Hours
+          <select name="serving_hours" required>{% for value, label in serving_hours_options %}<option value="{{ value }}" {% if add_form.serving_hours == value %}selected{% endif %}>{{ label }}</option>{% endfor %}</select>
+        </label>
+        <label><input type="checkbox" name="customer_visible" {% if add_form.customer_visible %}checked{% endif %} /> Customer-facing item</label>
+        <p class="muted full">Hours affect ordering, not menu browsing. Both means either configured window, not all day. Workstation hours still apply.</p>
         <label>Menu Navigation Location
           <select name="navigation_section_id" required>
             <option value="">Select a subcategory</option>
@@ -313,7 +281,7 @@
         {% for item in items %}
         {% set selected_cats = item_category_map.get(item.id, []) %}
         <tr>
-          <td>{% for c in categories if c.id in selected_cats %}{{ c.name }}{% if not loop.last %}, {% endif %}{% endfor %}</td>
+          <td>{{ navigation_label(item) }}</td>
           <td>{{ item.name }}</td>
           <td>{{ item.item_type }}</td>
           <td>{{ workstation_name_map.get(item.prep_station, 'No workstation') }}</td>
@@ -324,7 +292,7 @@
             <button type="button" class="menu-preview-btn"
               data-name="{{ item.name }}"
               data-image="{{ item.image_url or '' }}"
-              data-meta="{% for c in categories if c.id in selected_cats %}{{ c.name }}{% if not loop.last %}, {% endif %}{% endfor %}{% if item.item_type %}, {{ item.item_type }}{% endif %}"
+              data-meta="{{ navigation_label(item) }}{% if item.item_type %}, {{ item.item_type }}{% endif %}"
               data-short-description="{{ item.short_description or '' }}"
               data-description="{{ item.description or 'No description available.' }}"
               data-calories="{{ item.calories or '-' }}"
@@ -333,16 +301,16 @@
             <details style="margin-top:0.35rem;">
               <summary>Edit</summary>
               <form method="post" action="{{ url_for('cafe.update_menu_item', item_id=item.id) }}" class="grid grid-4 menu-item-edit-form" data-item-id="{{ item.id }}" enctype="multipart/form-data">
-                <fieldset class="full">
-                  <legend>Categories (Select one or more)</legend>
-                  <div class="grid grid-4">
-                    {% for c in categories %}
-                    <label><input type="checkbox" name="category_ids" value="{{ c.id }}" {% if c.id in selected_cats %}checked{% endif %} /> {{ c.name }}</label>
-                    {% endfor %}
-                  </div>
-                </fieldset>
+                <label>Serving Hours
+                  <select name="serving_hours" required>{% for value, label in serving_hours_options %}<option value="{{ value }}" {% if item.serving_hours == value %}selected{% endif %}>{{ label }}</option>{% endfor %}</select>
+                </label>
+                <input type="hidden" name="visibility_present" value="1" />
+                <label><input type="checkbox" name="customer_visible" {% if item.customer_visible %}checked{% endif %} /> Customer-facing item</label>
                 <label>Menu Navigation Location
                   <select name="navigation_section_id" required>
+                    {% if item.navigation_section and (not item.navigation_section.active or not item.navigation_section.group.active or item.navigation_section.collection_kind != 'catalog') %}
+                    <option value="{{ item.navigation_section_id }}" selected>{{ navigation_label(item) }} (current inactive location)</option>
+                    {% endif %}
                     {% for group, sections in catalog_navigation_groups %}
                     <optgroup label="{{ group.label }}">
                       {% for subsection in sections %}<option value="{{ subsection.id }}" {% if item.navigation_section_id == subsection.id %}selected{% endif %}>{{ subsection.label }}</option>{% endfor %}
@@ -410,7 +378,7 @@
         {% set selected_cats = item_category_map.get(item.id, []) %}
         <tr>
           <td>{{ item.name }}</td>
-          <td>{% for c in categories if c.id in selected_cats %}{{ c.name }}{% if not loop.last %}, {% endif %}{% endfor %}</td>
+          <td>{{ navigation_label(item) }}</td>
           <td>{{ item.item_type }}</td>
           <td>{{ workstation_name_map.get(item.prep_station, 'No workstation') }}</td>
           <td>{{ chef_name_map.get(item.chef_user_id, 'Unassigned') }}</td>
@@ -437,10 +405,10 @@
       <p class="muted">Only items eligible for the current Breakfast or Regular serving window are shown here. Menu browsing remains unrestricted by serving hours.</p>
       <form method="get" class="grid grid-4">
         <input type="hidden" name="section" value="availability" />
-        <label>Category
-          <select name="category_filter">
+        <label>Menu Navigation Location
+          <select name="navigation_section_id">
             <option value="">All</option>
-            {% for c in categories %}
+            {% for c in navigation_filter_options %}
             <option value="{{ c.id }}" {% if selected_category_filter == c.id %}selected{% endif %}>{{ c.name }}</option>
             {% endfor %}
           </select>
@@ -448,8 +416,8 @@
         <button type="submit">Load Items</button>
       </form>
       <form method="post" action="{{ url_for('cafe.update_menu_availability') }}">
-        <input type="hidden" name="category_filter" value="{{ selected_category_filter or '' }}" />
-        <input type="hidden" name="next" value="{{ url_for('cafe.menu', section='availability', category_filter=selected_category_filter or '') }}" />
+        <input type="hidden" name="navigation_section_id" value="{{ selected_category_filter or '' }}" />
+        <input type="hidden" name="next" value="{{ url_for('cafe.menu', section='availability', navigation_section_id=selected_category_filter or '') }}" />
         <table>
           <tr><th>Food Item</th><th>Available</th></tr>
           {% for item in availability_items %}

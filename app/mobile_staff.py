@@ -19,6 +19,8 @@ from .auth_helpers import user_has_any_role, user_has_permission
 from .attendance_logic import aggregate_attendance_rows, worked_minutes_for_row
 from .cafe import _current_ist_day_bounds, _recalculate_order_totals, create_cafe_order
 from .extensions import db
+from .menu_classification import is_customer_visible, navigation_label, navigation_filter_options
+from .menu_schedule import menu_item_window_is_open
 from .leave_logic import (
     calculate_leave_duration,
     ensure_leave_balance,
@@ -152,6 +154,8 @@ def _leave_payload(row):
 
 
 def _categories_for_item(item):
+    if item.navigation_section_id:
+        return [navigation_label(item)]
     ids = []
     try:
         raw = json.loads(item.category_ids_json or "[]")
@@ -183,10 +187,10 @@ def _size_options(item):
 
 
 def _menu_payload(item, include_protected=False, available_only=False):
-    if available_only and not item.available:
+    if available_only and (not item.available or not menu_item_window_is_open(item)):
         return None
     category_names = _categories_for_item(item)
-    protected = any(name.strip().lower() in PROTECTED_CATEGORY_NAMES for name in category_names)
+    protected = not is_customer_visible(item)
     if protected and not include_protected:
         return None
     return {
@@ -333,7 +337,7 @@ def workspace():
         "documents": [_document_payload(doc) for doc in documents],
         "rulebook": {"version": rulebook.version, "title": rulebook.title, "content": rulebook.content_text or "", "file_name": rulebook.file_name or ""} if rulebook else None,
         "tables": [_table_payload(table) for table in tables],
-        "categories": [{"id": category.id, "name": category.name} for category in categories if category.name.strip().lower() not in PROTECTED_CATEGORY_NAMES],
+        "categories": navigation_filter_options(),
         "workstations": [{"slug": station.slug, "name": station.name} for station in workstations],
         "menu": visible_menu,
         "availability_menu": all_menu,
@@ -506,10 +510,9 @@ def create_staff_order():
         except (TypeError, ValueError):
             continue
         item = MenuItem.query.filter_by(id=item_id, is_deleted=False).first()
-        if not item or not item.available:
+        if not item or not item.available or not menu_item_window_is_open(item):
             continue
-        category_names = _categories_for_item(item)
-        if any(name.strip().lower() in PROTECTED_CATEGORY_NAMES for name in category_names):
+        if not is_customer_visible(item):
             continue
         size_label = str(row.get("size_label") or "").strip() or None
         unit_price = float(item.price or 0)

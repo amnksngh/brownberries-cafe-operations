@@ -183,6 +183,9 @@ class MenuItem(TimestampMixin, db.Model):
     )
     item_type = db.Column(db.String(80), nullable=False)
     category_ids_json = db.Column(db.String(500), nullable=True)
+    # Nullable during migration; legacy fields remain available for rollback.
+    serving_hours = db.Column(db.String(20), nullable=True)
+    customer_visible = db.Column(db.Boolean, nullable=True)
     navigation_section_id = db.Column(db.Integer, db.ForeignKey("menu_nav_section.id"), nullable=True)
     name = db.Column(db.String(120), nullable=False)
     image_url = db.Column(db.String(255), nullable=True)

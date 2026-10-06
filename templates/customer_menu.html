@@ -18,8 +18,8 @@
         {% endfor %}
       </select>
     </label>
-    <label>Category
-      <select name="category_id">
+    <label>Menu Navigation Location
+      <select name="navigation_section_id">
         <option value="">All</option>
         {% for c in categories %}
         <option value="{{ c.id }}" {% if selected_category_id == c.id %}selected{% endif %}>{{ c.name }}</option>

@@ -128,6 +128,13 @@ def breakfast_category_id() -> int | None:
 
 
 def menu_item_serving_periods(item, breakfast_id: int | None = None) -> tuple[str, ...]:
+    explicit = getattr(item, "serving_hours", None)
+    if explicit in {"breakfast", "regular", "both"}:
+        return ("breakfast", "regular") if explicit == "both" else (explicit,)
+    return legacy_menu_item_serving_periods(item, breakfast_id)
+
+
+def legacy_menu_item_serving_periods(item, breakfast_id: int | None = None) -> tuple[str, ...]:
     """Derive item windows from its category membership.
 
     Breakfast alone means Breakfast Hours; Breakfast plus any other category
