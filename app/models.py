@@ -1153,6 +1153,15 @@ class LeaveBalance(TimestampMixin, db.Model):
     user = db.relationship("User", backref=db.backref("leave_balance", uselist=False))
 
 
+class ManualLeaveOpeningReset(TimestampMixin, db.Model):
+    """One-time cutover audit. Never delete historical leave transactions."""
+    user_id = db.Column(db.Integer, db.ForeignKey("user.id"), primary_key=True)
+    effective_date = db.Column(db.Date, nullable=False)
+    previous_earned = db.Column(db.Float, nullable=False)
+    previous_urgent = db.Column(db.Float, nullable=False)
+    actor_user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False)
+
+
 class LeaveTransaction(TimestampMixin, db.Model):
     id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False)

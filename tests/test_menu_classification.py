@@ -9,6 +9,8 @@ from werkzeug.datastructures import MultiDict
 from app.extensions import db
 from app.models import MenuCategory, MenuItem, MenuNavGroup, MenuNavSection, InventoryRecipe, OperationalItem, Workstation
 from app.workstation_setup import initialize_workstations
+from app.models import User, StaffProfile, LeaveBalance, ManualLeaveOpeningReset, LeaveTransaction
+from app.manual_leave_reset import reset_staff_opening_balances
 from app.cafe import _ensure_workstations_seeded
 from app.menu_classification import backfill_menu_classification, is_customer_visible, navigation_label, apply_navigation_filter
 from app.menu_schedule import menu_item_serving_periods, menu_item_window_is_open
@@ -193,6 +195,28 @@ class MenuClassificationTests(unittest.TestCase):
         initialize_workstations()
         _ensure_workstations_seeded()
         self.assertEqual(Workstation.query.count(), 0)
+
+    def test_manual_leave_reset_excludes_all_admin_roles_and_is_idempotent(self):
+        admin = User(full_name='Admin', email='admin-reset@example.invalid', password_hash='unused', role='admin')
+        mixed = User(full_name='Mixed', email='mixed-reset@example.invalid', password_hash='unused', role='staff', roles_json='["staff","admin"]')
+        staff = User(full_name='Staff', email='staff-reset@example.invalid', password_hash='unused', role='staff')
+        for user in (admin, mixed, staff):
+            db.session.add(user)
+            db.session.flush()
+            db.session.add(StaffProfile(user_id=user.id))
+            db.session.add(LeaveBalance(user_id=user.id, earned_balance=10, urgent_balance=3))
+        db.session.commit()
+        self.assertEqual(reset_staff_opening_balances(admin), [staff.id])
+        db.session.commit()
+        self.assertEqual(reset_staff_opening_balances(admin), [])
+        self.assertEqual(LeaveBalance.query.filter_by(user_id=staff.id).one().earned_balance, 0)
+        for user in (admin,mixed):
+            self.assertEqual(LeaveBalance.query.filter_by(user_id=user.id).one().earned_balance, 10)
+        audit = db.session.get(ManualLeaveOpeningReset, staff.id)
+        self.assertEqual(audit.previous_earned, 10)
+        self.assertEqual(audit.effective_date.isoformat(), '2026-10-01')
+        self.assertEqual(LeaveTransaction.query.filter_by(user_id=staff.id).count(), 2)
+        with self.assertRaises(PermissionError): reset_staff_opening_balances(staff)
 
     def test_existing_workstation_customizations_survive_initialization(self):
         station = Workstation(slug='kitchen', name='Custom Kitchen', active=False, display_order=99)
