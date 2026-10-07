@@ -7,7 +7,9 @@ from flask import Flask, g
 from werkzeug.datastructures import MultiDict
 
 from app.extensions import db
-from app.models import MenuCategory, MenuItem, MenuNavGroup, MenuNavSection, InventoryRecipe, OperationalItem
+from app.models import MenuCategory, MenuItem, MenuNavGroup, MenuNavSection, InventoryRecipe, OperationalItem, Workstation
+from app.workstation_setup import initialize_workstations
+from app.cafe import _ensure_workstations_seeded
 from app.menu_classification import backfill_menu_classification, is_customer_visible, navigation_label, apply_navigation_filter
 from app.menu_schedule import menu_item_serving_periods, menu_item_window_is_open
 from app.main import _is_public_menu_item
@@ -182,6 +184,43 @@ class MenuClassificationTests(unittest.TestCase):
         response = self.app.test_client().post(f'/cafe/menu/items/{item.id}/permanent-delete', data={'confirm_permanent':'yes'})
         self.assertEqual(response.status_code, 409)
         self.assertIsNotNone(db.session.get(MenuItem, item.id))
+
+    def test_workstation_defaults_seed_only_once_even_if_all_deleted(self):
+        initialize_workstations()
+        self.assertEqual(Workstation.query.count(), 2)
+        Workstation.query.delete()
+        db.session.commit()
+        initialize_workstations()
+        _ensure_workstations_seeded()
+        self.assertEqual(Workstation.query.count(), 0)
+
+    def test_existing_workstation_customizations_survive_initialization(self):
+        station = Workstation(slug='kitchen', name='Custom Kitchen', active=False, display_order=99)
+        db.session.add(station)
+        db.session.commit()
+        initialize_workstations()
+        self.assertEqual(Workstation.query.count(), 1)
+        self.assertEqual((station.name, station.active, station.display_order), ('Custom Kitchen', False, 99))
+
+    def test_delete_linked_workstation_then_recreate(self):
+        initialize_workstations()
+        station = Workstation.query.filter_by(slug='kitchen').one()
+        item = self.item()
+        item.prep_station = station.slug
+        profile = OperationalItem(internal_code='test-station', name='Coffee', menu_item_id=item.id, default_workstation_id=station.id)
+        db.session.add(profile)
+        db.session.commit()
+        client = self.app.test_client()
+        response = client.post(f'/cafe/menu/workstations/{station.id}/delete')
+        self.assertEqual(response.status_code, 302)
+        db.session.expire_all()
+        self.assertEqual(item.prep_station, '')
+        self.assertIsNone(profile.default_workstation_id)
+        initialize_workstations()
+        self.assertIsNone(Workstation.query.filter_by(slug='kitchen').first())
+        response = client.post('/cafe/menu/workstations', data={'name':'New Kitchen', 'slug':'kitchen'})
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(Workstation.query.filter_by(slug='kitchen').one().name, 'New Kitchen')
 
     def test_navigation_reorder_rejects_missing_duplicate_and_foreign_ids(self):
         client = self.app.test_client()

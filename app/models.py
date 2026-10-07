@@ -153,6 +153,10 @@ class Workstation(TimestampMixin, db.Model):
     )
 
 
+class InitialSetupState(db.Model):
+    key = db.Column(db.String(80), primary_key=True)
+
+
 workstation_group_member = db.Table(
     "workstation_group_member",
     db.Column("group_id", db.Integer, db.ForeignKey("workstation_group.id"), primary_key=True),

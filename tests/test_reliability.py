@@ -50,6 +50,9 @@ class ReliabilityTests(unittest.TestCase):
         self.assertNotIn(b.id, previous)
 
     def test_workstation_cache_is_request_local_and_get_only(self):
+        # Defaults are initialized at startup, never as a side effect of a GET.
+        from app.workstation_setup import initialize_workstations
+        initialize_workstations()
         with self.app.test_request_context("/"):
             first = _all_workstations(True)
             self.assertIs(first, _all_workstations(True))

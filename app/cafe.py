@@ -236,28 +236,8 @@ def _workstation_group_slug_set(include_inactive: bool = False) -> set[str]:
 
 
 def _ensure_workstations_seeded():
-    if has_request_context() and getattr(g, "workstations_seeded", False):
-        return
-    changed = False
-    for index, (slug, name) in enumerate(DEFAULT_WORKSTATIONS, start=1):
-        station = Workstation.query.filter_by(slug=slug).first()
-        if not station:
-            db.session.add(Workstation(slug=slug, name=name, active=True, display_order=index))
-            changed = True
-            continue
-        if not station.name:
-            station.name = name
-            changed = True
-        if station.display_order != index:
-            station.display_order = index
-            changed = True
-        if not station.active:
-            station.active = True
-            changed = True
-    if changed:
-        db.session.commit()
-    if has_request_context():
-        g.workstations_seeded = True
+    # Startup handles first-install examples. Reads must never recreate deleted stations.
+    return
 
 
 def _all_workstations(include_inactive: bool = False):
@@ -3845,11 +3825,16 @@ def delete_workstation(workstation_id):
     for group in list(workstation.groups):
         group.workstations.remove(workstation)
     MenuItem.query.filter_by(prep_station=workstation.slug).update({"prep_station": ""}, synchronize_session=False)
-    InventoryExpenseLog.query.filter_by(workstation_slug=workstation.slug).update({"workstation_slug": "unassigned"}, synchronize_session=False)
+    # Preserve financial history under its original workstation slug.
+    # Nullable operational/SOP links must be cleared before deleting the station.
+    for table in db.metadata.sorted_tables:
+        for column in table.columns:
+            if column.nullable and any(fk.target_fullname == "workstation.id" for fk in column.foreign_keys):
+                db.session.execute(table.update().where(column == workstation.id).values({column.name: None}))
     InventoryToPurchase.query.filter_by(workstation_slug=workstation.slug).update({"workstation_slug": "unassigned"}, synchronize_session=False)
     db.session.delete(workstation)
     db.session.commit()
-    flash("Workstation deleted. Linked menu items are now unassigned.", "success")
+    flash("Workstation deleted. Menu items, purchase-list entries and operational/SOP workstation links are now unassigned. Historical expenses are preserved.", "success")
     return redirect(url_for("cafe.menu"))
 
 

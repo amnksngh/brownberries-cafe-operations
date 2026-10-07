@@ -159,7 +159,7 @@
             <form id="workstation-form-{{ st.id }}" method="post" action="{{ url_for('cafe.update_workstation', workstation_id=st.id) }}" class="inline">
               <button type="submit">Save</button>
             </form>
-            <form method="post" action="{{ url_for('cafe.delete_workstation', workstation_id=st.id) }}" class="inline confirm-delete-form" data-confirm-message="Delete workstation '{{ st.name }}'? Linked menu items will become unassigned.">
+            <form method="post" action="{{ url_for('cafe.delete_workstation', workstation_id=st.id) }}" class="inline confirm-delete-form" data-confirm-message="Delete workstation '{{ st.name }}'? Menu items, purchase-list entries and operational/SOP workstation links become unassigned. Station-specific ordering hours will no longer apply to those items. Historical expenses remain unchanged.">
               <button type="submit">Delete</button>
             </form>
           </td>

@@ -574,34 +574,8 @@ def _ensure_other_inventory_vendor():
 
 
 def _ensure_default_workstations():
-    defaults = [
-        ("kitchen", "Kitchen"),
-        ("barista", "Barista Counter"),
-    ]
-    changed = False
-    for index, (slug, name) in enumerate(defaults, start=1):
-        workstation = Workstation.query.filter_by(slug=slug).first()
-        if not workstation:
-            workstation = Workstation(
-                slug=slug,
-                name=name,
-                active=True,
-                display_order=index,
-            )
-            db.session.add(workstation)
-            changed = True
-            continue
-        if not workstation.name:
-            workstation.name = name
-            changed = True
-        if workstation.display_order != index:
-            workstation.display_order = index
-            changed = True
-        if not workstation.active:
-            workstation.active = True
-            changed = True
-    if changed:
-        db.session.commit()
+    from .workstation_setup import initialize_workstations
+    initialize_workstations()
 
 
 def create_app(*, instance_path=None):
