@@ -7,7 +7,7 @@ from flask import Flask, g
 from werkzeug.datastructures import MultiDict
 
 from app.extensions import db
-from app.models import MenuCategory, MenuItem, MenuNavGroup, MenuNavSection
+from app.models import MenuCategory, MenuItem, MenuNavGroup, MenuNavSection, InventoryRecipe, OperationalItem
 from app.menu_classification import backfill_menu_classification, is_customer_visible, navigation_label, apply_navigation_filter
 from app.menu_schedule import menu_item_serving_periods, menu_item_window_is_open
 from app.main import _is_public_menu_item
@@ -152,6 +152,36 @@ class MenuClassificationTests(unittest.TestCase):
         config = load_menu_navigation_configuration()
         self.assertEqual([s['id'] for s in config['groups'][0]['sections']], [13, 12])
         self.assertEqual(config['groups'][0]['default_section'], 'tea')
+
+    def test_permanent_delete_requires_archive_and_confirmation(self):
+        item = self.item()
+        client = self.app.test_client()
+        url = f'/cafe/menu/items/{item.id}/permanent-delete'
+        self.assertEqual(client.post(url, data={'confirm_permanent':'yes'}).status_code, 400)
+        item.is_deleted = True
+        db.session.commit()
+        self.assertEqual(client.post(url).status_code, 400)
+        self.assertIsNotNone(db.session.get(MenuItem, item.id))
+
+    def test_permanent_delete_preserves_operational_profile(self):
+        item = self.item(is_deleted=True)
+        item_id = item.id
+        profile = OperationalItem(internal_code='test-delete', name='Coffee', menu_item_id=item_id)
+        db.session.add(profile)
+        db.session.commit()
+        response = self.app.test_client().post(f'/cafe/menu/items/{item_id}/permanent-delete', data={'confirm_permanent':'yes'})
+        self.assertEqual(response.status_code, 302)
+        self.assertIsNone(db.session.get(MenuItem, item_id))
+        self.assertIsNotNone(db.session.get(OperationalItem, profile.id))
+        self.assertIsNone(profile.menu_item_id)
+
+    def test_permanent_delete_blocks_recipe_links(self):
+        item = self.item(is_deleted=True)
+        db.session.add(InventoryRecipe(menu_item_id=item.id))
+        db.session.commit()
+        response = self.app.test_client().post(f'/cafe/menu/items/{item.id}/permanent-delete', data={'confirm_permanent':'yes'})
+        self.assertEqual(response.status_code, 409)
+        self.assertIsNotNone(db.session.get(MenuItem, item.id))
 
     def test_navigation_reorder_rejects_missing_duplicate_and_foreign_ids(self):
         client = self.app.test_client()

@@ -58,6 +58,7 @@ from .leave_logic import (
     weekly_off_config,
 )
 from .menu_schedule import menu_item_window_is_open, menu_period_settings
+from .menu_deletion import menu_deletion_blockers
 from .menu_classification import SERVING_HOURS_OPTIONS, is_customer_visible, navigation_label, navigation_filter_options, apply_navigation_filter
 from .payment_summary import summarize_payments
 from .menu_navigation import (
@@ -1370,6 +1371,7 @@ def _render_menu_page(active_menu_section: str = "catalog", add_form_state: dict
         "cafe/menu.html",
         items=items,
         deleted_items=deleted_items,
+        deletion_blockers={item.id: menu_deletion_blockers(item.id) for item in deleted_items} if active_menu_section == "deleted_items" else {},
         categories=all_categories,
         protected_category_ids=[c.id for c in all_categories if _is_protected_menu_category(c)],
         menu_types=MenuType.query.order_by(MenuType.name).all(),
@@ -4042,6 +4044,30 @@ def restore_menu_item(item_id):
     item.is_deleted = False
     db.session.commit()
     flash("Menu item restored.", "success")
+    return redirect(url_for("cafe.menu", section="deleted_items"))
+
+
+@bp.route("/menu/items/<int:item_id>/permanent-delete", methods=["POST"])
+@roles_required("admin", "manager")
+def permanently_delete_menu_item(item_id):
+    item = MenuItem.query.get_or_404(item_id)
+    if not item.is_deleted:
+        flash("Archive the item before permanently deleting it.", "error")
+        return redirect(url_for("cafe.menu", section="deleted_items")), 400
+    if request.form.get("confirm_permanent") != "yes":
+        flash("Permanent deletion requires confirmation.", "error")
+        return redirect(url_for("cafe.menu", section="deleted_items")), 400
+    blockers = menu_deletion_blockers(item.id)
+    if blockers:
+        flash("Cannot permanently delete: linked to " + ", ".join(blockers) + ". Keep this item archived to preserve history.", "error")
+        return redirect(url_for("cafe.menu", section="deleted_items")), 409
+    name = item.name
+    if item.operational_profile:
+        item.operational_profile.menu_item = None
+    db.session.delete(item)
+    db.session.commit()
+    _STATS_CACHE.clear()
+    flash(f"{name} permanently deleted. It cannot be restored here. Operational records and image files were retained.", "success")
     return redirect(url_for("cafe.menu", section="deleted_items"))
 
 

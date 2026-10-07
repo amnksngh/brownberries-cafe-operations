@@ -369,6 +369,7 @@
     {% if active_menu_section == 'deleted_items' %}
     <section class="panel">
       <h3>Deleted Items</h3>
+      <p class="muted">Archived items can be restored. Permanent deletion cannot be undone here and is blocked for items linked to orders, feedback, recipes or responsibility history. Independent operational profiles, SOPs and image files are retained.</p>
       <table>
         <tr><th>Item</th><th>Category</th><th>Type</th><th>Workstation</th><th>Responsible Staff</th><th>Actions</th></tr>
         {% for item in deleted_items %}
@@ -383,6 +384,16 @@
             <form method="post" action="{{ url_for('cafe.restore_menu_item', item_id=item.id) }}" class="inline">
               <button type="submit">Restore</button>
             </form>
+            {% set blockers = deletion_blockers.get(item.id, []) %}
+            {% if blockers %}
+            <button type="button" disabled>Permanently Delete</button>
+            <small>Retained for: {{ blockers|join(', ') }}.</small>
+            {% else %}
+            <form method="post" action="{{ url_for('cafe.permanently_delete_menu_item', item_id=item.id) }}" class="inline confirm-delete-form" data-confirm-message="Permanently delete '{{ item.name }}'? This cannot be undone here. Independent operational records and images will be retained.">
+              <input type="hidden" name="confirm_permanent" value="yes" />
+              <button type="submit">Permanently Delete</button>
+            </form>
+            {% endif %}
           </td>
         </tr>
         {% else %}
