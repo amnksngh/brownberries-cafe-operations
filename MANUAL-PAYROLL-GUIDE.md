@@ -29,7 +29,8 @@ through March. Exit settles it with 15 notice days served or management release;
 otherwise it records forfeiture. Each month can be allocated only once. Payments
 are never made automatically.
 
-All admin-role accounts are excluded from the October 1 opening reset. Accounts,
+The owner's updated instruction includes admin staff in the October 1 opening
+reset. Deploy with `--include-admins` to explicitly authorize that scope. Accounts,
 credentials, historical attendance, leave transactions and receipt files remain.
 Old credits, geofence/check-in/heartbeat and legacy leave writes are blocked.
 Pre-October reports remain readable. Older Android apps may still show monitoring
@@ -44,7 +45,7 @@ Fetch the verified commit on AWS and rerun checks there. Stop application writer
 take and verify a fresh backup, then run:
 
 ```
-python scripts/activate_manual_payroll.py --instance /srv/brownberries/production-instance --admin-id <active-admin-id> --apply
+python scripts/activate_manual_payroll.py --instance /srv/brownberries/production-instance --admin-id <active-admin-id> --apply --include-admins
 ```
 
 Restart and verify the service, public ordering and manual payroll screen.

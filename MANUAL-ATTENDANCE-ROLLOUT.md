@@ -6,7 +6,10 @@ See `MANUAL-PAYROLL-GUIDE.md` for the current workflow, deployment and recovery.
 The checklist below documents the original design, now implemented by the
 manual payroll engine, additive tables and protected review workspace.
 
-User-confirmed effective date: 2026-10-01. Exclude every account with any Admin role from the opening leave-balance reset. Preserve accounts, credentials, historical attendance, payroll documents and leave transactions.
+User-confirmed effective date: 2026-10-01. Updated owner instruction: include admin
+staff as well as non-admin staff in the opening reset, using `--include-admins`.
+This supersedes the original admin-exclusion rule. Preserve accounts, credentials,
+historical attendance, payroll documents and leave transactions.
 
 ## Confirmed rules
 
@@ -23,7 +26,9 @@ User-confirmed effective date: 2026-10-01. Exclude every account with any Admin 
 ## Implemented foundation and integration
 
 - Pure Decimal-based day/entitlement/exit calculations with regression tests.
-- Explicit transactional opening-reset function plus per-person audit record; excludes all admin-role accounts, includes archived staff, skips service accounts and already-reset people.
+- Explicit transactional opening reset with per-person audit records; includes
+  admin staff with `--include-admins`, includes archived staff, skips non-staff
+  service accounts and already-reset people.
 - No startup activation and no exposed reset button. Use the explicit activation
   script only after a verified backup; its output records whether a reset occurred.
 

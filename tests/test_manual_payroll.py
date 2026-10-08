@@ -82,6 +82,19 @@ class ManualPayrollTests(unittest.TestCase):
         self.assertFalse(payroll.active())
         self.assertEqual(self.staff.leave_balance.earned_balance,12)
 
+    def test_explicit_reset_includes_admin_and_multi_role_admin_staff(self):
+        changed=payroll.activate(self.admin,include_admins=True);db.session.commit()
+        self.assertEqual(set(changed),{self.admin.id,self.staff.id,self.mixed.id})
+        for user in (self.admin,self.staff,self.mixed):
+            self.assertEqual(user.leave_balance.earned_balance,0)
+            self.assertEqual(user.leave_balance.urgent_balance,0)
+            record=db.session.get(ManualLeaveOpeningReset,user.id)
+            self.assertEqual(record.previous_earned,12)
+            self.assertEqual(record.effective_date,date(2026,10,1))
+        self.assertEqual(payroll.activate(self.admin,include_admins=True),[])
+        run_leave_maintenance(date(2027,4,30))
+        self.assertEqual(self.admin.leave_balance.earned_balance,0)
+
     def test_no_legacy_auto_conversion_or_finalization_without_review(self):
         self.employment()
         db.session.add(StaffAttendance(user_id=self.staff.id,attendance_date=date(2026,10,1),status='present_all_day'))

@@ -20,6 +20,7 @@ def main():
     parser=argparse.ArgumentParser()
     parser.add_argument('--instance',required=True)
     parser.add_argument('--html-output')
+    parser.add_argument('--include-admins',action='store_true')
     args=parser.parse_args()
     source=Path(args.instance)
     with TemporaryDirectory(prefix='manual-payroll-audit-') as folder:
@@ -40,9 +41,14 @@ def main():
                 original_attendance=[tuple(r) for r in db.session.execute(db.text('SELECT * FROM staff_attendance ORDER BY id'))]
                 admins={u.id for u in User.query.all() if u.has_role('admin')}
                 balances={r.user_id:(r.earned_balance,r.urgent_balance) for r in LeaveBalance.query.all() if r.user_id in admins}
-                changed=activate(admin);db.session.commit()
+                changed=activate(admin,include_admins=args.include_admins);db.session.commit()
                 run_leave_maintenance()
-                assert balances=={r.user_id:(r.earned_balance,r.urgent_balance) for r in LeaveBalance.query.all() if r.user_id in admins}
+                after={r.user_id:(r.earned_balance,r.urgent_balance) for r in LeaveBalance.query.all() if r.user_id in admins}
+                if args.include_admins:
+                    staff_ids={p.user_id for p in StaffProfile.query.all()}
+                    assert all(value==(0,0) for uid,value in after.items() if uid in staff_ids)
+                else:
+                    assert balances==after
                 assert all(db.session.query(LeaveBalance).filter_by(user_id=uid).one().earned_balance==0 for uid in changed)
             client=app.test_client()
             with client.session_transaction() as session: session['user_id']=admin_id
@@ -68,7 +74,7 @@ def main():
                 assert original_users=={u.id:(u.password_hash,u.email,u.active,u.role) for u in User.query.all()}
                 assert original_attendance==[tuple(r) for r in db.session.execute(db.text('SELECT * FROM staff_attendance ORDER BY id'))]
                 assert ManualAttendance.query.count()==0
-                print(json.dumps({'reset_staff_count':len(changed),'admins_unchanged':len(admins),
+                print(json.dumps({'reset_staff_count':len(changed),'include_admins':args.include_admins,'reset_admin_count':len(set(changed)&admins),
                     'legacy_attendance_preserved':len(original_attendance),'read_routes_verified':len(routes),
                     'legacy_writers_blocked':True,'source_unchanged':True,'admin_id':admin_id}))
         finally:

@@ -56,14 +56,14 @@ def require_admin(actor):
         raise PermissionError('An administrator must review and finalize payroll.')
 
 
-def activate(actor):
+def activate(actor, *, include_admins=False):
     require_admin(actor)
     if active():
         return []
     from .manual_leave_reset import reset_staff_opening_balances
-    changed = reset_staff_opening_balances(actor)
+    changed = reset_staff_opening_balances(actor, include_admins=include_admins)
     db.session.add(InitialSetupState(key=KEY))
-    audit(actor.id, actor, 'activate', {'effective_date': EFFECTIVE_DATE, 'reset_user_ids': changed})
+    audit(actor.id, actor, 'activate', {'effective_date': EFFECTIVE_DATE, 'include_admins': include_admins, 'reset_user_ids': changed})
     db.session.flush()
     return changed
 
