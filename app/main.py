@@ -377,6 +377,9 @@ def _menu_item_category_ids(item: MenuItem) -> list[int]:
 
 def _build_salary_summary(profile, attendance_logs: list[StaffAttendance], ref_date: date | None = None):
     ref_date = ref_date or date.today()
+    from .manual_payroll import active, salary_summary, EFFECTIVE_DATE
+    if active() and ref_date >= EFFECTIVE_DATE:
+        return salary_summary(profile.user_id, ref_date.replace(day=1))
     days_in_month = calendar.monthrange(ref_date.year, ref_date.month)[1]
     monthly_salary = float(profile.salary_amount or 0)
     per_day_salary = round((monthly_salary / days_in_month), 2) if monthly_salary and days_in_month else 0.0

@@ -1,0 +1,51 @@
+{% extends 'base.html' %}
+{% block content %}
+<style>
+.manual-payroll{min-width:0;max-width:100%}.manual-payroll .scroll{max-width:100%;overflow-x:auto}.manual-payroll table{width:100%;border-collapse:collapse}.manual-payroll th,.manual-payroll td{padding:.55rem;text-align:left;vertical-align:top;border-bottom:1px solid #ddd}.manual-payroll input,.manual-payroll select{max-width:100%;box-sizing:border-box}.manual-payroll .fields{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,180px),1fr));gap:12px}.manual-payroll .day-editor{min-width:245px}.manual-payroll details{margin:.4rem 0}.manual-payroll .warning{background:#fff4d6;padding:12px;border-radius:8px}.manual-payroll pre{white-space:pre-wrap;overflow-wrap:anywhere}.manual-payroll .status{white-space:nowrap}
+</style>
+<div class="manual-payroll">
+<section class="panel"><h2>Manual Attendance &amp; Payroll</h2>
+<p><a href="{{ url_for('cafe.staff', section='active_staff') }}">Staff Management</a> · <a href="{{ url_for('main.profile') }}">My Profile</a></p>
+<p>Effective October 1, 2026. Existing attendance must be reviewed by an admin; it is not automatically treated as paid or unpaid.</p>
+<form method="get" class="fields">
+{% if manager %}<label>Staff<select name="user_id">{% for p in profiles %}<option value="{{ p.user_id }}" {% if p.user_id==user.id %}selected{% endif %}>{{ p.user.full_name }}{% if p.archived %} (archived){% endif %}</option>{% endfor %}</select></label>{% endif %}
+<label>Month<input type="month" name="month" value="{{ raw_month }}" min="2026-10" required></label><button>View</button>
+</form><h3>{{ user.full_name }} — {{ raw_month }}</h3>
+<a href="{{ url_for('manual_payroll.workspace',user_id=user.id,month=raw_month,export='csv') }}">Download attendance &amp; payroll CSV</a>
+<details><summary>Rules and workflow</summary><p>Confirm employment → review each calendar day → confirm that month's salary → finalize → record actual payment. Finalized months are locked. Nothing is paid automatically.</p>
+<p>P = Present; PL = Paid Leave; UL = Unpaid Leave; FH/SH = First/Second Half Present; BL = Bereavement; SL = Sick Leave. PL requires two days' notice; SL requires notification by the day of absence. FH/SH earns half-day pay and the other half is paid only with a timely half-day application and remaining allowance.</p>
+<p>PL and SL share an allowance: full calendar month employed = 2 days; partial month with 15 or more calendar days = 1; fewer than 15 = 0. Eligible BL has a separate five-day January–December cap. Excess leave is unpaid. Historical cash entitlement cannot pay for later leave.</p>
+<p>Unused allowance is valued at that month's confirmed salary ÷ calendar days and paid with March payroll or eligible exit payroll. Exit requires 15 days of notice served or management release; otherwise the unused cash balance is forfeited. Admin balances are excluded from the opening reset.</p></details></section>
+{% if error %}<p class="warning">{{ error }}</p>{% endif %}
+{% if admin %}<section class="panel"><details {% if not emp %}open{% endif %}><summary>Confirm employment / exit</summary>
+<form method="post" class="fields"><input type="hidden" name="csrf_token" value="{{ csrf }}"><input type="hidden" name="action" value="employment"><input type="hidden" name="version" value="{{ emp.version if emp else 0 }}">
+<label>Joining date<input type="date" name="joined_on" value="{{ emp.joined_on if emp else user.staff_profile.joining_date or '' }}" required></label>
+<label>Last employed date (only on exit)<input type="date" name="left_on" value="{{ emp.left_on if emp and emp.left_on else '' }}"></label>
+<label>Notice days actually served<input type="number" name="notice_days" min="0" value="{{ emp.notice_days if emp else 0 }}" required></label>
+<label><input type="checkbox" name="management_released" value="yes" {% if emp and emp.management_released %}checked{% endif %}> Released by management</label><button>Confirm employment</button></form></details></section>{% endif %}
+<section class="panel"><h3>Daily review</h3><p>Blank means <strong>not reviewed</strong>, not absent. Legacy entries are preserved alongside the new decisions.</p>
+<div class="scroll"><table><thead><tr><th>Date</th><th>Legacy entry</th><th>Reviewed status</th><th>Payable / unpaid days</th>{% if admin %}<th>Admin review</th>{% endif %}</tr></thead><tbody>
+{% for day in days %}{% set r=by_day.get(day) %}{% set p=results.get(day) %}<tr>
+<td class="status">{{ day }}</td><td>{{ old.get(day,[])|join(', ') or '—' }}</td><td>{{ r.status if r else 'Not reviewed' }}</td><td>{% if p %}{{ p.payable }} / {{ p.unpaid }}{% else %}—{% endif %}</td>
+{% if admin %}<td>{% if emp and not locked and day<=today and day>=emp.joined_on and (not emp.left_on or day<=emp.left_on) %}
+<details class="day-editor"><summary>{{ 'Edit review' if r else 'Review day' }}</summary><form method="post">
+<input type="hidden" name="csrf_token" value="{{ csrf }}"><input type="hidden" name="action" value="day"><input type="hidden" name="day" value="{{ day }}"><input type="hidden" name="version" value="{{ r.version if r else 0 }}">
+<label>Status<select name="status" required><option value="">Select explicitly</option>{% for code,label in statuses.items() %}<option value="{{ code }}" {% if r and r.status==code %}selected{% endif %}>{{ code }} — {{ label }}</option>{% endfor %}</select></label>
+<label>Notified on<input type="date" name="notified_on" max="{{ day }}" value="{{ r.notified_on if r and r.notified_on else '' }}"></label>
+<label><input type="checkbox" name="half_applied" value="yes" {% if r and r.half_day_applied %}checked{% endif %}> Applied for the unworked half-day</label>
+<label><input type="checkbox" name="bereavement" value="yes" {% if r and r.bereavement_eligible %}checked{% endif %}> Eligible close-family bereavement</label>
+<label>Notes<input name="notes" maxlength="500" value="{{ r.notes if r else '' }}"></label><button>Save reviewed day</button></form></details>
+{% else %}{{ 'Locked' if locked else 'Outside employment / future' }}{% endif %}</td>{% endif %}</tr>{% endfor %}</tbody></table></div></section>
+<section class="panel"><h3>Payroll</h3>
+{% if final %}<p>Finalized salary snapshot: ₹{{ final.monthly_salary }}. Payable days: {{ final.payable_days }}. Gross salary: ₹{{ final.gross_pay }}.</p><p>Asset deductions: ₹{{ final.asset_charge }}. Leave settlement: ₹{{ settlement.amount if settlement else '0.00' }}{% if settlement %} ({{ settlement.reason }}){% endif %}. <strong>Net due: ₹{{ due }}</strong>.</p>
+{% if payment %}<p>Payment recorded: ₹{{ payment.amount }} on {{ payment.paid_on }} by {{ payment.mode|upper }}. Reference: {{ payment.reference }}. Included in expenses; do not enter again.</p>
+{% elif admin %}<form method="post" class="fields"><input type="hidden" name="csrf_token" value="{{ csrf }}"><input type="hidden" name="action" value="pay">
+<label>Actual payment date<input type="date" name="paid_on" value="{{ today }}" max="{{ today }}" required></label><label>Method<select name="mode"><option value="cash">Cash</option><option value="upi">UPI</option><option value="card">Card</option><option value="bank">Bank transfer</option></select></label>
+<label>Funding<select name="funding_source"><option value="cafe_operations">Cafe operating money</option><option value="owner_personal">Owner personal money</option></select></label>
+<label>Payment reference<input name="reference" maxlength="160" required></label><label><input type="checkbox" name="confirmed" value="yes" required> I confirm ₹{{ due }} has actually been paid and is not already logged as an expense.</label><button>Record payment once</button></form>{% endif %}
+{% elif view %}<p class="warning">Draft — {{ view.missing|length }} employed days need review. Current reviewed-day estimate: ₹{{ view.gross_pay }}. This is not finalized salary.</p><p>Month allowance: {{ view.allowance }} days. Estimated unused allowance: {{ view.cash_days }} days / ₹{{ view.cash_value }} (cash only, finalized at month end).</p>
+{% if admin %}<form method="post" class="fields"><input type="hidden" name="csrf_token" value="{{ csrf }}"><input type="hidden" name="action" value="finalize"><label>Confirm salary for {{ raw_month }}<input type="number" name="salary" min="0" step="0.01" value="{{ view.salary }}" required></label><label><input type="checkbox" name="confirmed" value="yes" required> All days and this month's salary are correct. Finalization locks the month.</label><button {% if view.missing or today<=view.service_end %}disabled{% endif %}>Finalize month</button></form>{% endif %}{% endif %}</section>
+<section class="panel"><h3>Earned cash ledger</h3><div class="scroll"><table><thead><tr><th>Earning month</th><th>Salary snapshot</th><th>Unused days</th><th>Cash value</th><th>Settlement</th></tr></thead><tbody>{% for row in ledger %}<tr><td>{{ row.month.strftime('%Y-%m') }}</td><td>₹{{ row.monthly_salary }}</td><td>{{ row.cash_days }}</td><td>₹{{ row.cash_value }}</td><td>{{ 'Allocated to settlement (see payroll)' if row.id in allocations else 'Banked; cash only' }}</td></tr>{% else %}<tr><td colspan="5">No finalized entitlement yet.</td></tr>{% endfor %}</tbody></table></div></section>
+{% if admin %}<section class="panel"><details><summary>Audit history (latest 100 events)</summary>{% for a in audits %}<p>{{ a.created_at }} — {{ a.action }} — admin #{{ a.actor_id }}</p><pre>{{ a.details_json }}</pre>{% endfor %}</details></section>{% endif %}
+</div>
+{% endblock %}

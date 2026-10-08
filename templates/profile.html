@@ -181,6 +181,8 @@
     {% if active_section == "salary" %}
     <section class="panel">
       <h3>Salary Receipts</h3>
+      {% if manual_payroll_active %}<p><a href="{{ url_for('manual_payroll.workspace', user_id=profile_user.id) }}">Open manual attendance, payroll and earned cash ledger</a></p>
+      {% if salary_summary.review_required %}<p class="flash warning">Draft only: admin review and monthly finalization are required. Unreviewed days have not been assumed paid or unpaid.</p>{% endif %}{% endif %}
       <div class="grid grid-4">
         <div class="flash success"><strong>Salary Type:</strong> {{ salary_summary.salary_type|title }}</div>
         <div class="flash success"><strong>Monthly Salary:</strong> ₹{{ "%.2f"|format(salary_summary.salary_amount or 0) }}</div>

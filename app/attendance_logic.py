@@ -260,6 +260,11 @@ def refresh_attendance_row(
     leniency_minutes: int = LATE_GRACE_MINUTES,
     force_recalculate: bool = False,
 ) -> str:
+    from flask import has_app_context
+    if has_app_context():
+        from .manual_payroll import active
+        if active():
+            return row.status  # Preserve legacy source evidence for admin review.
     chosen_manual_status = (manual_status or "").strip()
     if chosen_manual_status:
         row.status = chosen_manual_status

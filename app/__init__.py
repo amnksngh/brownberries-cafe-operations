@@ -578,7 +578,7 @@ def _ensure_default_workstations():
     initialize_workstations()
 
 
-def create_app(*, instance_path=None):
+def create_app(*, instance_path=None, initialize_legacy_leaves=True):
     app = Flask(
         __name__,
         instance_relative_config=True,
@@ -616,6 +616,7 @@ def create_app(*, instance_path=None):
     app.wsgi_app = DisconnectedPollingSession(app.wsgi_app)
     with app.app_context():
         configure_sqlite(db.engine)
+        from . import manual_payroll_models  # additive tables, no activation on startup
         db.create_all()
         _ensure_sqlite_schema_columns()
         _ensure_protected_menu_categories()
@@ -627,7 +628,8 @@ def create_app(*, instance_path=None):
         _ensure_default_workstations()
         ensure_operational_items_seeded()
         ensure_leave_defaults()
-        run_leave_maintenance()
+        if initialize_legacy_leaves:
+            run_leave_maintenance()
         ensure_rulebook_default()
         default_inventory_categories = [
             ("Groceries", "package", "#b08968"),
@@ -652,9 +654,13 @@ def create_app(*, instance_path=None):
         _normalize_inventory_item_types()
         _ensure_other_inventory_vendor()
     app.before_request(load_current_user)
+    from .manual_payroll_integration import guard_legacy_attendance
+    app.before_request(guard_legacy_attendance)
     @app.context_processor
     def inject_role_helpers():
+        from .manual_payroll import active as manual_active
         return {
+            "manual_payroll_active": manual_active(),
             "user_has_any_role": user_has_any_role,
             "user_has_permission": user_has_permission,
             "user_display_roles": user_display_roles,
@@ -667,6 +673,8 @@ def create_app(*, instance_path=None):
     app.register_blueprint(mobile_attendance_bp)
     app.register_blueprint(mobile_staff_bp)
     app.register_blueprint(operations_bp)
+    from .manual_payroll_views import bp as manual_payroll_bp
+    app.register_blueprint(manual_payroll_bp)
 
     @app.cli.command("init-db")
     def init_db():

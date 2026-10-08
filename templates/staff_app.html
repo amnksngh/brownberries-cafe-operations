@@ -1,5 +1,8 @@
 {% extends "base.html" %}
 {% block content %}
+{% if manual_payroll_active %}
+<section class="panel"><h2>Staff App</h2><p>Attendance is now recorded manually by an administrator. Automatic check-in, location tracking and old leave requests are not used for payroll. Disable attendance monitoring in an older app; other cafe operations remain available.</p><p><a class="button-link" href="{{ url_for('manual_payroll.workspace') }}">View attendance &amp; payroll</a></p>{% if apk_available %}<p><a href="{{ apk_download_url }}">Download existing staff app (.apk)</a></p>{% endif %}</section>
+{% else %}
 <section class="panel">
   <h2>Brownberries Attendance</h2>
   <p class="muted">
@@ -52,4 +55,5 @@
     After that, this page automatically switches from source-only mode to direct APK download mode.
   </p>
 </section>
+{% endif %}
 {% endblock %}

@@ -47,6 +47,7 @@ def main():
     parser.add_argument("--output", required=True)
     parser.add_argument("--compare-ref", help="Compare financial/stock results with a trusted local Git revision")
     parser.add_argument("--check-js", action="store_true", help="Compile rendered inline JavaScript with Node (no execution)")
+    parser.add_argument("--manual-payroll", action="store_true", help="Activate manual payroll on the disposable copy only")
     args = parser.parse_args()
     results = []
     with tempfile.TemporaryDirectory(prefix="brownberries-audit-") as folder, ExitStack() as cleanup:
@@ -64,6 +65,10 @@ def main():
         with app.app_context():
             admin = next(u for u in User.query.filter_by(active=True) if u.has_role("admin"))
             admin_id = admin.id
+            if args.manual_payroll:
+                from app.manual_payroll import activate
+                activate(admin)
+                db.session.commit()
             table = CafeTable.query.filter_by(active=True).first()
             table_slug = table.qr_slug if table else None
             engine = db.engine
@@ -92,6 +97,8 @@ def main():
                  ["dashboard", "items_stock", "reusable_assets", "purchases", "daily_closing", "wastage", "audit", "settings"]]
         urls += ["/cafe/staff?section=" + s for s in
                  ["active_staff", "attendance_calendar", "payroll_summary", "leave_requests"]]
+        if args.manual_payroll:
+            urls.append('/cafe/manual-payroll')
         with app.app_context():
             from flask import url_for
             with app.test_request_context():

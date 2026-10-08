@@ -1,4 +1,10 @@
-# Manual attendance policy — staged implementation, NOT ACTIVE
+# Manual attendance policy — integrated, explicitly activated
+
+The implementation is complete. Activation is recorded by the database marker
+`manual_payroll_2026_10_v1`; deploying code alone does not activate/reset it.
+See `MANUAL-PAYROLL-GUIDE.md` for the current workflow, deployment and recovery.
+The checklist below documents the original design, now implemented by the
+manual payroll engine, additive tables and protected review workspace.
 
 User-confirmed effective date: 2026-10-01. Exclude every account with any Admin role from the opening leave-balance reset. Preserve accounts, credentials, historical attendance, payroll documents and leave transactions.
 
@@ -14,13 +20,14 @@ User-confirmed effective date: 2026-10-01. Exclude every account with any Admin 
 - Value each month's unused days using that month's salary divided by its actual calendar-day count. Retain salary snapshots; do not revalue historical entitlement using current salary.
 - Pay accumulated entitlement with March salary for continuing employees; on exit pay if 15 days' notice completed or management released the employee; otherwise record forfeiture.
 
-## Implemented foundation
+## Implemented foundation and integration
 
 - Pure Decimal-based day/entitlement/exit calculations with regression tests.
 - Explicit transactional opening-reset function plus per-person audit record; excludes all admin-role accounts, includes archived staff, skips service accounts and already-reset people.
-- No startup activation and no exposed reset button. NO STAFF BALANCES HAVE BEEN RESET.
+- No startup activation and no exposed reset button. Use the explicit activation
+  script only after a verified backup; its output records whether a reset occurred.
 
-## Required before activation
+## Implementation checklist
 
 1. Replace current manual entry controls with P/PL/UL/FH/SH/BL/SL plus notification date, half-day application and bereavement confirmation. Retain pre-policy records under legacy logic.
 2. Persist dated manual attendance decisions/audit history and salary snapshots. Recompute allowance consumption in chronological order when a backdated entry changes.
@@ -31,4 +38,7 @@ User-confirmed effective date: 2026-10-01. Exclude every account with any Admin 
 7. Test restart/retry, annual rollover, partial days, backdated edits, salary changes, role exclusions, March settlement and departure eligibility against a copied database.
 8. Obtain approval for AWS rollout and take a current verified AWS backup. Never copy the local test database over live orders or staff records.
 
-Open implementation assumption to show in UI: a monthly entitlement is not finalized into payable cash until attendance for that month is complete. Joining/leaving-month proration is not yet specified; do not silently invent a prorating rule.
+Monthly entitlement is not finalized until every employed calendar day has been
+reviewed. Confirmed partial-month rule: full calendar month earns 2 days; a partial
+month with at least 15 calendar days employed earns 1; fewer than 15 earns 0.
+Exactly 15 days earns 1. Existing October entries require explicit admin review.

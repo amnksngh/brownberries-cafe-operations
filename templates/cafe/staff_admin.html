@@ -7,14 +7,18 @@
   </a>
   <div class="grid grid-4 staff-summary-grid">
     <a class="flash success staff-summary-card" href="{{ url_for('cafe.staff', section='active_staff') }}"><strong>Active Staff:</strong> {{ active_profiles|length }}</a>
+    {% if manual_payroll_active %}
+    <a class="flash success staff-summary-card" href="{{ url_for('manual_payroll.workspace') }}">Manual attendance review &amp; payroll</a>
+    {% else %}
     <a class="flash success staff-summary-card" href="{{ url_for('cafe.staff', section='attendance_entry') }}"><strong>Attendance Today:</strong> {{ today_attendance_count }}</a>
     <a class="flash success staff-summary-card" href="{{ url_for('cafe.staff', section='leave_requests') }}"><strong>Pending Leave Requests:</strong> {{ pending_leave_count }}</a>
+    {% endif %}
     <a class="flash success staff-summary-card" href="{{ url_for('cafe.staff', section='docs_review') }}"><strong>Docs Need Review:</strong> {{ document_pending_count }}</a>
   </div>
   {% if user_has_any_role(g.current_user, "admin") %}
   <p><a class="button-link" href="{{ url_for('cafe.user_types') }}">Manage Roles</a></p>
   {% endif %}
-  <p><a class="button-link" href="{{ url_for('main.staff_app') }}">Open Staff Attendance App Page</a></p>
+  {% if not manual_payroll_active %}<p><a class="button-link" href="{{ url_for('main.staff_app') }}">Open Staff Attendance App Page</a></p>{% endif %}
 </section>
 
 <section class="library-layout">
@@ -22,11 +26,15 @@
     <a href="{{ url_for('cafe.staff', section='add_new_staff') }}" class="{% if active_staff_section == 'add_new_staff' %}active{% endif %}">Add New Staff</a>
     <a href="{{ url_for('cafe.staff', section='active_staff') }}" class="{% if active_staff_section == 'active_staff' %}active{% endif %}">Active Staff</a>
     <a href="{{ url_for('cafe.staff', section='archived_staff') }}" class="{% if active_staff_section == 'archived_staff' %}active{% endif %}">Archived Staff</a>
+    {% if manual_payroll_active %}
+    <a href="{{ url_for('manual_payroll.workspace') }}">Manual Attendance &amp; Payroll</a>
+    {% else %}
     <a href="{{ url_for('cafe.staff', section='attendance_calendar', attendance_user_id=attendance_user_id, attendance_month=attendance_month, attendance_year=attendance_year) }}" class="{% if active_staff_section == 'attendance_calendar' %}active{% endif %}">Attendance Calendar</a>
     <a href="{{ url_for('cafe.staff', section='attendance_entry', attendance_user_id=attendance_user_id, attendance_month=attendance_month, attendance_year=attendance_year) }}" class="{% if active_staff_section == 'attendance_entry' %}active{% endif %}">Attendance Entry</a>
     <a href="{{ url_for('cafe.staff', section='leave_requests') }}" class="{% if active_staff_section == 'leave_requests' %}active{% endif %}">Leave Requests</a>
     <a href="{{ url_for('cafe.staff', section='leave_settings') }}" class="{% if active_staff_section == 'leave_settings' %}active{% endif %}">Leave Settings</a>
     <a href="{{ url_for('cafe.staff', section='rulebook') }}" class="{% if active_staff_section == 'rulebook' %}active{% endif %}">Attendance Rule Book</a>
+    {% endif %}
     <a href="{{ url_for('cafe.staff', section='docs_review') }}" class="{% if active_staff_section == 'docs_review' %}active{% endif %}">Docs Review</a>
     <a href="{{ url_for('cafe.staff', section='payroll_summary', payroll_month=payroll_month, payroll_year=payroll_year) }}" class="{% if active_staff_section == 'payroll_summary' %}active{% endif %}">Payroll Summary</a>
   </aside>
@@ -81,7 +89,7 @@
             </span>
             <span class="staff-accordion-meta">
               <span class="staff-role-pill">{{ user_display_roles(s.user) }}</span>
-              <span>{{ mark.status.replace("_", " ").title() if mark else "Not logged" }}</span>
+              <span>{{ 'Manual attendance' if manual_payroll_active else (mark.status.replace("_", " ").title() if mark else "Not logged") }}</span>
               <span class="staff-accordion-chevron" aria-hidden="true">⌄</span>
             </span>
           </summary>
@@ -89,14 +97,17 @@
             <div class="staff-detail-strip">
               <div><span>Joined</span><strong>{{ s.joining_date or "-" }}</strong></div>
               <div><span>Shift</span><strong>{{ s.shift_start_time.strftime("%H:%M") if s.shift_start_time else "09:00" }} - {{ s.shift_end_time.strftime("%H:%M") if s.shift_end_time else "18:00" }}</strong></div>
+              {% if manual_payroll_active %}<div><a href="{{ url_for('manual_payroll.workspace', user_id=s.user_id) }}">Attendance, payroll &amp; earned cash</a></div>{% else %}
               <div><span>Today</span><strong>{{ mark.status.replace("_", " ").title() if mark else "Not logged" }}</strong></div>
               <div><span>Leave Balance</span><strong>{{ "%.1f"|format(balance.earned_balance if balance else 0) }} earned · {{ "%.1f"|format(balance.urgent_balance if balance else 0) }} urgent</strong></div>
+              {% endif %}
             </div>
             <div class="staff-accordion-columns">
               <div class="staff-profile-summary">
                 <h4>Staff Details</h4>
-                <p><strong>Last attendance:</strong> {{ last_mark.status.replace("_", " ").title() if last_mark else "-" }}{% if last_mark %} ({{ last_mark.attendance_date }}){% endif %}</p>
+                {% if not manual_payroll_active %}<p><strong>Last attendance:</strong> {{ last_mark.status.replace("_", " ").title() if last_mark else "-" }}{% if last_mark %} ({{ last_mark.attendance_date }}){% endif %}</p>
                 <p><strong>Leave requests:</strong> {{ leaves.pending }} pending · {{ leaves.approved }} approved</p>
+                {% endif %}
                 <p><strong>DOB:</strong> {{ s.dob or "-" }} · <strong>Gender:</strong> {{ s.gender or "-" }}</p>
                 <p><strong>Marital status:</strong> {{ s.marital_status or "-" }}</p>
                 <p><strong>Govt ID:</strong> {{ s.govt_id_type or "-" }} / {{ s.govt_id_number or "-" }}</p>

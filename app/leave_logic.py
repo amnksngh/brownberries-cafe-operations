@@ -142,6 +142,9 @@ def run_leave_maintenance(as_of: date | None = None) -> None:
     This runs at application startup and is also exposed as a CLI command. A
     period key makes retries safe after a restart or a temporary outage.
     """
+    from .manual_payroll import active
+    if active():
+        return  # Manual cash entitlement must never be recredited by legacy jobs.
     as_of = as_of or business_today()
     policy = leave_policy()
     weekly_off_config()

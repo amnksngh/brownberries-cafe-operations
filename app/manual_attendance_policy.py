@@ -39,7 +39,18 @@ class DayPay:
         return self.worked + self.paid_leave + self.paid_bereavement
 
 
-def calculate_days(days):
+def service_allowance(year, month, joined_on, left_on=None):
+    """Calendar days employed: full month=2, 15+ partial=1, otherwise=0."""
+    first = date(year, month, 1)
+    last = date(year, month, calendar.monthrange(year, month)[1])
+    if not joined_on or (left_on and left_on < joined_on):
+        raise ValueError('Valid employment dates are required.')
+    start, end = max(first, joined_on), min(last, left_on or last)
+    count = max(0, (end-start).days + 1)
+    return Decimal(2 if count == last.day else 1 if count >= 15 else 0)
+
+
+def calculate_days(days, *, joined_on=None, left_on=None):
     """Evaluate a person's complete policy-period history in date order.
 
     Callers must supply preceding days in the relevant month/year, not merely
@@ -61,7 +72,8 @@ def calculate_days(days):
         eligible = ((entry.status == 'PL' and notice_ok)
                     or (entry.status == 'SL' and entry.notified_on is not None)
                     or (entry.status in {'FH', 'SH'} and entry.half_day_applied and notice_ok))
-        paid = min(missing, max(Decimal('0'), MONTHLY_ALLOWANCE-monthly_used.get(month, Decimal('0')))) if eligible else Decimal('0')
+        allowance = service_allowance(*month, joined_on, left_on) if joined_on else MONTHLY_ALLOWANCE
+        paid = min(missing, max(Decimal('0'), allowance-monthly_used.get(month, Decimal('0')))) if eligible else Decimal('0')
         bereavement = Decimal('0')
         if entry.status == 'BL' and entry.bereavement_eligible:
             bereavement = min(missing, max(Decimal('0'), ANNUAL_BEREAVEMENT_ALLOWANCE-annual_used.get(entry.day.year, Decimal('0'))))
@@ -71,7 +83,7 @@ def calculate_days(days):
     return results
 
 
-def month_cash_entitlement(year, month, monthly_salary, results):
+def month_cash_entitlement(year, month, monthly_salary, results, *, joined_on=None, left_on=None):
     """Value UNUSED entitlement using that earning month's stored salary.
 
     Caller must finalize attendance for the entire month before posting this.
@@ -83,7 +95,8 @@ def month_cash_entitlement(year, month, monthly_salary, results):
     if not salary.is_finite() or salary < 0:
         raise ValueError('A valid monthly salary snapshot is required.')
     used = sum((row.paid_leave for row in results if (row.day.year, row.day.month) == (year, month)), Decimal('0'))
-    days = max(Decimal('0'), MONTHLY_ALLOWANCE-used)
+    allowance = service_allowance(year, month, joined_on, left_on) if joined_on else MONTHLY_ALLOWANCE
+    days = max(Decimal('0'), allowance-used)
     value = (days*salary/Decimal(calendar.monthrange(year, month)[1])).quantize(Decimal('.01'), rounding=ROUND_HALF_UP)
     return days, value
 

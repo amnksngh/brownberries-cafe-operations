@@ -321,18 +321,30 @@ def workspace():
             key=lambda row: (row.check_in_at or datetime.min, row.id or 0),
             default=None,
         )
+    from .manual_payroll import active as manual_active, salary_summary
+    from .manual_payroll_models import ManualAttendance, ManualPayrollMonth, ManualCashAllocation
+    manual = manual_active()
+    manual_rows = ManualAttendance.query.filter_by(user_id=user.id).order_by(ManualAttendance.day.desc()).all() if manual else []
+    manual_history = [{"id":r.id,"date":r.day.isoformat(),"status":r.status,"reviewed":True,
+        "check_in_at":None,"check_out_at":None,"worked_minutes":0,"notes":r.notes or ''} for r in manual_rows]
+    banked = ManualPayrollMonth.query.filter(ManualPayrollMonth.user_id==user.id,
+        ~ManualPayrollMonth.id.in_(db.select(ManualCashAllocation.month_id))).all() if manual else []
     return jsonify({
         "ok": True,
+        "manual_attendance": manual,
+        "manual_payroll_url": "/cafe/manual-payroll" if manual else None,
+        "payroll": salary_summary(user.id,month_start) if manual and month_start >= date(2026,10,1) else None,
+        "earned_cash": {"days":float(sum(r.cash_days for r in banked)),"amount":float(sum(r.cash_value for r in banked)),"cash_only":True} if manual else None,
         "server_time_ist": datetime.now(IST).isoformat(),
         "user": {"id": user.id, "full_name": user.full_name, "email": user.email, "roles": user.assigned_roles()},
         "profile": _profile_payload(user),
-        "attendance": {"today": _attendance_payload(today_row), "history": [_attendance_payload(row) for row in attendance]},
+        "attendance": {"today":next((r for r in manual_history if r['date']==today.isoformat()),None),"history":manual_history} if manual else {"today": _attendance_payload(today_row), "history": [_attendance_payload(row) for row in attendance]},
         "leave": {
-            "balance": {"earned": float(balance.earned_balance if balance else 0), "urgent": float(balance.urgent_balance if balance else 0)},
-            "requests": [_leave_payload(row) for row in leave_requests],
-            "policy": {"max_continuous_days": leave_policy().max_continuous_days, "max_monthly_urgent_leaves": float(leave_policy().max_monthly_urgent_leaves or 0)},
+            "balance": {"earned":0,"urgent":0} if manual else {"earned": float(balance.earned_balance if balance else 0), "urgent": float(balance.urgent_balance if balance else 0)},
+            "requests": [] if manual else [_leave_payload(row) for row in leave_requests],
+            "policy": {"manual":True,"shared_pl_sl_allowance":2,"cash_only":True} if manual else {"max_continuous_days": leave_policy().max_continuous_days, "max_monthly_urgent_leaves": float(leave_policy().max_monthly_urgent_leaves or 0)},
             "shared_calendar_month": month_start.strftime("%B %Y"),
-            "shared_calendar": shared_calendar,
+            "shared_calendar": [] if manual else shared_calendar,
         },
         "documents": [_document_payload(doc) for doc in documents],
         "rulebook": {"version": rulebook.version, "title": rulebook.title, "content": rulebook.content_text or "", "file_name": rulebook.file_name or ""} if rulebook else None,

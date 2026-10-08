@@ -219,13 +219,19 @@ def _user_payload(user: User) -> dict:
 
 def _bootstrap_payload(user: User, session_row: StaffMobileSession | None = None) -> dict:
     settings = _attendance_settings()
+    from .manual_payroll import active
+    manual = active()
+    if manual:
+        settings = dict(settings, enabled=False)
     active_row = _active_attendance_session_for_user(user.id)
     return {
+        "manual_attendance": manual,
+        "manual_payroll_url": "/cafe/manual-payroll" if manual else None,
         "user": _user_payload(user),
         "geofence": settings,
         "policy": _mobile_policy_payload(settings),
         "shift": _user_shift_payload(user),
-        "active_session": _attendance_row_payload(active_row),
+        "active_session": None if manual else _attendance_row_payload(active_row),
         "mobile_session": {
             "device_id": session_row.device_id if session_row else "",
             "device_name": session_row.device_name if session_row else "",
@@ -286,6 +292,9 @@ def _close_mobile_attendance_row(row: StaffAttendance, checkout_time: datetime, 
 
 
 def _reconcile_stale_mobile_session(row: StaffAttendance | None) -> bool:
+    from .manual_payroll import active
+    if active():
+        return False
     """Close a session left open after the app or network stopped reporting.
 
     A recent outside-geofence heartbeat uses the short location grace period;
