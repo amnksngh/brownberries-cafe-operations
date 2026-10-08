@@ -59,31 +59,20 @@
         {% if user_has_any_role(g.current_user, "staff") and not user_has_any_role(g.current_user, "admin", "manager", "cashier", "inventory_manager", "accountant", "owner", "barista", "chef", "librarian", "server", "delivery_partner") and not user_has_permission(g.current_user, "can_manage_cashier") %}
         <a href="{{ url_for('main.profile') }}">Profile</a>
         <a href="{{ url_for('cafe.orders') }}">Table Ordering</a>
-        <a href="{{ url_for('cafe.to_purchase') }}">To Purchase</a>
-        <a href="{{ url_for('cafe.reusable_breakage_report') }}">Report Breakage</a>
         <a href="{{ url_for('cafe.items_availability') }}">Items Availability</a>
-        <a href="{{ url_for('library.home') }}">Library</a>
         <a href="{{ url_for('main.logout') }}">Logout</a>
         {% else %}
         <a href="{{ url_for('main.dashboard') }}">Home</a>
         <a href="{{ url_for('cafe.home') }}">Cafe</a>
         <a href="{{ url_for('cafe.orders') }}">Table Ordering</a>
-        <a href="{{ url_for('cafe.to_purchase') }}">To Purchase</a>
-        <a href="{{ url_for('cafe.reusable_breakage_report') }}">Report Breakage</a>
         <a href="{{ url_for('cafe.items_availability') }}">Items Availability</a>
-        {% if user_has_any_role(g.current_user, "inventory_manager") or user_has_permission(g.current_user, "can_manage_inventory") %}
-        <a href="{{ url_for('cafe.inventory') }}">Inventory</a>
-        {% endif %}
         {% if user_has_any_role(g.current_user, "cashier") or user_has_permission(g.current_user, "can_manage_cashier") %}
         <a href="{{ url_for('cafe.cashier') }}">Cashier</a>
         <a href="{{ url_for('cafe.cash_counter') }}">Cash Counter</a>
         {% endif %}
-        <a href="{{ url_for('cafe.kitchen_display') }}">Kitchen Display</a>
         {% if user_has_any_role(g.current_user, "admin") %}
-        <a href="{{ url_for('cafe.staff') }}">Staff</a>
         <a href="{{ url_for('cafe.review_summary') }}">Reviews</a>
         {% endif %}
-        <a href="{{ url_for('library.home') }}">Library</a>
         <a href="{{ url_for('main.logout') }}">Logout</a>
         {% endif %}
       </nav>
