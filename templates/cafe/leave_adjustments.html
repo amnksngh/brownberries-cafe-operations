@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="panel">
+  <a href="{{ url_for('cafe.staff', section='active_staff') }}">← Staff Management</a>
+  <h2>Adjust Accumulated Leave</h2>
+  <p>Admin only. Set the employee’s accumulated earned-leave balance in days (0 resets it). Includes admin and archived staff. A reason is required for every change.</p>
+  <p class="muted">This changes the current legacy balance only, not attendance, urgent leave, past salary payments, or the policy start date. Scheduled accrual continues. This editor is disabled when the new payroll cash ledger is activated.</p>
+  {% for employee in users %}
+  {% set balance = balances.get(employee.id) %}
+  <details class="staff-accordion">
+    <summary>{{ employee.full_name }} — {{ balance.earned_balance if balance else 0 }} days{% if not employee.active %} (Inactive){% endif %}</summary>
+    <form method="post" class="grid" style="padding:1rem" onsubmit="return confirm('Save this employee’s new accumulated leave balance?');">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <input type="hidden" name="user_id" value="{{ employee.id }}">
+      <input type="hidden" name="expected" value="{{ balance.earned_balance if balance else 0 }}">
+      <input type="hidden" name="revision" value="{{ revisions.get(employee.id, 0) }}">
+      <label>New accumulated leave (days)<input type="number" name="balance" min="0" max="10000" step="0.5" value="{{ balance.earned_balance if balance else 0 }}" required></label>
+      <label>Reason<input name="reason" maxlength="180" required></label>
+      <button type="submit">Save balance</button>
+    </form>
+  </details>
+  {% endfor %}
+</section>
+<section class="panel">
+  <h3>Recent adjustments</h3>
+  {% for row in history %}
+  <p><strong>{{ row.user.full_name }}</strong>: {{ row.note }}<br><small>{{ row.created_at }} · {{ row.created_by.full_name if row.created_by else 'Unknown admin' }}</small></p>
+  {% else %}<p>No adjustments recorded.</p>{% endfor %}
+</section>
+{% endblock %}

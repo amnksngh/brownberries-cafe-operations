@@ -675,6 +675,8 @@ def create_app(*, instance_path=None, initialize_legacy_leaves=True):
     app.register_blueprint(operations_bp)
     from .manual_payroll_views import bp as manual_payroll_bp
     app.register_blueprint(manual_payroll_bp)
+    from .leave_adjustments import bp as leave_adjustments_bp
+    app.register_blueprint(leave_adjustments_bp)
 
     @app.cli.command("init-db")
     def init_db():

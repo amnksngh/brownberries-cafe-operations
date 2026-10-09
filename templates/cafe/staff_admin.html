@@ -17,6 +17,7 @@
   </div>
   {% if user_has_any_role(g.current_user, "admin") %}
   <p><a class="button-link" href="{{ url_for('cafe.user_types') }}">Manage Roles</a></p>
+  {% if not manual_payroll_active %}<p><a class="button-link" href="{{ url_for('leave_adjustments.workspace') }}">Adjust Accumulated Leave</a></p>{% endif %}
   {% endif %}
   {% if not manual_payroll_active %}<p><a class="button-link" href="{{ url_for('main.staff_app') }}">Open Staff Attendance App Page</a></p>{% endif %}
 </section>
