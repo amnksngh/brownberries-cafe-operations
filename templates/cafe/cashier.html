@@ -3,6 +3,7 @@
 {% block main_class %}container-wide container-cashier{% endblock %}
 {% block topbar_extra %}
 <div class="cashier-topbar-tools">
+  <a class="cashier-cash-counter-link" href="{{ url_for('cash_desk.workspace') }}">Daily Cash Control</a>
   <label class="cashier-mode-select cashier-topbar-select" aria-label="Select order list">
     <select id="cashier-tab-select">
       <option

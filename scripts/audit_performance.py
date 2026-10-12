@@ -90,7 +90,7 @@ def main():
                 "/cafe/items-availability", "/cafe/stats", "/cafe/stats/export",
                 "/cafe/reviews", "/cafe/bookings", "/library/", "/library/books",
                 "/library/members", "/cafe/reusable-assets/report-breakage", "/customer/menu"]
-        urls += ["/table?preview=1", "/cafe/operations/", "/cafe/cash-counter",
+        urls += ["/table?preview=1", "/cafe/operations/", "/cafe/cash-counter", "/cafe/cash-counter/control",
                  "/library/loans", "/library/payments", "/library/authors", "/library/plans",
                  "/cafe/user-types", "/cafe/api/statistics/summary"]
         urls += ["/cafe/inventory?section=" + s for s in

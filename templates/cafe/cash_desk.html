@@ -1,0 +1,79 @@
+{% extends 'base.html' %}
+{% macro guard(action) %}
+<input type="hidden" name="csrf_token" value="{{ csrf }}"><input type="hidden" name="request_key" value="{{ new_key() }}">
+<input type="hidden" name="revision" value="{{ revision }}">{% if action %}<input type="hidden" name="action" value="{{ action }}">{% endif %}
+{% endmacro %}
+{% macro denomination_inputs(prefix, label) %}
+<fieldset><legend>{{ label }}</legend><div class="denom-fields">
+{% for key, amount in denominations.items() %}<label>{{ 'Note' if key.startswith('note') else 'Coin' }} ₹{{ amount }}<input aria-label="{{ label }} {{ key }}" name="{{ prefix }}{{ key }}" type="number" min="0" max="100000" step="1" value="0" data-value="{{ amount }}"></label>{% endfor %}
+</div><p>Counted total: ₹<output class="denom-total">0.00</output></p></fieldset>
+{% endmacro %}
+{% block content %}
+<style>
+.cash-controls{max-width:1100px;margin:auto}.cash-controls *{box-sizing:border-box;min-width:0}.cash-controls .denom-fields{display:grid;grid-template-columns:repeat(auto-fit,minmax(95px,1fr));gap:10px}.cash-controls input,.cash-controls select{max-width:100%;width:100%}.cash-controls fieldset{margin:12px 0;border:1px solid #ddd;border-radius:8px}.cash-controls details{margin:12px 0}.cash-controls summary{cursor:pointer;font-weight:600;padding:12px}.cash-controls .metrics{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px}.cash-controls .metrics p{padding:12px;background:#f3f7f2;border-radius:8px}.cash-controls pre{white-space:pre-wrap;overflow-wrap:anywhere}.cash-controls .audit-row{border-bottom:1px solid #ddd;padding:10px 0;overflow-wrap:anywhere}@media print{nav,form,.no-print{display:none!important}details{display:block}}
+</style>
+<div class="cash-controls">
+<section class="panel">
+<a href="{{ url_for('cafe.cash_counter') }}">← Cash Counter</a><h2>Daily Cash Control</h2>
+<p>Opening count → refills and sales → expenses / transfers → closing count. Refills and owner handovers are not sales. An expense is recorded only once.</p>
+<form method="get"><label>Business date (IST)<input name="day" type="date" value="{{ day }}"></label><button>View report</button></form>
+<div class="metrics">
+<p>Current ledger balance<br><strong>₹{{ '%.2f'|format(state.total) }}</strong></p>
+<p>Recorded notes / coins<br><strong>₹{{ '%.2f'|format(state.tracked_cash) }}</strong></p>
+<p>Ledger / denomination gap<br><strong>₹{{ '%.2f'|format(state.unallocated) }}</strong></p>
+{% for row in summary.payments.rows %}<p>{{ row.label }} sales — selected day<br><strong>₹{{ '%.2f'|format(row.amount) }}</strong></p>{% endfor %}
+<p>Original cash tendered<br><strong>₹{{ '%.2f'|format(summary.tender) }}</strong></p><p>Original change returned<br><strong>₹{{ '%.2f'|format(summary.change) }}</strong></p>
+<p>Corrections awaiting approval<br><strong>{{ corrections|length }}</strong></p>
+</div>
+<p>Recorded denominations are not proof of physical cash. Count the drawer to confirm. A shortage/overage is a discrepancy requiring investigation, not proof of wrongdoing.</p>
+<details><summary>What does the ledger / denomination gap mean?</summary><p>This is the cash ledger balance minus the value of recorded notes and coins. Older cash payments recorded without denominations can leave a gap. It is not confirmed extra cash, today's earnings, or automatically a loss. Use a physical count and review the original payments before correcting anything.</p></details>
+{% if open_session %}<p><strong>An open session exists for {{ open_session.business_date }}.</strong> Complete its closing count at handover/end of day. Sales can continue without a count, but that day is not reconciled until opening and closing evidence are recorded.</p>{% endif %}
+<h3>Selected day's opening / closing evidence</h3>
+{% if opening %}<p>Opening physical cash: ₹{{ opening.counted_total }} · Opening ledger difference: ₹{{ opening.variance }}</p><p>Denominations: {{ opening.counted }}</p>{% else %}<p>No opening count recorded for this date.</p>{% endif %}
+{% if closing %}<p>Closing physical cash: ₹{{ closing.counted_total }} · Expected from opening plus movements: ₹{{ closing.expected_from_opening }} · Session shortage (−) / overage (+): <strong>₹{{ closing.session_variance }}</strong></p><p>Denominations: {{ closing.counted }}</p><p>Closing difference against full ledger: ₹{{ closing.variance }}</p><details><summary>Frozen closing report (unchanged by later corrections)</summary><pre>{{ closing.summary|tojson(indent=2) }}</pre></details>{% else %}<p>No closing count recorded. {% if open_session %}Open session: {{ open_session.business_date }}.{% endif %}</p>{% endif %}
+<p class="muted">A count is evidence only: it neither deposits cash nor removes it. Close after the final withdrawal to record money actually left overnight. Refills must be logged separately, even if made in the morning.</p>
+<h3>Cash movements — selected day</h3>
+{% for label, amount in summary.movements.items() %}<p>{{ label }}: ₹{{ '%.2f'|format(amount) }} (in + / out −)</p>{% endfor %}
+<p>Net ledger movement: ₹{{ summary.net_movement }}. Sales above are grouped settlement totals, not gross cash tendered. Current report reflects approved payment corrections; a saved closing report remains unchanged.</p>
+<button type="button" class="no-print" onclick="window.print()">Print / save report as PDF</button>
+</section>
+<section class="panel">
+<h3>Count the drawer</h3>
+<form method="post">{{ guard('') }}
+<label>Count type<select name="action"><option value="count">Spot count (no ledger change)</option><option value="open">Opening count — today</option><option value="close">Close the open session</option></select></label>
+{{ denomination_inputs('count_', 'Physical notes and coins counted') }}
+<label>Reason / handover reference<input name="reason" maxlength="180" required></label><button>Save count snapshot</button></form>
+</section>
+<section class="panel">
+<h3>Refill, expense, handover, withdrawal or exchange</h3>
+<form method="post">{{ guard('') }}
+<label>Operation<select name="action"><option value="refill">Morning / operating float refill</option><option value="expense">Cafe expense paid from drawer</option><option value="handover">Handover to owner</option><option value="end_withdrawal">End-of-day withdrawal</option><option value="exchange">Equal-value denomination exchange</option></select></label>
+<p>Refill uses incoming counts; expenses/handovers/withdrawals use outgoing counts. Exchange requires equal values on both sides and is saved atomically.</p>
+{{ denomination_inputs('in_', 'Into the drawer') }}{{ denomination_inputs('out_', 'Out of the drawer') }}
+<label>Purpose / recipient / receipt reference<input name="reason" maxlength="180" required></label>
+<details><summary>Expense integration (required for cafe expenses only)</summary>
+<label>Existing expense ID (if already recorded)<input name="expense_id" type="number" min="1"></label>
+<label>Or existing inventory purchase ID<input name="purchase_id" type="number" min="1"></label>
+<p>Links an existing cafe-funded Cash expense or paid inventory purchase of the same amount, without booking it twice. Use only one ID. Only record this withdrawal if money has not already been deducted from the drawer.</p>
+<label>Otherwise create one expense under category<select name="category_id"><option value="">Choose category</option>{% for category in categories %}<option value="{{ category.id }}">{{ category.name }}</option>{% endfor %}</select></label>
+<p>New expense appears in Inventory and Statistics as Cash / Cafe Operations. For cash advances that have not yet been spent, use the existing movement screen and reconcile against receipts; do not record a completed expense yet.</p>
+</details><button>Record movement</button></form>
+</section>
+<section class="panel">
+<h3>Correct a payment method</h3>
+<p>Cashier submits a request; a different admin or owner approves it. Enter an order ID from the settled order. The correction covers its entire settlement, including other orders paid together. Original payment records are retained in the audit; sales totals and payment dates do not change.</p>
+<form method="post">{{ guard('request_correction') }}
+<label>Recent settlement<select name="order_id" required><option value="">Choose a settled payment</option>{% for option in settlement_options %}<option value="{{ option.id }}">{{ option.label }} · ₹{{ '%.2f'|format(option.total) }} · {{ option.method }} · {{ option.paid_at|cash_ist }}</option>{% endfor %}</select></label>
+{% for method in ['cash','card','upi'] %}<label>Correct {{ method|upper }} amount<input name="{{ method }}" type="number" step="0.01" min="0" value="0" required></label>{% endfor %}
+<label>Card / UPI transaction reference<input name="reference" maxlength="120"></label>
+{{ denomination_inputs('in_', 'Actual cash originally received') }}{{ denomination_inputs('out_', 'Actual change originally returned') }}
+<label>Why was the original entry wrong?<input name="reason" maxlength="180" required></label><button>Request correction</button></form>
+<h3>Pending corrections ({{ corrections|length }})</h3>
+{% for correction, info in corrections %}<article class="audit-row"><strong>Request #{{ correction.id }} · Order #{{ correction.order_id }}</strong><p>Requested by {{ correction.request_record.actor.full_name }}: {{ info.reason }}</p><p>Corrected split: {{ info.amounts }} · Reference: {{ info.reference }}</p><details><summary>Original settlement and denomination evidence</summary><pre>{{ info|cash_audit_ist|tojson(indent=2) }}</pre></details>
+{% if approver %}<form method="post">{{ guard('') }}<input type="hidden" name="correction_id" value="{{ correction.id }}"><label>Decision<select name="action"><option value="approve">Approve</option><option value="reject">Reject</option></select></label><label>Review reason<input name="reason" maxlength="180" required></label><button>Record decision</button></form>{% endif %}</article>{% else %}<p>No pending requests.</p>{% endfor %}
+</section>
+<section class="panel"><h3>Audit history — {{ day }}</h3><p>All control operations for the selected IST date; original records are retained. All timestamps are shown in IST.</p>
+{% for row, info in audit %}<details class="audit-row"><summary>#{{ row.id }} {{ row.kind|replace('_',' ')|title }} · {{ row.actor.full_name }} · {{ row.occurred_at|cash_ist }}</summary><pre>{{ info|cash_audit_ist|tojson(indent=2) }}</pre></details>{% endfor %}
+</section></div>
+<script>document.querySelectorAll('.cash-controls fieldset').forEach(function(field){function update(){let sum=0;field.querySelectorAll('input[data-value]').forEach(input=>sum+=(Number(input.value)||0)*Number(input.dataset.value));field.querySelector('output').value=sum.toFixed(2);}field.addEventListener('input',update);update();});</script>
+{% endblock %}

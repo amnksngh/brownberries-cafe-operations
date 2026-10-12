@@ -617,6 +617,7 @@ def create_app(*, instance_path=None, initialize_legacy_leaves=True):
     with app.app_context():
         configure_sqlite(db.engine)
         from . import manual_payroll_models  # additive tables, no activation on startup
+        from . import cash_desk_models
         db.create_all()
         _ensure_sqlite_schema_columns()
         _ensure_protected_menu_categories()
@@ -677,6 +678,8 @@ def create_app(*, instance_path=None, initialize_legacy_leaves=True):
     app.register_blueprint(manual_payroll_bp)
     from .leave_adjustments import bp as leave_adjustments_bp
     app.register_blueprint(leave_adjustments_bp)
+    from .cash_desk_views import bp as cash_desk_bp
+    app.register_blueprint(cash_desk_bp)
 
     @app.cli.command("init-db")
     def init_db():

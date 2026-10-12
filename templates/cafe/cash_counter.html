@@ -9,6 +9,7 @@
     <p class="muted">Track notes, coins, cash sales, change, expenses, and owner handovers in one auditable ledger.</p>
   </div>
   <div class="cash-counter-heading-actions">
+    <a class="button-link" href="{{ url_for('cash_desk.workspace') }}">Daily Cash Control</a>
     {% if cash_counter_deletion_log_url %}
     <a class="button-link ghost" href="{{ cash_counter_deletion_log_url }}">Deletion audit</a>
     {% endif %}
@@ -21,7 +22,6 @@
     <p class="eyebrow">Tracked cash in counter</p>
     <strong>₹{{ "%.2f"|format(cash_snapshot.total - cash_snapshot.unallocated) }}</strong>
     <span class="muted">Value of recorded notes and coins remaining after withdrawals</span>
-    <span class="muted">Ledger balance: ₹{{ "%.2f"|format(cash_snapshot.total) }}</span>
   </article>
   <article class="panel">
     <p class="eyebrow">{{ cash_period_start.strftime('%d %b %Y') }} to {{ cash_period_end.strftime('%d %b %Y') }}</p>
@@ -41,11 +41,7 @@
       <p class="eyebrow">Live denomination balance</p>
       <h3>Notes and coins in the counter</h3>
     </div>
-    <span class="cash-counter-unallocated">Unreconciled ledger difference: ₹{{ "%.2f"|format(cash_snapshot.unallocated) }}</span>
   </div>
-  {% if cash_snapshot.unallocated|abs > 0.005 %}
-  <p role="status">The cash ledger and tracked notes/coins differ by ₹{{ "%.2f"|format(cash_snapshot.unallocated) }}. Cash recorded without denominations or incomplete movement records can cause this. This difference is not confirmed cash in the counter. Review the movement history before making any accounting correction; sales and historical entries have not been changed.</p>
-  {% endif %}
   <div class="cash-denomination-grid">
     <div>
       <h4>Notes</h4>
@@ -80,61 +76,7 @@
   </div>
 </section>
 
-<div class="cash-counter-layout">
-  <section class="panel">
-    <div class="section-heading">
-      <div>
-        <p class="eyebrow">Record movement</p>
-        <h3>Add cash deposit or withdrawal</h3>
-      </div>
-      <span class="muted">Tap denominations to record every note and coin moved.</span>
-    </div>
-    <form method="post" class="grid cash-counter-form" id="cash-counter-form">
-      <div class="cash-movement-toggle" role="group" aria-label="Movement type">
-        <button type="button" class="cash-movement-choice" data-entry-type="withdrawal">Withdrawal</button>
-        <button type="button" class="cash-movement-choice is-active" data-entry-type="deposit">Deposit</button>
-      </div>
-      <input type="hidden" name="entry_type" id="cash-entry-type" value="deposit" />
-      <label>Reason
-        <select name="reason" required>
-          <option value="Customer Payment" selected>Customer Payment</option>
-          {% for reason in cash_reason_options %}
-          <option value="{{ reason }}">{{ reason }}</option>
-          {% endfor %}
-        </select>
-      </label>
-      <label>Note
-        <input name="note" placeholder="Optional reference or explanation" />
-      </label>
-      <label>Date and time (IST)
-        <input name="occurred_at" type="datetime-local" value="{{ cash_now_local }}" required />
-      </label>
-      <div>
-        <h4>Denominations moved</h4>
-        <p class="muted">Tap a denomination to add one. Select a tile and use Clear to reset it.</p>
-        <div class="cash-entry-denomination-grid">
-          {% for kind, value, label in cash_denominations %}
-          <div class="cash-denomination-choice">
-            <button type="button" class="cash-denomination-tile {{ 'note-denomination-tile' if kind == 'note' else 'coin-denomination-tile' }}" data-denomination-key="{{ kind }}_{{ value }}" data-value="{{ value }}">
-              <span class="cash-denomination-shape {{ 'note-shape' if kind == 'note' else 'coin-shape' }}" aria-hidden="true">₹{{ value }}</span>
-              <span class="cash-denomination-tile-meta">
-                <span class="cash-denomination-kind">{{ "Note" if kind == "note" else "Coin" }}</span>
-                <b class="cash-denomination-count">0</b>
-              </span>
-            </button>
-            <input class="cash-denomination-input" data-value="{{ value }}" name="{{ kind }}_{{ value }}" type="hidden" value="0" />
-          </div>
-          {% endfor %}
-        </div>
-        <div class="cash-denomination-actions">
-          <button type="button" id="clear-denomination" class="button-link">Clear</button>
-          <span id="cash-denomination-total" class="muted">Selected total: ₹0.00</span>
-        </div>
-      </div>
-      <button type="submit">Save Cash Movement</button>
-    </form>
-  </section>
-
+<div class="cash-counter-history-layout">
   <section class="panel">
     <div class="section-heading">
       <div>
@@ -194,6 +136,7 @@
 {% if cash_counter_kiosk_mode %}
 <dialog id="cash-delete-dialog" class="cash-delete-dialog">
   <form method="post" id="cash-delete-dialog-form">
+    <input type="hidden" name="csrf_token" value="{{ cash_csrf }}">
     <button type="button" class="cash-dialog-close" id="cash-delete-dialog-close" aria-label="Close">×</button>
     <p class="eyebrow">Kiosk authorization</p>
     <h3>Delete cash record</h3>
@@ -225,49 +168,6 @@
 
 <script>
   (() => {
-    const form = document.getElementById("cash-counter-form");
-    const movementInput = document.getElementById("cash-entry-type");
-    const movementButtons = [...document.querySelectorAll(".cash-movement-choice")];
-    const tiles = [...document.querySelectorAll(".cash-denomination-tile")];
-    const inputs = [...document.querySelectorAll(".cash-denomination-input")];
-    const clearButton = document.getElementById("clear-denomination");
-    const totalLabel = document.getElementById("cash-denomination-total");
-    let selectedKey = "";
-    const inputByKey = new Map(inputs.map((input) => [input.name, input]));
-    const tileByKey = new Map(tiles.map((tile) => [tile.dataset.denominationKey, tile]));
-    const syncDenominations = () => {
-      let total = 0;
-      inputs.forEach((input) => {
-        const value = Math.max(0, Math.floor(Number(input.value || 0)));
-        input.value = String(value);
-        total += value * Number(input.dataset.value || 0);
-        const tile = tileByKey.get(input.name);
-        if (tile) {
-          const count = tile.querySelector(".cash-denomination-count");
-          if (count) count.textContent = String(value);
-          tile.classList.toggle("is-selected", selectedKey === input.name);
-        }
-      });
-      if (totalLabel) totalLabel.textContent = `Selected total: ₹${total.toFixed(2)}`;
-    };
-    movementButtons.forEach((button) => button.addEventListener("click", () => {
-      movementInput.value = button.dataset.entryType;
-      movementButtons.forEach((item) => item.classList.toggle("is-active", item === button));
-    }));
-    tiles.forEach((tile) => tile.addEventListener("click", () => {
-      selectedKey = tile.dataset.denominationKey;
-      const input = inputByKey.get(selectedKey);
-      if (input) input.value = String(Number(input.value || 0) + 1);
-      syncDenominations();
-    }));
-    clearButton?.addEventListener("click", () => {
-      if (!selectedKey) return;
-      const input = inputByKey.get(selectedKey);
-      if (input) input.value = "0";
-      syncDenominations();
-    });
-    form?.addEventListener("submit", syncDenominations);
-    syncDenominations();
     const period = document.getElementById("cash-period-select");
     const dates = [...document.querySelectorAll(".cash-counter-period-form input[type=date]")];
     const syncDates = () => dates.forEach((input) => input.toggleAttribute("required", period?.value === "custom"));

@@ -4206,11 +4206,19 @@ def reception_kiosk_orders(access_key):
 @bp.route("/orders/<int:order_id>/mark-paid", methods=["POST"])
 @roles_required("admin", "manager", "cashier")
 def mark_order_paid(order_id):
+    # Serialize settlement writes with cash-control operations on SQLite.
+    db.session.rollback()
+    if db.engine.dialect.name == 'sqlite':
+        db.session.execute(db.text('BEGIN IMMEDIATE'))
     order = CafeOrder.query.get(order_id)
     if not order:
         flash("Order not found. It may have already been updated on another screen.", "error")
         return redirect(request.form.get("next") or url_for("cafe.cashier"))
     was_already_paid = order.status == "paid"
+    if was_already_paid:
+        db.session.rollback()
+        flash('This order is already paid. Use Daily Cash Control to request an audited payment correction.', 'error')
+        return redirect(url_for('cash_desk.workspace'))
     payment_type = request.form.get("payment_type", "").strip() or order.payment_type or "Cash"
     payment_reference = request.form.get("payment_reference", "").strip() or order.payment_reference
     _apply_order_tax_breakdown(order, flags=_selected_tax_flags())
@@ -4320,6 +4328,9 @@ def clear_table_orders(table_id):
 
 
 def _clear_table_orders_impl(table_id: int, next_url: str = ""):
+    db.session.rollback()
+    if db.engine.dialect.name == 'sqlite':
+        db.session.execute(db.text('BEGIN IMMEDIATE'))
     table = CafeTable.query.get_or_404(table_id)
     day_start, day_end = _current_ist_day_bounds()
     split_rows, split_error = _parse_split_payment_rows()
@@ -4559,6 +4570,11 @@ def _cash_counter_return_url(kiosk_mode: bool, access_key: str = "") -> str:
 
 
 def _delete_cash_counter_entry(entry_id: int, kiosk_mode: bool = False, access_key: str = ""):
+    if not secrets.compare_digest(session.get('cash_counter_csrf', ''), request.form.get('csrf_token', '')) or not session.get('cash_counter_csrf'):
+        return 'Reload Cash Counter before submitting.', 400
+    db.session.rollback()
+    if db.engine.dialect.name == 'sqlite':
+        db.session.execute(db.text('BEGIN IMMEDIATE'))
     actor = g.current_user if not kiosk_mode else None
     if kiosk_mode:
         email = (request.form.get("cashier_email") or "").strip().lower()
@@ -4579,6 +4595,13 @@ def _delete_cash_counter_entry(entry_id: int, kiosk_mode: bool = False, access_k
         flash("That cash record is no longer available for deletion.", "error")
         return redirect(_cash_counter_return_url(kiosk_mode, access_key))
 
+    from .cash_desk_models import CashDeskRecord, CashDeskSession
+    controlled = any(entry.id in json.loads(row.details_json).get('entry_ids', [])
+                     for row in CashDeskRecord.query.all())
+    closed = CashDeskSession.query.filter(CashDeskSession.closing_id.isnot(None)).all()
+    if entry.source_order_id or controlled or any(entry.occurred_at <= row.closing.occurred_at for row in closed):
+        flash('Settled payments, controlled movements and closed-session entries cannot be deleted. Use Daily Cash Control for payment corrections; record a documented compensating movement for other errors.', 'error')
+        return redirect(_cash_counter_return_url(kiosk_mode, access_key))
     deletion_reason = (request.form.get("deletion_reason") or "Wrong cash-counter entry").strip()
     if len(deletion_reason) > 500:
         deletion_reason = deletion_reason[:500]
@@ -4699,85 +4722,12 @@ def cash_counter_deletion_log_export():
 
 
 def _render_cash_counter_page(kiosk_mode: bool = False, access_key: str = ""):
+    cash_csrf = session.setdefault('cash_counter_csrf', secrets.token_urlsafe(32))
     if request.method == "POST":
-        entry_type = (request.form.get("entry_type") or "deposit").strip().lower()
-        if entry_type not in {"deposit", "withdrawal"}:
-            entry_type = "withdrawal"
-        reason = (request.form.get("reason") or "Customer Payment").strip()
-        note = (request.form.get("note") or "").strip() or None
-        if reason not in CASH_COUNTER_REASON_OPTIONS:
-            flash("Select a valid reason for this cash movement.", "error")
-            return redirect(
-                url_for("cafe.reception_kiosk_cash_counter", access_key=access_key)
-                if kiosk_mode
-                else url_for("cafe.cash_counter")
-            )
-        counts = {}
-        for key in CASH_DENOMINATION_KEYS:
-            count = _safe_int(request.form.get(key), 0)
-            if count < 0:
-                flash("Denomination counts cannot be negative.", "error")
-                return redirect(
-                    url_for("cafe.reception_kiosk_cash_counter", access_key=access_key)
-                    if kiosk_mode
-                    else url_for("cafe.cash_counter")
-                )
-            if count:
-                counts[key] = count
-        amount = _cash_denominations_amount(counts)
-        if amount <= 0:
-            flash("Select at least one denomination.", "error")
-            return redirect(
-                url_for("cafe.reception_kiosk_cash_counter", access_key=access_key)
-                if kiosk_mode
-                else url_for("cafe.cash_counter")
-            )
-        snapshot = _cash_counter_snapshot()
-        if entry_type == "withdrawal" and amount > snapshot["total"] + 0.01:
-            flash(f"Cash withdrawal cannot exceed the current cash balance of ₹{snapshot['total']:.2f}.", "error")
-            return redirect(
-                url_for("cafe.reception_kiosk_cash_counter", access_key=access_key)
-                if kiosk_mode
-                else url_for("cafe.cash_counter")
-            )
-        if entry_type == "withdrawal" and any(counts.get(key, 0) > snapshot["counts"].get(key, 0) for key in counts):
-            flash("The selected notes or coins exceed the tracked cash counter balance.", "error")
-            return redirect(
-                url_for("cafe.reception_kiosk_cash_counter", access_key=access_key)
-                if kiosk_mode
-                else url_for("cafe.cash_counter")
-            )
-        occurred_at_raw = (request.form.get("occurred_at") or "").strip()
-        occurred_at = datetime.utcnow()
-        if occurred_at_raw:
-            try:
-                occurred_at = _utc_naive_from_ist(datetime.fromisoformat(occurred_at_raw))
-            except ValueError:
-                flash("Use a valid local IST date and time.", "error")
-                return redirect(
-                    url_for("cafe.reception_kiosk_cash_counter", access_key=access_key)
-                    if kiosk_mode
-                    else url_for("cafe.cash_counter")
-                )
-        db.session.add(
-            CashCounterEntry(
-                entry_type=entry_type,
-                amount=amount,
-                reason=reason,
-                denominations_json=json.dumps(counts),
-                created_by_user_id=g.current_user.id if g.current_user else None,
-                occurred_at=occurred_at,
-                note=note,
-                is_deleted=False,
-            )
-        )
-        db.session.commit()
-        flash(f"Cash {'deposited' if entry_type == 'deposit' else 'withdrawn'}: ₹{amount:.2f}.", "success")
-        return redirect(
-            url_for("cafe.reception_kiosk_cash_counter", access_key=access_key)
-            if kiosk_mode
-            else url_for("cafe.cash_counter")
-        )
+        if not secrets.compare_digest(cash_csrf, request.form.get('csrf_token', '')):
+            return 'Reload Cash Counter before submitting.', 400
+        flash('Record cash operations in Daily Cash Control. No movement was saved here.', 'warning')
+        return redirect(url_for('cash_desk.workspace'))
 
     period = request.args.get("period", "today")
     start, end = _cash_counter_period(
@@ -4802,6 +4752,7 @@ def _render_cash_counter_page(kiosk_mode: bool = False, access_key: str = ""):
     return render_template(
         "cafe/cash_counter.html",
         cash_snapshot=_cash_counter_snapshot(),
+        cash_csrf=cash_csrf,
         cash_entries=entries,
         cash_entry_rows=entry_rows,
         cash_period=period,
