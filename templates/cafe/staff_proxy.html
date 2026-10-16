@@ -1,0 +1,20 @@
+{% extends 'base.html' %}
+{% macro fields(action) %}<input type="hidden" name="csrf_token" value="{{ token }}"><input type="hidden" name="revision" value="{{ revision }}"><input type="hidden" name="user_id" value="{{ target.id }}"><input type="hidden" name="action" value="{{ action }}">{% endmacro %}
+{% block content %}
+<section class="panel"><a href="{{ url_for('cafe.staff',section='active_staff') }}">← Staff Management</a>
+<h2>Attendance &amp; Leave on Behalf</h2><p>Admin only. Every saved change identifies the administrator and notifies the employee. Current leave rules remain in force; this does not activate the new payroll policy.</p>
+<form method="get"><label>Employee<select name="user_id">{% for employee in users %}<option value="{{ employee.id }}" {% if employee.id == target.id %}selected{% endif %}>{{ employee.full_name }}{% if not employee.active %} (inactive){% endif %}</option>{% endfor %}</select></label><button>View employee</button></form>
+<h3>{{ target.full_name }}</h3></section>
+<section class="panel"><h3>Record attendance or absence</h3>
+<form method="post" class="grid">{{ fields('attendance') }}<label>Date<input name="day" type="date" max="{{ today }}" value="{{ today }}" required></label><label>Status<select name="status">{% for key,label in statuses.items() %}<option value="{{ key }}">{{ label }}</option>{% endfor %}</select></label><label>Reason / notes<input name="reason" maxlength="255" required></label><button>Save attendance for employee</button></form>
+<p>For paid leave, use the leave form below so balances and attendance stay consistent. An approved leave must be cancelled first before recording absence. Existing check-in/out times are preserved.</p></section>
+<section class="panel"><h3>Apply for leave for employee</h3><form method="post" class="grid">{{ fields('leave') }}
+<label>Leave type<select name="leave_type"><option value="earned">Earned leave (current policy)</option><option value="urgent">Urgent leave (current policy)</option></select></label>
+<label>Start<input name="start" type="date" required></label><label>End<input name="end" type="date" required></label>
+<label>Starting half<select name="from_shift"><option value="first_half">First half</option><option value="second_half">Second half</option></select></label>
+<label>Ending half<select name="to_shift"><option value="second_half">Second half</option><option value="first_half">First half</option></select></label>
+<label>Employee’s reason<input name="reason" maxlength="255" required></label><label><input type="checkbox" name="approve_now" value="yes"> Approve immediately if policy checks pass</label><button>Submit on employee’s behalf</button></form></section>
+<section class="panel"><h3>Leave requests</h3>{% for leave in leaves %}<details><summary>#{{ leave.id }} · {{ leave.start_date }}–{{ leave.end_date }} · {{ leave.leave_type }} · {{ leave.status }}</summary><p>{{ leave.reason }} · {{ leave.duration_days }} day(s)</p><form method="post" class="grid">{{ fields('decision') }}<input type="hidden" name="leave_id" value="{{ leave.id }}"><label>Decision<select name="decision"><option value="approved">Approve</option><option value="rejected">Reject</option><option value="cancelled">Cancel (refund approved leave balance)</option></select></label><label>Reason<input name="reason" maxlength="255" required></label><button>Save decision</button></form></details>{% else %}<p>No leave requests.</p>{% endfor %}</section>
+<section class="panel"><h3>Recent attendance</h3>{% for row in attendance %}<p>{{ row.attendance_date }} · {{ statuses.get(row.status,row.status|replace('_',' ')|title) }} · {{ row.notes or '' }}</p>{% else %}<p>No attendance recorded.</p>{% endfor %}</section>
+<section class="panel"><h3>Admin action history</h3>{% for row in audits %}<details><summary>{{ row.created_at|cash_ist }} · Admin ID {{ row.actor_id }} · {{ row.action|replace('_',' ') }}</summary><pre style="white-space:pre-wrap;overflow-wrap:anywhere">{{ row.details_json }}</pre></details>{% else %}<p>No proxy actions recorded.</p>{% endfor %}</section>
+{% endblock %}

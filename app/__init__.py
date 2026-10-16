@@ -680,6 +680,8 @@ def create_app(*, instance_path=None, initialize_legacy_leaves=True):
     app.register_blueprint(leave_adjustments_bp)
     from .cash_desk_views import bp as cash_desk_bp
     app.register_blueprint(cash_desk_bp)
+    from .staff_proxy import bp as staff_proxy_bp
+    app.register_blueprint(staff_proxy_bp)
 
     @app.cli.command("init-db")
     def init_db():
