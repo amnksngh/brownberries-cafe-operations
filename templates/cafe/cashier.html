@@ -30,6 +30,7 @@
 </div>
 {% endblock %}
 {% block content %}
+{% include "cafe/receipt_print_prompt.html" %}
 {% if tab == "running" %}
 <section class="cashier-workspace">
   <aside class="panel cashier-table-panel">
@@ -406,7 +407,7 @@
           <span class="cashier-inline-state">{{ group.status }}</span>
           <strong>₹{{ "%.2f"|format(group.total) }}</strong>
           {% if group.is_settled %}
-          <a class="all-orders-print-link" href="{{ url_for('cafe.public_receipt', order_id=group.primary_order_id) }}" target="_blank" rel="noopener">Print Receipt</a>
+        <a class="all-orders-print-link" href="{{ url_for('cafe.public_receipt', order_id=group.primary_order_id, format='thermal', print=1) }}" target="_blank" rel="noopener">Print Receipt</a>
           {% else %}
           <span class="muted">Receipt after settlement</span>
           {% endif %}

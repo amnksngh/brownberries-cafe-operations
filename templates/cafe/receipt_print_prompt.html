@@ -1,0 +1,32 @@
+<dialog id="receipt-print-prompt" aria-labelledby="receipt-print-title" style="max-width: min(400px, 90vw); border: 1px solid #ddd2c8; border-radius: 16px; padding: 24px;">
+  <h2 id="receipt-print-title">Print receipt?</h2>
+  <p>Payment is settled. Would you like to print a compact receipt?</p>
+  <p class="muted">Choose Brownberries Cashier in the print window.</p>
+  <div style="display:flex; gap:12px; justify-content:flex-end;">
+    <button type="button" id="receipt-print-no">No</button>
+    <button type="button" id="receipt-print-yes">Yes, print</button>
+  </div>
+</dialog>
+<script>
+(() => {
+  const address = new URL(window.location.href);
+  const orderId = address.searchParams.get('print_receipt');
+  if (!orderId || !/^\d+$/.test(orderId)) return;
+  // Consume the prompt before polling, refresh or Back can repeat it.
+  address.searchParams.delete('print_receipt');
+  history.replaceState(history.state, '', address);
+  const key = `cashier-receipt-prompt:${orderId}`;
+  try {
+    if (sessionStorage.getItem(key)) return;
+    sessionStorage.setItem(key, '1');
+  } catch (_) {}
+  const prompt = document.getElementById('receipt-print-prompt');
+  document.getElementById('receipt-print-no').onclick = () => prompt.close();
+  document.getElementById('receipt-print-yes').onclick = () => {
+    prompt.close();
+    const receipt = {{ url_for('cafe.public_receipt', order_id=0)|tojson }}.replace(/0$/, orderId);
+    window.open(`${receipt}?format=thermal&print=1`, '_blank', 'noopener');
+  };
+  prompt.showModal();
+})();
+</script>

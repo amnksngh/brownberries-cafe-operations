@@ -69,6 +69,13 @@
       line-height: 1.1;
       letter-spacing: 0;
     }
+    .receipt-logo {
+      display: block;
+      width: 110px;
+      height: 110px;
+      object-fit: contain;
+      margin: 0 auto 8px;
+    }
     .receipt-header p {
       margin: 8px 0 0;
       color: var(--muted);
@@ -214,6 +221,45 @@
       }
     }
   </style>
+  {% if thermal_receipt %}
+  <style>
+    body { padding: 0; background: white; color: black; font-family: Arial, sans-serif; }
+    .receipt-page { width: 72mm; max-width: 100%; margin: 0 auto; }
+    .receipt-paper { border: 0; border-radius: 0; box-shadow: none; padding: 2mm 0; }
+    .receipt-header { padding-bottom: 2mm; margin-bottom: 2mm; }
+    .receipt-header h1 { font-size: 17px; }
+    .receipt-logo { width: 24mm; height: 24mm; margin: 0 auto 2mm; }
+    .receipt-header p { font-size: 10px; margin: 1mm 0 0; }
+    .receipt-meta { grid-template-columns: 1fr 1fr; gap: 1mm 2mm; margin-bottom: 2mm; font-size: 10px; }
+    .receipt-meta div { padding-bottom: 1mm; overflow-wrap: anywhere; }
+    .receipt-meta strong { font-size: 9px; margin-bottom: 0; }
+    .receipt-meta div:nth-child(2), .receipt-meta div:nth-child(4) { display: none; }
+    table { table-layout: fixed; margin-bottom: 2mm; }
+    thead th, tbody td { font-size: 10px; padding: 1mm 0; color: black; }
+    th:first-child, td:first-child { display: none; }
+    th:nth-child(2) { width: 40%; }
+    th:nth-child(3) { width: 10%; }
+    th:nth-child(4), th:nth-child(5) { width: 25%; }
+    .item-name { overflow-wrap: anywhere; }
+    .item-meta { font-size: 9px; margin-top: 0; }
+    .payment-block { padding: 1mm 0; margin-bottom: 2mm; background: white; border: 0; }
+    .payment-block h3 { font-size: 10px; margin-bottom: 1mm; }
+    .payment-line, .payment-line-note { font-size: 10px; padding: 0; overflow-wrap: anywhere; }
+    .totals { width: 100%; font-size: 11px; }
+    .totals-row { padding: 1mm 0; }
+    .totals-row.grand { font-size: 14px; padding-top: 1mm; }
+    .receipt-footer { font-size: 10px; margin-top: 2mm; padding-top: 2mm; }
+    .receipt-footer a { display: none; }
+    .receipt-footer div:has(a) { display: none; }
+    tr, .totals, .receipt-header { break-inside: avoid; }
+    @media print {
+      .receipt-page { width: 72mm; margin: 0 auto; }
+      .receipt-paper { padding: 2mm 0; }
+      @page { margin: 0; }
+    }
+  </style>
+  <style id="thermal-page-size"></style>
+  {% endif %}
 </head>
 <body>
   <div class="receipt-page">
@@ -224,6 +270,7 @@
     {% endif %}
     <article class="receipt-paper">
       <header class="receipt-header">
+        <img class="receipt-logo" src="{{ url_for('static', filename='images/cafe-logo.png') }}" alt="Brownberries Café logo" width="110" height="110" />
         <h1>Brownberries Café</h1>
         <p>{{ receipt_location }}</p>
       </header>
@@ -314,6 +361,15 @@
     </article>
   </div>
   <script>
+    {% if thermal_receipt %}
+    function sizeThermalPage() {
+      // Match page length to this receipt, not an A4 sheet or fixed long roll.
+      const heightMm = Math.ceil(document.querySelector('.receipt-paper').getBoundingClientRect().height * 25.4 / 96) + 2;
+      document.getElementById('thermal-page-size').textContent = `@page { size: 80mm ${Math.max(40, heightMm)}mm; margin: 0; }`;
+    }
+    window.addEventListener('load', sizeThermalPage);
+    window.addEventListener('beforeprint', sizeThermalPage);
+    {% endif %}
     if (!{{ "true" if is_preview else "false" }} && new URLSearchParams(window.location.search).get("print") === "1") {
       window.addEventListener("load", () => window.setTimeout(() => window.print(), 350));
     }

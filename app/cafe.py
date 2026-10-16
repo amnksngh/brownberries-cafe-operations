@@ -4444,9 +4444,9 @@ def _clear_table_orders_impl(table_id: int, next_url: str = ""):
         else:
             sms_message = " Receipt SMS not sent: mobile missing."
     flash(f"Settled {count} order(s) for {table.name}.{sms_message}", "success")
-    if next_url:
-        return redirect(next_url)
-    return redirect(url_for("cafe.cashier", table_id=table.id))
+    destination = next_url or url_for("cafe.cashier", table_id=table.id)
+    separator = "&" if "?" in destination else "?"
+    return redirect(f"{destination}{separator}print_receipt={payable_orders[0].id}")
 
 
 @bp.route("/tables/<int:table_id>/move-orders", methods=["POST"])
@@ -5135,6 +5135,7 @@ def _render_public_receipt(receipt_orders: list[CafeOrder], *, is_preview: bool)
         review_link=_google_review_link(),
         feedback_link=url_for("cafe.public_settlement_feedback", order_id=primary_order.id),
         is_preview=is_preview,
+        thermal_receipt=not is_preview and request.args.get("format") == "thermal",
     )
 
 
