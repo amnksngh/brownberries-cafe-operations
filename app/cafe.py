@@ -11124,8 +11124,9 @@ def staff():
         _ensure_staff_profile(staff_user)
     db.session.commit()
     staff_profiles = [u.staff_profile for u in staff_users if u.staff_profile]
-    active_profiles = [s for s in staff_profiles if not s.archived]
-    archived_profiles = [s for s in staff_profiles if s.archived]
+    active_profiles = [s for s in staff_profiles if not s.archived and s.user.active]
+    archived_profiles = [s for s in staff_profiles if s.archived or not s.user.active]
+    active_staff_ids = [s.user_id for s in active_profiles]
     today_ist = datetime.now(IST_TZ).date()
     attendance_today = {
         row.user_id: row
@@ -11147,6 +11148,7 @@ def staff():
         leave_summary[staff_user.id] = {"pending": pending, "approved": approved}
     leave_requests = (
         StaffLeaveRequest.query.join(User, StaffLeaveRequest.user_id == User.id)
+        .filter(User.id.in_(active_staff_ids))
         .order_by(StaffLeaveRequest.created_at.desc())
         .limit(80)
         .all()
@@ -11156,6 +11158,7 @@ def staff():
         .options(joinedload(StaffAttendance.user))
         .filter(
             User.active.is_(True),
+            User.id.in_(active_staff_ids),
             StaffAttendance.check_in_at.is_not(None),
             StaffAttendance.check_out_at.is_(None),
         )
@@ -11170,6 +11173,8 @@ def staff():
         selected_month = today_ist.month
     if selected_year < 2000 or selected_year > 2100:
         selected_year = today_ist.year
+    if selected_user_id not in active_staff_ids:
+        selected_user_id = None
     if not selected_user_id and active_profiles:
         selected_user_id = active_profiles[0].user_id
 
@@ -11324,6 +11329,7 @@ def staff():
 
     shared_leave_map = {}
     approved_month_leaves = StaffLeaveRequest.query.filter(
+        StaffLeaveRequest.user_id.in_(active_staff_ids),
         StaffLeaveRequest.status == "approved",
         StaffLeaveRequest.start_date <= selected_end,
         StaffLeaveRequest.end_date >= selected_start,
@@ -11362,11 +11368,13 @@ def staff():
     total_payroll_estimate = 0.0
     total_asset_charge = 0.0
     total_net_payroll_estimate = 0.0
-    today_attendance_rows = StaffAttendance.query.filter_by(attendance_date=today_ist).all()
+    today_attendance_rows = StaffAttendance.query.filter(
+        StaffAttendance.attendance_date == today_ist, StaffAttendance.user_id.in_(active_staff_ids)).all()
     doc_pending_count = StaffDocument.query.filter(
         StaffDocument.verification_status.in_(["pending", "rejected"])
     ).count()
-    pending_leave_count = StaffLeaveRequest.query.filter_by(status="pending").count()
+    pending_leave_count = StaffLeaveRequest.query.filter(
+        StaffLeaveRequest.status == "pending", StaffLeaveRequest.user_id.in_(active_staff_ids)).count()
     pending_documents = (
         StaffDocument.query.join(User, StaffDocument.user_id == User.id)
         .options(joinedload(StaffDocument.user), joinedload(StaffDocument.uploaded_by))
@@ -11400,13 +11408,16 @@ def staff():
             + float(allocation.charge_amount or 0),
             2,
         )
-    for staff_user in staff_users:
-        profile = staff_user.staff_profile
+    from .payroll_periods import salary_periods
+    payroll_period = salary_periods(payroll_year, payroll_month, 0)
+    for profile in active_profiles:
+        staff_user = profile.user
         payroll_attendance_rows = StaffAttendance.query.filter(
             StaffAttendance.user_id == staff_user.id,
             StaffAttendance.attendance_date >= payroll_start,
             StaffAttendance.attendance_date <= payroll_end,
         ).all()
+        payroll_attendance_rows = aggregate_attendance_rows(payroll_attendance_rows, now=now_ist_naive)
         present_days = sum(1 for row in payroll_attendance_rows if row.status in ["present_all_day", "late_entry", "early_exit", "weekly_off", "on_leave", "earned_leave", "company_holiday"])
         half_days = sum(1 for row in payroll_attendance_rows if row.status in ["first_half", "second_half", "half_day_leave", "half_day_earned_leave", "half_day_urgent_leave"])
         sick_days = sum(1 for row in payroll_attendance_rows if row.status == "sick_leave")
@@ -11414,7 +11425,9 @@ def staff():
         payable_days = sum(attendance_pay_fraction(row.status) for row in payroll_attendance_rows)
         salary_amount = float(profile.salary_amount or 0)
         per_day_salary = round((salary_amount / payroll_days), 2) if salary_amount else 0.0
-        estimated_pay = round(payable_days * per_day_salary, 2)
+        periods = salary_periods(payroll_year, payroll_month, salary_amount,
+            [(row.attendance_date, attendance_pay_fraction(row.status)) for row in payroll_attendance_rows])
+        estimated_pay = float(periods['gross'])
         asset_charge = payroll_asset_charge_map.get(staff_user.id, 0.0)
         net_estimated_pay = round(max(0.0, estimated_pay - asset_charge), 2)
         outstanding_asset_charge = round(max(0.0, asset_charge - estimated_pay), 2)
@@ -11432,6 +11445,8 @@ def staff():
                 "payable_days": round(payable_days, 2),
                 "per_day_salary": per_day_salary,
                 "estimated_pay": estimated_pay,
+                "first_half_estimate": float(periods['first']),
+                "second_half_estimate": float(periods['second']),
                 "asset_charge": asset_charge,
                 "net_estimated_pay": net_estimated_pay,
                 "outstanding_asset_charge": outstanding_asset_charge,
@@ -11462,6 +11477,9 @@ def staff():
         attendance_status_options=ATTENDANCE_STATUS_OPTIONS,
         active_attendance_sessions=active_attendance_sessions,
         payroll_rows=payroll_rows,
+        payroll_period=payroll_period,
+        first_half_total=sum(row['first_half_estimate'] for row in payroll_rows),
+        second_half_total=sum(row['second_half_estimate'] for row in payroll_rows),
         payroll_month=payroll_month,
         payroll_year=payroll_year,
         total_payroll_estimate=round(total_payroll_estimate, 2),

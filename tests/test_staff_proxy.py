@@ -56,6 +56,82 @@ class StaffProxyTests(unittest.TestCase):
             self.assertEqual(audits[1].actor_id,self.admin)
             self.assertIn('present_all_day',audits[1].details_json)
 
+    def test_inactive_staff_hidden_and_records_preserved(self):
+        self.post('attendance',day='2026-10-15',status='present_all_day')
+        with self.app.app_context():
+            user = db.session.get(User, self.staff)
+            user.active = False
+            user.full_name = 'Inactive fixture employee'
+            db.session.commit()
+        self.assertEqual(self.client.get(self.url+'?user_id='+str(self.staff)).status_code,404)
+        html = self.client.get(self.url).get_data(as_text=True)
+        self.assertNotIn('Inactive fixture employee', html)
+        with patch('app.cafe.render_template', return_value='ok') as render:
+            response = self.client.get('/cafe/staff?section=payroll_summary&payroll_month=10&payroll_year=2026')
+            self.assertEqual(response.status_code, 200)
+            context = render.call_args.kwargs
+            self.assertNotIn(self.staff, [row['user'].id for row in context['payroll_rows']])
+            self.assertNotIn(self.staff, [row.user_id for row in context['active_profiles']])
+            self.assertIn(self.staff, [row.user_id for row in context['archived_profiles']])
+            self.assertEqual(context['payroll_period']['second_due'], date(2026,11,6))
+        with self.app.app_context():
+            self.assertEqual(StaffAttendance.query.filter_by(user_id=self.staff).count(),1)
+
+    def test_payroll_summary_splits_at_fifteenth(self):
+        with self.app.app_context():
+            db.session.get(User, self.staff).staff_profile.salary_amount = 31000
+            db.session.add_all([StaffAttendance(user_id=self.staff, attendance_date=date(2026,10,day),
+                status='present_all_day', manager_override=True) for day in (15,16,31)])
+            db.session.commit()
+        with patch('app.cafe.render_template', return_value='ok') as render:
+            response = self.client.get('/cafe/staff?section=payroll_summary&payroll_month=10&payroll_year=2026')
+            self.assertEqual(response.status_code,200)
+            row = next(r for r in render.call_args.kwargs['payroll_rows'] if r['user'].id == self.staff)
+            self.assertEqual(row['estimated_pay'],3000)
+            self.assertEqual(row['first_half_estimate'],1000)
+            self.assertEqual(row['second_half_estimate'],2000)
+
+    def test_register_split_sessions_edit_and_overlap(self):
+        self.post('register', day='2026-10-15',check_in='2026-10-15T09:00',
+                  check_out='2026-10-15T13:00',status='present_all_day')
+        self.post('register', day='2026-10-15',check_in='2026-10-15T14:00',
+                  check_out='2026-10-15T18:00',status='first_half')
+        self.post('register', day='2026-10-15',check_in='2026-10-15T12:00',
+                  check_out='2026-10-15T15:00',status='present_all_day')
+        with self.app.app_context():
+            rows=StaffAttendance.query.filter_by(user_id=self.staff).order_by(StaffAttendance.id).all()
+            self.assertEqual(len(rows),2)
+            self.assertTrue(all(r.status=='present_all_day' for r in rows))
+            rid=rows[0].id
+        self.post('register', attendance_id=rid,day='2026-10-15',check_in='2026-10-15T08:30',
+                  check_out='2026-10-15T13:00')
+        with self.app.app_context():
+            row=db.session.get(StaffAttendance,rid)
+            self.assertEqual(row.check_in_at.hour,8)
+            self.assertEqual(row.check_in_method,'admin_register')
+            audits=ManualPayrollAudit.query.filter_by(user_id=self.staff,action='staff_proxy_register').all()
+            self.assertEqual(len(audits),3)
+            self.assertIn('09:00',audits[-1].details_json)
+        self.login(self.manager)
+        self.assertEqual(self.post('register',day='2026-10-15').status_code,403)
+
+    def test_register_validation_and_status_only_edit(self):
+        self.post('attendance',day='2026-10-15',status='first_half')
+        with self.app.app_context():
+            rid=StaffAttendance.query.filter_by(user_id=self.staff).one().id
+        for start,end in [('2026-10-15T13:00','2026-10-15T09:00'),
+                          ('2026-10-15T09:00','2026-10-17T09:00'),
+                          ('2026-10-14T09:00','2026-10-15T09:00')]:
+            self.post('register',attendance_id=rid,day='2026-10-15',check_in=start,check_out=end)
+        with self.app.app_context():
+            self.assertIsNone(db.session.get(StaffAttendance,rid).check_in_at)
+        self.post('register',attendance_id=rid,day='2026-10-15',check_in='2026-10-15T22:00',
+                  check_out='2026-10-16T02:00')
+        with self.app.app_context():
+            row=db.session.get(StaffAttendance,rid)
+            self.assertEqual(row.status,'first_half')
+            self.assertEqual(row.check_out_at.day,16)
+
     def test_submit_approve_cancel_leave_and_mark_absent(self):
         self.post('leave',start='2026-10-15',end='2026-10-15',leave_type='earned',from_shift='first_half',to_shift='second_half')
         with self.app.app_context():

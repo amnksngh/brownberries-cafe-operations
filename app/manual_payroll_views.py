@@ -34,11 +34,11 @@ def workspace():
         abort(409, 'Manual payroll has not been activated.')
     manager = user_has_any_role(g.current_user,'admin','manager','owner')
     admin = user_has_any_role(g.current_user,'admin')
-    profiles = StaffProfile.query.join(User).order_by(User.full_name).all() if manager else []
+    profiles = StaffProfile.query.join(User).filter(User.active.is_(True), StaffProfile.archived.is_(False)).order_by(User.full_name).all() if manager else []
     user_id = request.values.get('user_id', type=int) if manager else g.current_user.id
     user_id = user_id or (profiles[0].user_id if profiles else g.current_user.id)
     user = db.session.get(User,user_id)
-    if not user or not user.staff_profile:
+    if not user or not user.active or not user.staff_profile or user.staff_profile.archived:
         abort(404)
     raw_month = request.values.get('month') or today().strftime('%Y-%m')
     try:
@@ -108,6 +108,10 @@ def workspace():
     results={r.day:r for r in view['results']} if view else {}
     days=[start+timedelta(days=i) for i in range(end.day)]
     final=ManualPayrollMonth.query.filter_by(user_id=user_id,month=month).first()
+    from .payroll_periods import salary_periods
+    periods = salary_periods(month.year, month.month,
+        final.monthly_salary if final else (view['salary'] if view else 0),
+        [(r.day, r.payable) for r in view['results']] if view else [])
     locked=ManualPayrollMonth.query.filter(ManualPayrollMonth.user_id==user_id,ManualPayrollMonth.month>=month).first() is not None
     settlement=ManualCashSettlement.query.filter_by(payroll_month_id=final.id).first() if final else None
     payment=ManualPayrollPayment.query.filter_by(payroll_month_id=final.id).first() if final else None
@@ -133,4 +137,4 @@ def workspace():
     return render_template('cafe/manual_payroll.html',profiles=profiles,user=user,manager=manager,admin=admin,
         month=month,raw_month=raw_month,emp=emp,view=view,error=error,days=days,by_day=by_day,old=old,results=results,
         final=final,locked=locked,settlement=settlement,payment=payment,ledger=ledger,allocations=allocations,
-        audits=audits,statuses=STATUS_LABELS,csrf=csrf_token(),today=today(),due=total_due(final) if final else None)
+        periods=periods, audits=audits,statuses=STATUS_LABELS,csrf=csrf_token(),today=today(),due=total_due(final) if final else None)

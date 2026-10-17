@@ -75,7 +75,7 @@ def workspace():
             flash('Another update is in progress. Reload and try again.', 'error')
         return redirect(url_for('.workspace'))
     run_leave_maintenance()
-    users = User.query.join(StaffProfile).order_by(User.full_name).all()
+    users = User.query.join(StaffProfile).filter(User.active.is_(True), StaffProfile.archived.is_(False)).order_by(User.full_name).all()
     balances = {row.user_id: row for row in LeaveBalance.query.all()}
     revisions = dict(db.session.query(LeaveTransaction.user_id, db.func.max(LeaveTransaction.id)).group_by(LeaveTransaction.user_id).all())
     history = LeaveTransaction.query.filter_by(transaction_type='admin_adjustment').order_by(LeaveTransaction.id.desc()).limit(100).all()

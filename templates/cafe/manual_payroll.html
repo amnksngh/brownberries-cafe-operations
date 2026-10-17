@@ -17,6 +17,11 @@
 <p>PL and SL share an allowance: full calendar month employed = 2 days; partial month with 15 or more calendar days = 1; fewer than 15 = 0. Eligible BL has a separate five-day January–December cap. Excess leave is unpaid. Historical cash entitlement cannot pay for later leave.</p>
 <p>Unused allowance is valued at that month's confirmed salary ÷ calendar days and paid with March payroll or eligible exit payroll. Exit requires 15 days of notice served or management release; otherwise the unused cash balance is forfeited. Opening resets are audited per staff account, including admins when explicitly included at cutover.</p></details></section>
 {% if error %}<p class="warning">{{ error }}</p>{% endif %}
+{% if view %}<section class="panel"><h3>Salary periods · {{ raw_month }}</h3>
+<div class="fields"><p>Gross estimate · month<br><strong>₹{{ periods.gross }}</strong></p>
+<p>First half · 1–15<br><strong>₹{{ periods.first }}</strong><br>Pay on {{ periods.first_due.strftime('%d %b %Y') }}</p>
+<p>Second half · 16–{{ periods.end.day }}<br><strong>₹{{ periods.second }}</strong><br>Pay on {{ periods.second_due.strftime('%d %b %Y') }}</p></div>
+<p>Based on reviewed attendance; missing days are not assumed paid. These are gross estimates before asset deductions and leave cash settlements, not recorded payments. Existing finalization and payment records are unchanged.</p></section>{% endif %}
 {% if admin %}<section class="panel"><details {% if not emp %}open{% endif %}><summary>Confirm employment / exit</summary>
 <form method="post" class="fields"><input type="hidden" name="csrf_token" value="{{ csrf }}"><input type="hidden" name="action" value="employment"><input type="hidden" name="version" value="{{ emp.version if emp else 0 }}">
 <label>Joining date<input type="date" name="joined_on" value="{{ emp.joined_on if emp else user.staff_profile.joining_date or '' }}" required></label>
