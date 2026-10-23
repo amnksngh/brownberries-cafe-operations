@@ -39,12 +39,14 @@
 </section>
 <section class="panel">
 <h3>Count the drawer</h3>
+<p><strong>Evidence only — never changes the ledger, notes or coins.</strong> Include retained overnight cash in an opening count. Do not enter it as a refill. Differences are reported, never automatically corrected.</p>
 <form method="post">{{ guard('') }}
+<input type="hidden" name="operation_scope" value="count">
 <label>Count type<select name="action"><option value="count">Spot count (no ledger change)</option><option value="open">Opening count — today</option><option value="close">Close the open session</option></select></label>
 {{ denomination_inputs('count_', 'Physical notes and coins counted') }}
 <label>Reason / handover reference<input name="reason" maxlength="180" required></label><button>Save count snapshot</button></form>
 </section>
-{% if approver %}<section class="panel"><h3>Reconcile ledger / denomination gap</h3>
+{% if approver %}<section class="panel"><details><summary>Admin adjustment — changes recorded cash balances (not a count)</summary><h3>Reconcile ledger / denomination gap</h3>
 <p>Admin / owner only. Count every note and coin actually in the drawer. This corrects the current ledger and denominations to that count; it does not move real money or change sales, payment methods or prior closing reports. Correct a wrong Cash/Card/UPI payment using the payment-correction section instead.</p>
 <form method="post" id="cash-reconcile" data-ledger="{{ state.total }}">{{ guard('reconcile') }}
 {{ denomination_inputs('count_', 'Full physical drawer count for reconciliation') }}
@@ -52,11 +54,12 @@
 <label>Type the signed ledger adjustment to confirm<input name="confirmed_adjustment" type="number" step="0.01" required></label>
 <label>Explanation / evidence reference<input name="reason" maxlength="180" required></label>
 <label><input type="checkbox" name="confirmed" value="yes" required>I counted all physical cash and approve this correction. Zero counts mean the drawer is empty.</label>
-<button>Reconcile to counted cash</button></form></section>{% endif %}
+<button>Apply audited balance adjustment</button></form></details></section>{% endif %}
 <section class="panel">
 <h3>Refill, expense, handover, withdrawal or exchange</h3>
 <form method="post">{{ guard('') }}
-<label>Operation<select name="action"><option value="refill">Morning / operating float refill</option><option value="expense">Cafe expense paid from drawer</option><option value="handover">Handover to owner</option><option value="end_withdrawal">End-of-day withdrawal</option><option value="exchange">Equal-value denomination exchange</option></select></label>
+<label>Operation<select name="action" required><option value="">Choose an actual cash movement</option><option value="refill">Additional cash added — NOT opening / retained cash</option><option value="expense">Cafe expense paid from drawer</option><option value="handover">Handover to owner</option><option value="end_withdrawal">End-of-day withdrawal</option><option value="exchange">Equal-value denomination exchange</option></select></label>
+<label><input type="checkbox" name="new_cash_confirmed" value="yes"> For a refill only: I confirm these are NEW notes/coins physically added to the drawer, not existing cash counted again.</label>
 <p>Refill uses incoming counts; expenses/handovers/withdrawals use outgoing counts. Exchange requires equal values on both sides and is saved atomically.</p>
 {{ denomination_inputs('in_', 'Into the drawer') }}{{ denomination_inputs('out_', 'Out of the drawer') }}
 <label>Purpose / recipient / receipt reference<input name="reason" maxlength="180" required></label>

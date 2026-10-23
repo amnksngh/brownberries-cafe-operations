@@ -128,6 +128,8 @@ def day_summary(day):
 
 def execute(form, actor, key):
     action = form.get('action')
+    if form.get('operation_scope') == 'count' and action not in ('open', 'close', 'count'):
+        raise ValueError('A count form can only save evidence; it cannot change cash balances.')
     reason = (form.get('reason') or '').strip()
     if not reason or len(reason) > 180:
         raise ValueError('A reason/reference of 1–180 characters is required.')
@@ -198,6 +200,8 @@ def execute(form, actor, key):
             session.closing_id = row.id
         return
     if action in ('refill', 'expense', 'handover', 'end_withdrawal', 'exchange'):
+        if action == 'refill' and form.get('new_cash_confirmed') != 'yes':
+            raise ValueError('Confirm that this is additional cash physically added, not retained overnight cash or a drawer count. Use Opening count for existing cash.')
         incoming, outgoing = counts(form, 'in_'), counts(form, 'out_')
         if action == 'refill':
             outgoing = {}

@@ -28,6 +28,8 @@ class CashDeskTests(unittest.TestCase):
         db.session.remove(); db.engine.dispose(); self.ctx.pop(); self.temp.cleanup()
 
     def act(self, action, actor=None, **data):
+        if action == 'refill':
+            data.setdefault('new_cash_confirmed', 'yes')
         form = MultiDict(dict(action=action, reason='Fixture evidence', **data))
         desk.execute(form, actor or self.cashier, uuid4().hex)
         db.session.commit()
@@ -148,6 +150,23 @@ class CashDeskTests(unittest.TestCase):
         for count in ('-1', '1.5', 'abc', '100001'):
             with self.assertRaises(ValueError): desk.counts({'in_note_100':count}, 'in_')
 
+    def test_every_count_preserves_existing_cash_even_with_discrepancies(self):
+        self.act('refill', in_note_200='9', in_note_100='11', in_coin_5='22')
+        before = desk.snapshot()
+        entries = CashCounterEntry.query.count()
+        for action, count in [('open','9'), ('count','0'), ('count','99'), ('close','1')]:
+            self.act(action, operation_scope='count', count_note_200=count,
+                     in_note_200='100', out_coin_5='22', new_cash_confirmed='yes')
+            self.assertEqual(desk.snapshot(), before)
+            self.assertEqual(CashCounterEntry.query.count(), entries)
+
+    def test_refill_requires_new_cash_confirmation_and_cannot_use_count_form(self):
+        for data in ({'new_cash_confirmed':''}, {'operation_scope':'count'}):
+            with self.assertRaises(ValueError):
+                self.act('refill', in_note_200='9', **data)
+            db.session.rollback()
+        self.assertEqual(CashCounterEntry.query.count(), 0)
+
     def test_reconcile_legacy_gap_preserves_sales_and_originals(self):
         order = self.order('Cash', 750)
         desk.movement(self.cashier, 'deposit', {}, 'Legacy cash', '', order, amount=750)
@@ -239,7 +258,7 @@ class CashDeskRouteTests(unittest.TestCase):
             self.assertIn(b'Daily Cash Control', response.data)
             self.assertEqual(client.post(url, data={'action':'refill'}).status_code, 400)
             with app.app_context(): revision = desk.revision()
-            data = dict(action='refill', csrf_token='test', request_key=uuid4().hex, revision=revision, reason='Morning float', in_note_100='2')
+            data = dict(action='refill', new_cash_confirmed='yes', csrf_token='test', request_key=uuid4().hex, revision=revision, reason='Morning float', in_note_100='2')
             self.assertEqual(client.post(url, data=data).status_code, 302)
             self.assertEqual(client.post(url, data=data).status_code, 302)
             data['request_key'] = uuid4().hex
