@@ -148,6 +148,37 @@ class CashDeskTests(unittest.TestCase):
         for count in ('-1', '1.5', 'abc', '100001'):
             with self.assertRaises(ValueError): desk.counts({'in_note_100':count}, 'in_')
 
+    def test_reconcile_legacy_gap_preserves_sales_and_originals(self):
+        order = self.order('Cash', 750)
+        desk.movement(self.cashier, 'deposit', {}, 'Legacy cash', '', order, amount=750)
+        db.session.commit()
+        self.act('reconcile', actor=self.admin, confirmed='yes', confirmed_adjustment='-750')
+        self.assertEqual(desk.snapshot()['total'], 0)
+        self.assertEqual(desk.snapshot()['unallocated'], 0)
+        self.assertEqual(order.total_amount, 750)
+        self.assertEqual(order.payment_type, 'Cash')
+        self.assertEqual(CashCounterEntry.query.filter_by(is_deleted=True).count(), 0)
+
+    def test_reconcile_denominations_and_permissions(self):
+        desk.movement(self.cashier, 'deposit', {}, 'Legacy cash', '', amount=100)
+        db.session.commit()
+        for actor, confirmation in ((self.cashier, '0'), (self.admin, '100')):
+            with self.assertRaises(ValueError):
+                self.act('reconcile', actor=actor, count_note_100='1', confirmed='yes', confirmed_adjustment=confirmation)
+            db.session.rollback()
+        self.act('reconcile', actor=self.admin, count_note_100='1', confirmed='yes', confirmed_adjustment='0')
+        self.assertEqual(desk.snapshot()['tracked_cash'], 100)
+        self.assertEqual(desk.snapshot()['unallocated'], 0)
+
+    def test_reconciliation_does_not_hide_session_shortage(self):
+        self.act('open')
+        self.act('refill', in_note_100='2')
+        self.act('reconcile', actor=self.admin, count_note_100='1', confirmed='yes', confirmed_adjustment='-100')
+        self.act('close', count_note_100='1')
+        closing = json.loads(CashDeskSession.query.one().closing.details_json)
+        self.assertEqual(closing['session_variance'], -100)
+        self.assertEqual(closing['reconciliation_adjustment'], -100)
+
     def test_closing_evidence_survives_later_correction(self):
         order = self.order()
         self.act('open'); self.act('close')

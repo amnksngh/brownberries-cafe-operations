@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>KOT #{{ kot.order_id }} — {{ kot.table }}</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:white;color:black;font:12px Arial,sans-serif}
+.actions{text-align:center;margin:12px}.ticket{width:70mm;max-width:100%;margin:0 auto;padding:0 2mm}
+h1{text-align:center;font-size:18px;margin:0 0 2mm}.meta{font-size:11px;border-bottom:1px dashed black;padding-bottom:2mm;overflow-wrap:anywhere}
+table{width:100%;border-collapse:collapse;table-layout:fixed}th,td{text-align:left;vertical-align:top;padding:2mm 0;border-bottom:1px dashed black;overflow-wrap:anywhere}
+th:last-child,td:last-child{width:12mm;text-align:right;font-weight:bold}.description{font-size:11px;white-space:pre-wrap;margin-top:1mm}.item{font-weight:bold;font-size:14px}tr{break-inside:avoid}
+tbody tr:last-child td{padding-bottom:0}
+@media print{html,body{margin:0!important;padding:0!important}body>*:not(.ticket){display:none!important}.actions{display:none!important}@page{size:portrait;margin:0}}
+</style></head><body>
+<div class="actions"><button onclick="window.print()">Print KOT</button><p>Brownberries Cashier · same paper and margin settings as receipts.</p></div>
+<article class="ticket"><h1>KITCHEN ORDER TICKET</h1>
+<div class="meta"><strong>Table: {{ kot.table }} | Order: #{{ kot.order_id }}</strong><br>{{ kot.approved_at }} IST<br>Ref: {{ kot.reference }}</div>
+<table><thead><tr><th>Item / variety</th><th>Count</th></tr></thead><tbody>
+{% for item in kot['items'] %}<tr><td><div class="item">{{ item.name }}</div>
+{% if item.size or item.parcel %}<div>{{ item.size }}{% if item.parcel %} · PARCEL{% endif %}</div>{% endif %}
+</td><td>{{ item.quantity }}</td></tr>{% endfor %}
+</tbody></table></article>
+<script>
+// Keep the driver's portrait roll size. A short custom page (wider than tall)
+// can be interpreted as landscape and rotated by the browser/thermal driver.
+window.addEventListener('load',()=>{if(new URLSearchParams(location.search).get('print')==='1')setTimeout(()=>window.print(),350);});
+</script></body></html>

@@ -31,6 +31,7 @@
 {% endblock %}
 {% block content %}
 {% include "cafe/receipt_print_prompt.html" %}
+{% include "cafe/kot_prompt.html" %}
 {% if tab == "running" %}
 <section class="cashier-workspace">
   <aside class="panel cashier-table-panel">
@@ -151,6 +152,7 @@
             {% if pending_items %}
             <form method="post" action="{% if kiosk_mode %}{{ url_for('cafe.reception_kiosk_approve_order', access_key=kiosk_access_key, order_id=order.id) }}{% else %}{{ url_for('cafe.approve_order', order_id=order.id) }}{% endif %}" class="grid">
               <input type="hidden" name="next" value="{{ current_cashier_url }}" />
+              <input type="hidden" name="print_kot" value="1" />
               <div class="grid">
                 <strong>Pending Queue</strong>
                 {% for oi in pending_items %}

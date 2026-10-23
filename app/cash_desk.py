@@ -131,6 +131,41 @@ def execute(form, actor, key):
     reason = (form.get('reason') or '').strip()
     if not reason or len(reason) > 180:
         raise ValueError('A reason/reference of 1–180 characters is required.')
+    if action == 'reconcile':
+        if not actor.active or not (actor.has_role('admin') or actor.has_role('owner')):
+            raise ValueError('Only an active admin or owner can reconcile cash.')
+        counted = counts(form, 'count_')
+        state = snapshot()
+        adjustment = value(counted) - Decimal(str(state['total']))
+        try:
+            confirmed = Decimal(form.get('confirmed_adjustment', ''))
+        except InvalidOperation:
+            raise ValueError('Enter the signed ledger adjustment shown in the preview.')
+        if not confirmed.is_finite() or confirmed != adjustment or form.get('confirmed') != 'yes':
+            raise ValueError('Confirm the physical count and exact signed ledger adjustment before saving.')
+        incoming = {k: n-state['counts'].get(k,0) for k,n in counted.items() if n > state['counts'].get(k,0)}
+        # Include denominations currently negative, so their corrections are also audited.
+        for k,n in state['counts'].items():
+            if n < 0 and k not in incoming:
+                incoming[k] = counted.get(k,0)-n
+        outgoing = {k:n-counted.get(k,0) for k,n in state['counts'].items() if n > counted.get(k,0)}
+        if not incoming and not outgoing and adjustment == 0:
+            raise ValueError('The ledger and denominations already match this physical count.')
+        ids=[]
+        for direction, quantities in [('withdrawal',outgoing),('deposit',incoming)]:
+            if quantities:
+                ids.append(movement(actor,direction,quantities,'Cash reconciliation — denomination correction',reason))
+        remaining = value(counted) - Decimal(str(snapshot()['total']))
+        if remaining:
+            ids.append(movement(actor,'deposit' if remaining > 0 else 'withdrawal',{},
+                'Cash reconciliation — ledger adjustment',reason,amount=abs(remaining)))
+        after = snapshot()
+        if after['unallocated'] != 0 or Decimal(str(after['total'])) != value(counted):
+            raise ValueError('Reconciliation did not balance. No changes were saved.')
+        record(action,actor,key,dict(reason=reason,before=state,after=after,counted=counted,
+            counted_total=str(value(counted)),ledger_adjustment=str(adjustment),entry_ids=ids,
+            classification='Cash discrepancy correction, not a sale or automatically booked expense'))
+        return
     if action in ('open', 'close', 'count'):
         session = CashDeskSession.query.filter_by(business_date=today()).first()
         if action == 'open' and (session or CashDeskSession.query.filter_by(closing_id=None).first()):
@@ -147,6 +182,11 @@ def execute(form, actor, key):
             opening = json.loads(session.opening.details_json)
             details['opening_total'] = opening['counted_total']
             details['ledger_change'] = round(state['total'] - opening['ledger']['total'], 2)
+            reconciliations = CashDeskRecord.query.filter(CashDeskRecord.kind == 'reconcile',
+                CashDeskRecord.id > session.opening_id).all()
+            adjustment = sum(float(json.loads(r.details_json)['ledger_adjustment']) for r in reconciliations)
+            details['reconciliation_adjustment'] = adjustment
+            details['ledger_change'] = round(details['ledger_change'] - adjustment, 2)
             details['expected_from_opening'] = round(opening['counted_total'] + details['ledger_change'], 2)
             details['session_variance'] = round(details['counted_total']-details['expected_from_opening'], 2)
             details['business_date'] = str(session.business_date)

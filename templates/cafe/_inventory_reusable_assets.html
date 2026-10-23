@@ -4,7 +4,7 @@
       <h3>Reusable Assets</h3>
       <p class="muted">Track glasses, cups, plates, cutlery, serviceware, and other reusable items separately from recipe ingredients and consumable stock.</p>
     </div>
-    <span class="inventory-badge">Weekly physical count</span>
+    <a class="button" href="{{ url_for('asset_lifecycle.workspace') }}">Stock Lifecycle: purchase, receive, dispatch, loss &amp; recovery</a>
   </div>
 </section>
 
@@ -12,7 +12,7 @@
   <article class="inventory-kpi"><h4>Item Types</h4><p>{{ reusable_summary.item_types }}</p></article>
   <article class="inventory-kpi"><h4>Total Purchased</h4><p>{{ reusable_summary.purchased_units }}</p></article>
   <article class="inventory-kpi"><h4>Currently Usable</h4><p>{{ reusable_summary.current_units }}</p></article>
-  <article class="inventory-kpi"><h4>Lost / Broken</h4><p>{{ reusable_summary.lost_units }}</p></article>
+  <article class="inventory-kpi"><h4>Lost / Broken / Unusable</h4><p>{{ reusable_summary.lost_units }}</p></article>
   <article class="inventory-kpi"><h4>Total Investment</h4><p>₹{{ "%.2f"|format(reusable_summary.investment) }}</p></article>
   <article class="inventory-kpi"><h4>Current Value</h4><p>₹{{ "%.2f"|format(reusable_summary.current_value) }}</p></article>
   <article class="inventory-kpi"><h4>Lifetime Loss Value</h4><p>₹{{ "%.2f"|format(reusable_summary.lost_value) }}</p></article>
@@ -21,8 +21,8 @@
 
 <section class="inventory-two-col inventory-main-grid">
   <article class="panel">
-    <h3>Create Reusable Item</h3>
-    <p class="muted">The opening purchase creates the item and its first physical-stock baseline.</p>
+    <h3>Record an Already-Received Item</h3>
+    <p class="muted">This records an opening purchase and usable-stock baseline. For new purchases still with the seller or in transit, use Stock Lifecycle above instead. Existing items can be given a store/in-use split there.</p>
     <form method="post" enctype="multipart/form-data" class="grid inventory-form-grid">
       <input type="hidden" name="action" value="add_reusable_asset" />
       <label>Name <input name="name" placeholder="Cappuccino Cup" maxlength="120" required /></label>
@@ -138,6 +138,8 @@
         <td>{% if row.last_count %}{{ row.last_count.count_date.strftime('%d %b %Y') }}{% else %}Never{% endif %}{% if row.count_due %}<div><span class="inventory-status deficit">Due</span></div>{% endif %}</td>
         <td class="reusable-actions">
           <a href="{{ url_for('cafe.inventory', section='reusable_assets', edit_asset_id=row.asset.id) }}">Edit</a>
+          <a href="{{ url_for('asset_lifecycle.workspace', asset_id=row.asset.id) }}">Stock lifecycle</a>
+          {% if not row.asset.lifecycle %}
           <details>
             <summary>Weekly count</summary>
             <form method="post" class="grid reusable-count-form">
@@ -150,6 +152,7 @@
               <button type="submit">Save Count</button>
             </form>
           </details>
+          {% endif %}
         </td>
       </tr>
       {% else %}<tr><td colspan="10">No reusable items match these filters.</td></tr>{% endfor %}
@@ -173,7 +176,7 @@
       {% for loss in reusable_policy_loss_rows %}
       <tr>
         <td>{{ loss.loss_date.strftime('%d %b %Y') }}</td>
-        <td><strong>{{ loss.asset.name if loss.asset else '-' }}</strong><div>{{ loss.quantity }} unit{% if loss.quantity != 1 %}s{% endif %} · {{ 'Reported' if loss.loss_type == 'reported_breakage' else 'Unreported shortage' }}</div><div class="muted">{{ loss.note or '-' }}</div></td>
+        <td><strong>{{ loss.asset.name if loss.asset else '-' }}</strong><div>{{ loss.quantity }} unit{% if loss.quantity != 1 %}s{% endif %} · {{ {'reported_breakage':'Reported','unreported_shortage':'Unreported shortage','transit_loss':'Transit loss — cafe pays','wear_expiry':'Wear / expiry — cafe pays'}.get(loss.loss_type, loss.loss_type) }}</div><div class="muted">{{ loss.note or '-' }}</div></td>
         <td>₹{{ "%.2f"|format(loss.total_loss_value) }}<div class="muted">₹{{ "%.2f"|format(loss.unit_price_snapshot) }} each</div></td>
         <td>Staff ₹{{ "%.2f"|format(loss.staff_charge_total) }}<div class="muted">Cafe ₹{{ "%.2f"|format(loss.cafe_share_amount) }}</div></td>
         <td>
@@ -203,7 +206,7 @@
 </section>
 
 <section class="panel">
-  <div class="split-head"><div><h3>Usable vs Lost Stock</h3><p class="muted">Every horizontal bar equals 100% of the quantity ever purchased for that item. Green is currently usable; red is broken, lost, or otherwise unavailable.</p></div></div>
+  <div class="split-head"><div><h3>Usable vs Lost Stock</h3><p class="muted">Every horizontal bar equals 100% of purchased quantity. Green is usable; red is broken/lost or unusable. Any unfilled balance is awaiting delivery or in transit; it is not a loss. Open Stock Lifecycle for the complete split.</p></div></div>
   {% if reusable_composition_chart %}
   <div class="reusable-native-chart reusable-composition-bars" role="img" aria-label="Usable and lost reusable inventory percentages by item">
     {% for row in reusable_composition_chart %}
@@ -233,7 +236,7 @@
     <button type="submit">Analyse Loss</button>
   </form>
   <div class="inventory-card-grid">
-    <article class="inventory-kpi"><h4>Money Lost</h4><p>₹{{ "%.2f"|format(reusable_loss_summary.loss_value) }}</p></article>
+    <article class="inventory-kpi"><h4>Gross Recorded Loss Value</h4><p>₹{{ "%.2f"|format(reusable_loss_summary.loss_value) }}</p><small>Before recoveries; recovered units are shown separately. Not an additional purchase expense.</small></article>
     <article class="inventory-kpi"><h4>Units Lost</h4><p>{{ reusable_loss_summary.lost_units }}</p></article>
     <article class="inventory-kpi"><h4>Units Recovered</h4><p>{{ reusable_loss_summary.recovered_units }}</p></article>
     <article class="inventory-kpi"><h4>Count Events</h4><p>{{ reusable_loss_summary.count_events }}</p></article>

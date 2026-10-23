@@ -4270,8 +4270,24 @@ def approve_order(order_id):
     return _approve_order_impl(order_id, next_url)
 
 
+def _include_in_kot(menu_item):
+    if not menu_item:
+        return True
+    if (menu_item.prep_station or '').strip().casefold() in {'barista', 'barista-counter', 'barista_counter'}:
+        return False
+    # Exclude drinking water, not dishes/drinks such as watermelon juice.
+    name = re.sub(r'\s+', ' ', (menu_item.name or '').strip().casefold())
+    return not re.fullmatch(
+        r'(?:water|drinking water|mineral water|packaged drinking water|bottled water|water bottle|पानी)'
+        r'(?:\s*\([^)]*\)|\s+\d+(?:\.\d+)?\s*(?:ml|l|litre|liter)s?)*', name)
+
+
 def _approve_order_impl(order_id: int, next_url: str = ""):
-    order = CafeOrder.query.get(order_id)
+    # Serialize approval batches so double-clicks cannot produce duplicate KOTs.
+    db.session.rollback()
+    if db.engine.dialect.name == 'sqlite':
+        db.session.execute(db.text('BEGIN IMMEDIATE'))
+    order = CafeOrder.query.filter_by(id=order_id).with_for_update().first()
     if not order:
         flash("Order not found. It may have already been updated on another screen.", "error")
         return redirect(next_url or url_for("cafe.cashier"))
@@ -4287,6 +4303,7 @@ def _approve_order_impl(order_id: int, next_url: str = ""):
         flash("Select at least one pending item.", "error")
         return redirect(next_url or url_for("cafe.cashier", table_id=order.table_id))
     approved_names = []
+    kot_lines = []
     rejected_names = []
     for oi in pending_items:
         if oi.id not in selected_ids:
@@ -4295,12 +4312,23 @@ def _approve_order_impl(order_id: int, next_url: str = ""):
             oi.approval_status = "approved"
             oi.prep_status = "pending"
             approved_names.append(f"{oi.menu_item.name if oi.menu_item else 'Item'} x {oi.quantity}")
+            if _include_in_kot(oi.menu_item):
+                kot_lines.append(dict(name=oi.menu_item.name if oi.menu_item else 'Item',
+                    size=oi.size_label or '', parcel=bool(oi.is_parcel), quantity=oi.quantity))
         else:
             oi.approval_status = "rejected"
             rejected_names.append(f"{oi.menu_item.name if oi.menu_item else 'Item'} x {oi.quantity}")
 
     _recalculate_order_totals(order)
     _refresh_order_status_from_items(order)
+    ticket = None
+    if kot_lines:
+        from .models import CafeKitchenTicket
+        ticket = CafeKitchenTicket(token=secrets.token_urlsafe(32), order_id=order.id,
+            contents_json=json.dumps(dict(table=order.table.name if order.table else 'Delivery',
+                order_id=_format_pickup_number(order), reference=order.display_code or str(order.id),
+                approved_at=_format_ist(datetime.utcnow(), '%d %b %Y, %I:%M %p'), items=kot_lines)))
+        db.session.add(ticket)
     db.session.commit()
     payload = _serialize_order(order)
     socketio.emit("order_updated", payload, namespace="/kitchen")
@@ -4317,7 +4345,23 @@ def _approve_order_impl(order_id: int, next_url: str = ""):
         },
     )
     flash(f"Order #{_format_pickup_number(order)}: selected items {decision}d.", "success")
+    if ticket and request.form.get('print_kot') == '1':
+        access_key = (request.view_args or {}).get('access_key')
+        destination = url_for('cafe.reception_kiosk', access_key=access_key, table_id=order.table_id,
+                              print_kot=ticket.token) if access_key else url_for(
+                                  'cafe.cashier', table_id=order.table_id, print_kot=ticket.token)
+        return redirect(destination)
     return redirect(next_url or url_for("cafe.cashier", table_id=order.table_id))
+
+
+@bp.route('/kot/<string:token>')
+def kitchen_ticket(token):
+    from .models import CafeKitchenTicket
+    ticket = CafeKitchenTicket.query.filter_by(token=token).first_or_404()
+    response = current_app.make_response(render_template('cafe/kot.html', kot=json.loads(ticket.contents_json)))
+    response.headers['Cache-Control'] = 'no-store'
+    response.headers['Referrer-Policy'] = 'no-referrer'
+    return response
 
 
 @bp.route("/tables/<int:table_id>/clear-orders", methods=["POST"])
@@ -7076,6 +7120,9 @@ def reusable_breakage_report():
         asset = ReusableInventoryAsset.query.get_or_404(
             _safe_int(request.form.get("asset_id"), 0)
         )
+        if asset.lifecycle:
+            flash("This item uses separate store/in-use stock. Submit its report in Stock Lifecycle.", "info")
+            return redirect(url_for("asset_lifecycle.workspace", asset_id=asset.id))
         quantity = max(0, _safe_int(request.form.get("quantity"), 0))
         loss_date = _inventory_date(request.form.get("loss_date"))
         if not asset.active:
@@ -7153,6 +7200,11 @@ def inventory():
 
     if request.method == "POST":
         action = (request.form.get("action") or "").strip().lower()
+        if action in {"add_reusable_purchase", "count_reusable_asset", "report_reusable_breakage"}:
+            managed_asset = db.session.get(ReusableInventoryAsset, _safe_int(request.form.get("asset_id"), 0))
+            if managed_asset and managed_asset.lifecycle:
+                flash("Use Stock Lifecycle for this item's purchases, counts and losses so all stock buckets stay balanced.", "info")
+                return redirect(url_for("asset_lifecycle.workspace", asset_id=managed_asset.id))
         if action == "add_reusable_asset":
             name = (request.form.get("name") or "").strip()
             purchased_quantity = max(
@@ -8206,6 +8258,9 @@ def inventory():
         composition = reusable_stock_composition(
             asset.purchased_quantity, asset.current_quantity
         )
+        if asset.lifecycle:
+            composition["lost"] = asset.lifecycle.broken + asset.lifecycle.unusable
+            composition["lost_percent"] = round(composition["lost"] * 100 / max(1, asset.purchased_quantity), 2)
         dates = reusable_purchase_dates.get(asset.id, [])
         last_count = reusable_last_count_map.get(asset.id)
         reusable_asset_rows.append(

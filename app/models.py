@@ -316,6 +316,14 @@ class CafeOrderItem(TimestampMixin, db.Model):
     )
 
 
+class CafeKitchenTicket(TimestampMixin, db.Model):
+    """Immutable snapshot of one successful item approval batch."""
+    id = db.Column(db.Integer, primary_key=True)
+    token = db.Column(db.String(64), nullable=False, unique=True)
+    order_id = db.Column(db.Integer, db.ForeignKey('cafe_order.id'), nullable=False)
+    contents_json = db.Column(db.Text, nullable=False)
+
+
 class CafeFeedback(TimestampMixin, db.Model):
     id = db.Column(db.Integer, primary_key=True)
     table_id = db.Column(db.Integer, db.ForeignKey("cafe_table.id"), nullable=True)

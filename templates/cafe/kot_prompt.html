@@ -1,0 +1,27 @@
+<dialog id="kot-prompt" aria-labelledby="kot-title" style="max-width:min(400px,90vw);border:1px solid #ddd2c8;border-radius:16px;padding:24px">
+  <h2 id="kot-title">Print KOT?</h2>
+  <p>Items approved. Print their kitchen order ticket?</p>
+  <p>Select Brownberries Cashier in the print window.</p>
+  <button type="button" id="kot-no">No</button>
+  <button type="button" id="kot-yes">Yes, print KOT</button>
+</dialog>
+<script>
+(() => {
+  const address = new URL(location.href);
+  const token = address.searchParams.get('print_kot');
+  if (!token || !/^[A-Za-z0-9_-]{43}$/.test(token)) return;
+  address.searchParams.delete('print_kot');
+  history.replaceState(history.state, '', address);
+  try {
+    if (sessionStorage.getItem(`kot-prompt:${token}`)) return;
+    sessionStorage.setItem(`kot-prompt:${token}`, '1');
+  } catch (_) {}
+  const dialog = document.getElementById('kot-prompt');
+  document.getElementById('kot-no').onclick = () => dialog.close();
+  document.getElementById('kot-yes').onclick = () => {
+    dialog.close();
+    window.open({{ url_for('cafe.kitchen_ticket', token='TOKEN')|tojson }}.replace('TOKEN', token) + '?print=1', '_blank', 'noopener');
+  };
+  dialog.showModal();
+})();
+</script>

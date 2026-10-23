@@ -1,0 +1,47 @@
+{% extends 'base.html' %}
+{% macro guard(action) %}
+<input type="hidden" name="csrf_token" value="{{ csrf }}"><input type="hidden" name="request_key" value="{{ new_key() }}">
+{% if action %}<input type="hidden" name="action" value="{{ action }}">{% endif %}<input type="hidden" name="asset_id" value="{{ selected.id if selected else '' }}"><input type="hidden" name="revision" value="{{ revision }}">
+{% endmacro %}
+{% macro reason() %}<label>Reason / reference <input name="reason" maxlength="180" required></label>{% endmacro %}
+{% macro quantity() %}<label>Units <input name="quantity" type="number" min="1" step="1" required></label>{% endmacro %}
+{% block content %}
+<style>
+.asset-flow{max-width:1200px;margin:auto;min-width:0}.asset-flow *{box-sizing:border-box}.asset-flow .flow-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,280px),1fr));gap:16px}.asset-flow form{display:grid;gap:12px}.asset-flow input,.asset-flow select{max-width:100%;min-width:0;width:100%}.asset-flow input[type=checkbox]{width:auto}.asset-flow .scroll-table{overflow-x:auto;max-width:100%}.asset-flow th,.asset-flow td{padding:8px;text-align:left}.asset-flow details{margin:12px 0}.asset-flow pre{white-space:pre-wrap;overflow-wrap:anywhere}.asset-flow .buckets{display:flex;flex-wrap:wrap;gap:12px}.asset-flow .bucket{padding:12px;background:#f3f7f1;border-radius:8px}.asset-flow .bar{display:flex;height:22px;overflow:hidden;border-radius:6px;background:#eee}.asset-flow .bar span{min-width:0}
+</style>
+<div class="asset-flow">
+<h2>Reusable Assets — Stock Lifecycle</h2>
+<p><a href="{{ url_for('cafe.inventory',section='reusable_assets') }}">Back to asset images, expenses, charts and staff-charge review</a></p>
+<p>Purchase → awaiting delivery → in transit → store → in use. Transit loss and wear/expiry are cafe-borne. Existing records are retained.</p>
+<form method="get"><label>Reusable item<select name="asset_id" onchange="this.form.submit()"><option value="">Select an item</option>{% for a in assets %}<option value="{{ a.id }}" {% if selected and selected.id==a.id %}selected{% endif %}>{{ a.name }}</option>{% endfor %}</select></label><button>Open item</button></form>
+{% if manage %}
+<details><summary>Create a new reusable item (no purchase yet)</summary><form method="post">{{ guard('create') }}<label>Name<input name="name" maxlength="120" required></label><label>Area<select name="area_scope">{% for a in areas if a.value!='all' %}<option value="{{ a.value }}">{{ a.label }}</option>{% endfor %}</select></label><button>Create item</button></form><p>Add images and edit item details in the existing Reusable Assets editor.</p></details>
+{% endif %}
+{% if selected %}
+<h3>{{ selected.name }}</h3>
+{% if not stock %}
+{% if manage %}<section class="panel"><h3>Set the opening stock split</h3><p>Existing purchased: {{ selected.purchased_quantity }}; usable: {{ selected.current_quantity }}. Enter how many usable units are in store; the rest are in use. Historical missing units remain in broken/lost without adding new staff charges.</p><form method="post">{{ guard('initialize') }}<label>Usable units in store<input type="number" name="store" min="0" max="{{ selected.current_quantity }}" required></label>{{ reason() }}<button>Confirm opening split</button></form></section>{% else %}<p>Ask an inventory manager to configure the opening stock split first.</p>{% endif %}
+{% else %}
+<div class="buckets">{% for key,label in [('total','Total purchased'),('ordered','Awaiting delivery'),('transit','In transit'),('store','In store'),('in_use','In use'),('broken','Broken / lost'),('unusable','Unusable / expired')] %}<div class="bucket">{{ label }}<br><strong>{{ stock[key] }}</strong></div>{% endfor %}</div>
+<p>Total purchased = awaiting delivery + in transit + in store + in use + broken/lost + unusable/expired.</p>
+<div class="bar" aria-label="Stock composition">{% for key,color in [('ordered','#aaa'),('transit','#d9a441'),('store','#477db3'),('in_use','#41945e'),('broken','#c44d4d'),('unusable','#956ab5')] %}<span title="{{ key }}: {{ stock[key] }}" style="width:{{ stock[key]*100/stock.total if stock.total else 0 }}%;background:{{ color }}"></span>{% endfor %}</div>
+<div class="flow-grid">
+{% if manage %}
+<section class="panel"><h3>1. Record purchased batch</h3><p>Records its cost once in existing purchase/expense reporting. Stock is not usable until received. Record purchases here only after buying; this is not an unpaid purchase-order system.</p><form method="post">{{ guard('order') }}{{ quantity() }}<label>Unit price ₹<input name="unit_price" type="number" min="0" step="0.01" required></label><label>Purchase date<input name="purchase_date" type="date" value="{{ today }}" max="{{ today }}" required></label><label>Paid via<select name="payment_mode"><option value="upi">UPI</option><option value="cash">Cash</option><option value="card">Card</option></select></label><label>Money used<select name="funding_source"><option value="cafe_operations">Cafe operations</option><option value="owner_personal">Owner personal</option></select></label>{{ reason() }}<button>Record purchase</button></form></section>
+<section class="panel"><h3>2. Load / receive a batch</h3>
+{% for batch in selected.delivery_batches if batch.status!='received' %}<details><summary>Batch #{{ batch.id }} — {{ batch.purchase.quantity }} units — {{ batch.status }}</summary><form method="post">{{ guard('load' if batch.status=='ordered' else 'receive') }}<input type="hidden" name="batch_id" value="{{ batch.id }}">{% if batch.status=='transit' %}<label>Usable units received<input name="quantity" type="number" min="0" max="{{ batch.purchase.quantity }}" required></label><label><input type="checkbox" name="confirmed" value="yes" required> Final receipt: all remaining units are lost/broken in transit, paid by cafe. Do not finalize a partially delivered batch while more units are still expected.</label>{% endif %}{{ reason() }}<button>{{ 'Mark loaded / in transit' if batch.status=='ordered' else 'Receive into store' }}</button></form></details>{% else %}<p>No pending deliveries.</p>{% endfor %}</section>
+<section class="panel"><h3>3. Dispatch / return</h3><form method="post">{{ guard('') }}<label>Movement<select name="action"><option value="dispatch">Store → in use</option><option value="return">In use → store</option></select></label>{{ quantity() }}{{ reason() }}<button>Move stock</button></form></section>
+{% endif %}
+<section class="panel"><h3>Report operational breakage / loss</h3><p>Reported loss: responsible staff 50%, cafe 50%. {% if not manage %}This report is on your own behalf.{% endif %}</p><form method="post">{{ guard('reported') }}{{ quantity() }}{% if manage %}<label>Responsible employee<select name="responsible_user_id">{% for u in staff %}<option value="{{ u.id }}">{{ u.full_name }}</option>{% endfor %}</select></label>{% endif %}{{ reason() }}<button>Record reported loss</button></form></section>
+{% if manage %}
+<section class="panel"><h3>Unreported operational shortage</h3><p>Use only after checking stock transfers and reports. Shared by eligible non-admin staff under the existing policy.</p><form method="post">{{ guard('shortage') }}{{ quantity() }}{{ reason() }}<button>Record unreported loss</button></form></section>
+<section class="panel"><h3>Wear / expiry — cafe pays</h3><form method="post">{{ guard('wear') }}<label>From<select name="source"><option value="in_use">In use</option><option value="store">In store</option></select></label>{{ quantity() }}{{ reason() }}<button>Mark unusable / expired</button></form></section>
+<section class="panel"><h3>Found items → back in use</h3><p>Reduces the original broken/lost balance. Staff charges are not silently changed: review any linked charge separately, especially if already settled.</p><form method="post">{{ guard('recover') }}<label>Original loss<select name="origin_id" required><option value="">Select loss</option>{% for m,n in origins %}<option value="{{ m.id }}">#{{ m.id }} {{ m.action }} — {{ n }} units recoverable{% if m.loss_event_id %}; loss #{{ m.loss_event_id }}{% endif %}</option>{% endfor %}</select></label>{{ quantity() }}{{ reason() }}<button>Record recovery</button></form></section>
+<section class="panel"><h3>Weekly physical count</h3><p>Count store and in-use separately. Resolve differences using the operations above, then save the matching count. Counts never silently create staff deductions.</p><form method="post">{{ guard('count') }}<label>In store<input name="store" type="number" min="0" required></label><label>In use<input name="in_use" type="number" min="0" required></label>{{ reason() }}<button>Save verified count</button></form></section>
+{% endif %}
+</div>
+{% endif %}
+{% if manage %}<h3>Movement history (latest 100)</h3><div class="scroll-table"><table><thead><tr><th>IST time</th><th>Operation</th><th>Units</th><th>By</th><th>Audit details</th></tr></thead><tbody>{% for m,d in movements %}<tr><td>{{ m.occurred_at|cash_ist }}</td><td>{{ m.action }}</td><td>{{ m.quantity }}</td><td>{{ m.actor.full_name }}</td><td><details><summary>{{ d.reason }}</summary>{% if d.charge_review %}<strong>{{ d.charge_review }} Original loss #{{ d.original_loss_event_id or 'historical opening' }}</strong>{% endif %}<pre>{{ d|tojson(indent=2) }}</pre></details></td></tr>{% endfor %}</tbody></table></div>{% endif %}
+{% endif %}
+</div>
+{% endblock %}
