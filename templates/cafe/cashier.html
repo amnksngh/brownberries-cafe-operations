@@ -30,6 +30,7 @@
 </div>
 {% endblock %}
 {% block content %}
+{% set session_notice = cash_session_notice() %}{% if session_notice %}<section class="panel"><strong>{{ session_notice }}</strong><p><a href="{{ url_for('cash_desk.workspace') }}">Open / close cash session</a></p></section>{% endif %}
 {% include "cafe/receipt_print_prompt.html" %}
 {% include "cafe/kot_prompt.html" %}
 {% if tab == "running" %}

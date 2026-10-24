@@ -257,14 +257,17 @@ class CashDeskRouteTests(unittest.TestCase):
             self.assertEqual(response.status_code, 200)
             self.assertIn(b'Daily Cash Control', response.data)
             self.assertEqual(client.post(url, data={'action':'refill'}).status_code, 400)
-            with app.app_context(): revision = desk.revision()
+            with app.app_context():
+                desk.execute(MultiDict({'action':'open','reason':'Test opening'}), db.session.get(User,uid), uuid4().hex)
+                db.session.commit()
+                revision = desk.revision()
             data = dict(action='refill', new_cash_confirmed='yes', csrf_token='test', request_key=uuid4().hex, revision=revision, reason='Morning float', in_note_100='2')
             self.assertEqual(client.post(url, data=data).status_code, 302)
             self.assertEqual(client.post(url, data=data).status_code, 302)
             data['request_key'] = uuid4().hex
             self.assertEqual(client.post(url, data=data).status_code, 302)
             with app.app_context():
-                self.assertEqual(CashDeskRecord.query.count(), 1)
+                self.assertEqual(CashDeskRecord.query.count(), 2)
                 self.assertEqual(desk.snapshot()['total'], 200)
                 table = CafeTable(name='Guard fixture', qr_slug='guard-fixture')
                 db.session.add(table); db.session.flush()

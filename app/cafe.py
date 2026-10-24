@@ -4067,6 +4067,9 @@ def _render_orders_view(kiosk_mode: bool = False, access_key: str = ""):
         return Response("Invalid reception kiosk access key.", status=403)
     mobile_app_mode = request.args.get("mobile_app") == "1"
     if request.method == "POST":
+        blocked = _cash_session_gate()
+        if blocked:
+            return blocked
         selected_table_id = int(request.form["table_id"])
         cutoff_message = _order_cutoff_message("staff")
         if cutoff_message:
@@ -4210,6 +4213,9 @@ def mark_order_paid(order_id):
     db.session.rollback()
     if db.engine.dialect.name == 'sqlite':
         db.session.execute(db.text('BEGIN IMMEDIATE'))
+    blocked = _cash_session_gate(locked=True)
+    if blocked:
+        return blocked
     order = CafeOrder.query.get(order_id)
     if not order:
         flash("Order not found. It may have already been updated on another screen.", "error")
@@ -4287,6 +4293,9 @@ def _approve_order_impl(order_id: int, next_url: str = ""):
     db.session.rollback()
     if db.engine.dialect.name == 'sqlite':
         db.session.execute(db.text('BEGIN IMMEDIATE'))
+    blocked = _cash_session_gate(locked=True)
+    if blocked:
+        return blocked
     order = CafeOrder.query.filter_by(id=order_id).with_for_update().first()
     if not order:
         flash("Order not found. It may have already been updated on another screen.", "error")
@@ -4375,6 +4384,9 @@ def _clear_table_orders_impl(table_id: int, next_url: str = ""):
     db.session.rollback()
     if db.engine.dialect.name == 'sqlite':
         db.session.execute(db.text('BEGIN IMMEDIATE'))
+    blocked = _cash_session_gate(locked=True)
+    if blocked:
+        return blocked
     table = CafeTable.query.get_or_404(table_id)
     day_start, day_end = _current_ist_day_bounds()
     split_rows, split_error = _parse_split_payment_rows()
@@ -4501,6 +4513,9 @@ def move_table_orders(table_id):
 
 
 def _move_table_orders_impl(table_id: int, next_url: str = ""):
+    blocked = _cash_session_gate()
+    if blocked:
+        return blocked
     source_table = CafeTable.query.get_or_404(table_id)
     target_table_id = request.form.get("target_table_id", type=int)
     selected_order_ids = {
@@ -4613,7 +4628,25 @@ def _cash_counter_return_url(kiosk_mode: bool, access_key: str = "") -> str:
     return url_for(endpoint, **kwargs)
 
 
+def _cash_session_gate(locked=False):
+    from .cash_desk import require_open_session
+    if not locked:
+        db.session.rollback()
+        if db.engine.dialect.name == 'sqlite':
+            db.session.execute(db.text('BEGIN IMMEDIATE'))
+    try:
+        require_open_session()
+    except ValueError as exc:
+        db.session.rollback()
+        flash(str(exc), 'error')
+        return redirect(url_for('cash_desk.workspace'))
+    return None
+
+
 def _delete_cash_counter_entry(entry_id: int, kiosk_mode: bool = False, access_key: str = ""):
+    blocked = _cash_session_gate()
+    if blocked:
+        return blocked
     if not secrets.compare_digest(session.get('cash_counter_csrf', ''), request.form.get('csrf_token', '')) or not session.get('cash_counter_csrf'):
         return 'Reload Cash Counter before submitting.', 400
     db.session.rollback()
@@ -5326,6 +5359,9 @@ def send_order_receipt_sms(order_id):
 
 
 def _send_order_receipt_sms_impl(order_id: int):
+    blocked = _cash_session_gate()
+    if blocked:
+        return blocked
     order = CafeOrder.query.options(joinedload(CafeOrder.table)).get_or_404(order_id)
     country_code = (request.form.get("country_code") or "+91").strip()
     mobile = (request.form.get("mobile") or "").strip()
@@ -5347,6 +5383,9 @@ def edit_order_items(order_id):
 
 
 def _edit_order_items_impl(order_id: int, next_url: str = ""):
+    blocked = _cash_session_gate()
+    if blocked:
+        return blocked
     order = CafeOrder.query.get_or_404(order_id)
     if order.status in ["paid", "cancelled"]:
         flash("Paid/cancelled orders cannot be edited.", "error")

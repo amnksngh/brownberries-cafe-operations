@@ -17,6 +17,16 @@ def today():
     return datetime.now(IST).date()
 
 
+def require_open_session():
+    """A prior-day session remains open, but cannot authorize today's transactions."""
+    sessions = CashDeskSession.query.filter_by(closing_id=None).all()
+    stale = next((s for s in sessions if s.business_date != today()), None)
+    if stale:
+        raise ValueError(f'Close the outstanding cash session for {stale.business_date} with a closing count first, then open today\'s session. Transactions are blocked.')
+    if not any(s.business_date == today() for s in sessions):
+        raise ValueError('Open today\'s cash session with an opening count before performing transactions. Counts do not add cash.')
+
+
 def money(value):
     try:
         value = Decimal(str(value))

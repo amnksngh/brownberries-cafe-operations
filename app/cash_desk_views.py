@@ -13,6 +13,17 @@ from . import cash_desk as desk
 bp = Blueprint('cash_desk', __name__)
 
 
+@bp.app_context_processor
+def cash_session_context():
+    def notice():
+        try:
+            desk.require_open_session()
+        except ValueError as exc:
+            return str(exc)
+        return ''
+    return {'cash_session_notice': notice}
+
+
 @bp.app_template_filter('cash_ist')
 def cash_ist(value):
     if not value:
@@ -58,6 +69,8 @@ def workspace():
             else:
                 if request.form.get('revision') != desk.revision():
                     raise ValueError('Cash records changed while this page was open. Reload and verify the latest figures before saving.')
+                if request.form.get('action') not in ('open', 'close'):
+                    desk.require_open_session()
                 desk.execute(request.form, g.current_user, key)
                 db.session.commit()
                 _STATS_CACHE.clear()

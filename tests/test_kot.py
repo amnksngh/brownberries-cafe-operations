@@ -22,6 +22,10 @@ class KitchenTicketTests(unittest.TestCase):
             db.session.add(order);db.session.flush()
             lines=[CafeOrderItem(order_id=order.id,menu_item_id=menu.id,quantity=n,unit_price=100,approval_status='pending',size_label='Regular' if n == 1 else 'With Ice Cream') for n in (1,2)]
             db.session.add_all(lines);db.session.commit()
+            from app.cash_desk import execute
+            from uuid import uuid4
+            execute({'action':'open','reason':'Test opening'},user,uuid4().hex)
+            db.session.commit()
             self.uid,self.oid,self.mid=user.id,order.id,menu.id
             self.ids=[r.id for r in lines]
         self.client=self.app.test_client()
