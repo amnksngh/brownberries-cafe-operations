@@ -619,6 +619,9 @@ def create_app(*, instance_path=None, initialize_legacy_leaves=True):
         from . import manual_payroll_models  # additive tables, no activation on startup
         from . import cash_desk_models
         from . import asset_lifecycle_models
+        from . import organisation  # additive organisation tables, no automatic seeding
+        from . import performance  # versioned scorecards and reviews; no payroll writes
+        from . import leave_opening  # snapshot storage only; never captures on startup
         db.create_all()
         _ensure_sqlite_schema_columns()
         _ensure_protected_menu_categories()
@@ -679,6 +682,10 @@ def create_app(*, instance_path=None, initialize_legacy_leaves=True):
     app.register_blueprint(manual_payroll_bp)
     from .leave_adjustments import bp as leave_adjustments_bp
     app.register_blueprint(leave_adjustments_bp)
+    from .organisation import bp as organisation_bp
+    app.register_blueprint(organisation_bp)
+    from .performance import bp as performance_bp
+    app.register_blueprint(performance_bp)
     from .cash_desk_views import bp as cash_desk_bp
     app.register_blueprint(cash_desk_bp)
     from .asset_lifecycle_views import bp as asset_lifecycle_bp

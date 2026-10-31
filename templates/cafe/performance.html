@@ -1,0 +1,44 @@
+{% extends 'base.html' %}
+{% block content %}
+<style>.perf-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,240px),1fr));gap:1rem}.perf-grid>*{min-width:0}.perf-grid input,.perf-grid select,.perf-grid textarea{width:100%;box-sizing:border-box}.perf-wide{grid-column:1/-1}.perf-metric{border:1px solid #ddd;padding:.8rem;border-radius:8px;margin:.6rem 0;overflow-wrap:anywhere}.perf-grid textarea{min-height:85px}.perf-audit{white-space:pre-wrap;overflow-wrap:anywhere;font-size:.85rem}details>summary{cursor:pointer;padding:.6rem}</style>
+{% macro fields(action, r=none) %}<input type="hidden" name="csrf_token" value="{{ token }}">{% if action %}<input type="hidden" name="action" value="{{ action }}">{% endif %}{% if r %}<input type="hidden" name="review_id" value="{{ r.id }}"><input type="hidden" name="version" value="{{ r.version }}">{% endif %}{% endmacro %}
+<section class="panel"><a href="{{ url_for('cafe.staff', section='active_staff') }}">← Staff Management</a><h2>Performance Reviews</h2>
+<p>Draft → Submitted → Approved. A separate admin/owner approves the review; nobody reviews or approves themselves. Returned reviews can be revised and submitted again.</p>
+<p class="muted">Scores assess documented performance, not automatic pay rises or promotions. Attendance and payroll are unchanged. A threshold identifies reviews for progression consideration only.</p></section>
+{% if admin %}
+<section class="panel"><details><summary>Create a versioned position/grade scorecard</summary>
+<p>Use measurable targets and an explicit rubric for scores from 0–100. Specify the evidence required. Weights must total 100%. New scorecards do not change existing reviews.</p>
+<form method="post" class="perf-grid">{{ fields('scorecard') }}
+<label>Position<select name="position_id" required>{% for p in positions if p.enabled %}<option value="{{ p.id }}">{{ p.department }} · {{ p.title }}</option>{% endfor %}</select></label>
+<label>Grade name<input name="grade" required maxlength="40" placeholder="G1 (must match the position)"></label>
+<label>Progression consideration threshold (%)<input name="threshold" type="number" required min="0" max="100" step="0.01" placeholder="Set your own threshold"></label>
+{% for i in range(8) %}<fieldset class="perf-wide perf-metric"><legend>Metric {{ i+1 }} (leave unused rows blank)</legend><div class="perf-grid">
+<label>Metric name<input name="label_{{ i }}" maxlength="120"></label><label>Weight (%)<input name="weight_{{ i }}" type="number" min="0.01" max="100" step="0.01"></label>
+<label class="perf-wide">Target, scoring rubric and evidence required<textarea name="target_{{ i }}" maxlength="1000" placeholder="Example: Hygiene checklist compliance, based on signed checks during the review period. Define how observed results map to a 0–100 score."></textarea></label></div></fieldset>{% endfor %}
+<button>Create scorecard version</button></form></details></section>
+<section class="panel"><h3>Create employee review</h3><p>The employee must be assigned to the scorecard's active organisation position. The selected grade is the grade being evaluated, not an automatic employee-grade assignment.</p>
+<form method="post" class="perf-grid">{{ fields('create') }}
+<label>Scorecard version<select name="card_id" required>{% for c,s in cards %}<option value="{{ c.id }}">#{{ c.id }} · {{ s.position }} · {{ s.grade }}</option>{% endfor %}</select></label>
+<label>Employee<select name="employee_id" required>{% for u in staff %}<option value="{{ u.id }}">{{ u.full_name }}</option>{% endfor %}</select></label>
+<label>Reviewer<select name="reviewer_id" required>{% for u in reviewers %}<option value="{{ u.id }}">{{ u.full_name }}</option>{% endfor %}</select></label>
+<label>Period start<input type="date" name="start" required></label><label>Period end<input type="date" name="end" required></label><button>Create draft</button>
+</form><details><summary>Available scorecard versions</summary>{% for c,s in cards %}<h4>#{{ c.id }} · {{ s.position }} · {{ s.grade }} · Threshold {{ s.threshold }}%</h4>{% for m in s.criteria %}<p>{{ m.label }} ({{ m.weight }}%) — {{ m.target }}</p>{% endfor %}{% else %}<p>Create a scorecard after configuring your organisation.</p>{% endfor %}</details></section>
+{% endif %}
+<section class="panel"><h3>Recent reviews (latest 100)</h3>
+{% for r,s,answers in reviews %}<details class="perf-metric" id="review-{{ r.id }}" {% if r.status != 'approved' %}open{% endif %}><summary>#{{ r.id }} · {{ names[r.employee_id] }} · {{ s.position }} / {{ s.grade }} · {{ r.start }} – {{ r.end }} · {{ r.status|title }}</summary>
+<p>Reviewer: {{ names[r.reviewer_id] }} · Revision {{ r.version }}{% if r.approved_by %} · Approved by {{ names[r.approved_by] }}{% endif %}</p>
+{% if r.score is not none %}<p><strong>Weighted score: {{ r.score }} / 100</strong> · Threshold: {{ s.threshold }}% · {{ 'Meets score threshold for consideration' if r.score|float >= s.threshold|float else 'Below score threshold' }}. This is not a promotion approval.{% if s.progression %} Career destination at review creation: {{ s.progression }}.{% endif %}</p>{% endif %}
+{% if r.status == 'draft' and r.reviewer_id == g.current_user.id %}
+<form method="post">{{ fields(none,r) }}
+{% for m in s.criteria %}{% set i=loop.index0 %}{% set a=answers[i] if i < answers|length else {} %}<div class="perf-metric"><h4>{{ m.label }} · {{ m.weight }}%</h4><p>{{ m.target }}</p><div class="perf-grid"><label>Score (0–100)<input name="score_{{ i }}" type="number" min="0" max="100" step="0.01" value="{{ a.get('score','') }}"></label><label>Evidence and explanation<textarea name="evidence_{{ i }}" maxlength="2000">{{ a.get('evidence','') }}</textarea></label></div></div>{% endfor %}
+<label>Recommendation / development plan<textarea name="recommendation" maxlength="2000" style="width:100%;box-sizing:border-box">{{ r.recommendation }}</textarea></label>
+<button type="submit" name="action" value="save">Save draft</button><button type="submit" name="action" value="submit">Submit for approval</button></form>
+{% else %}
+{% for m in s.criteria %}{% set i=loop.index0 %}{% set a=answers[i] if i < answers|length else {} %}<p><strong>{{ m.label }} ({{ m.weight }}%)</strong> · Score: {{ a.get('score','Not scored') }}<br>{{ m.target }}<br>Evidence: {{ a.get('evidence','Not provided') }}</p>{% endfor %}<p>Recommendation: {{ r.recommendation or 'None recorded' }}</p>
+{% endif %}
+{% if admin and r.status == 'submitted' and g.current_user.id not in [r.employee_id,r.reviewer_id] %}
+<form method="post" class="perf-grid">{{ fields(none,r) }}<label>Decision<select name="action"><option value="approve">Approve review (no pay change)</option><option value="return">Return to reviewer for changes</option></select></label><label>Decision reason<textarea name="reason" required maxlength="2000"></textarea></label><button>Record decision</button></form>
+{% elif r.status == 'submitted' %}<p>Awaiting a separate admin/owner's decision.</p>{% endif %}
+<details><summary>Audit trail (IST)</summary>{% for a in audits if a.review_id == r.id %}<p>{{ (a.created_at + offset).strftime('%d %b %Y %H:%M') }} IST · {{ names[a.actor_id] }} · {{ a.action }}</p><div class="perf-audit">{{ a.detail }}</div>{% endfor %}</details>
+</details>{% else %}<p>No reviews available. Admins/owners create reviews and assign a reviewer.</p>{% endfor %}</section>
+{% endblock %}

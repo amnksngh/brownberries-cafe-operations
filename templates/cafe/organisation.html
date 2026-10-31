@@ -1,0 +1,65 @@
+{% extends 'base.html' %}
+{% block content %}
+<style>
+.org-tree,.org-tree ul{list-style:none;padding-left:1rem;border-left:1px solid #d8cec4}.org-tree{padding-left:0;border:0}
+.org-tree li{margin:.65rem 0;overflow-wrap:anywhere}.org-node{padding:.55rem .75rem;border:1px solid #ded5cc;border-radius:8px;background:#faf8f4;display:inline-block;max-width:100%}
+.org-off{opacity:.65}.org-form{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,240px),1fr));gap:1rem}
+.org-form label,.org-form fieldset{min-width:0}.org-form input,.org-form select,.org-form textarea{width:100%;max-width:100%;box-sizing:border-box}
+.org-wide{grid-column:1/-1}.org-form fieldset{border:1px solid #ded5cc;border-radius:8px;padding:.8rem}.org-form textarea{min-height:90px}
+.org-editor{margin:1rem 0}.org-editor summary{cursor:pointer;padding:.7rem;background:#f6f1eb;border-radius:8px}
+</style>
+<section class="panel">
+  <a href="{{ url_for('cafe.staff', section='active_staff') }}">← Staff Management</a>
+  <h2>Organisation &amp; Career Structure</h2>
+  <p><a href="{{ url_for('performance.workspace') }}">Performance scorecards &amp; reviews →</a></p>
+  <p>Reporting lines describe supervision. Career paths describe possible progression—not automatic promotions.</p>
+  <p class="muted">Admin/owner configuration · Revision {{ revision }} · Compensation ranges are monthly INR planning ranges. Saving here never changes salaries, login roles, workstation assignments or dish responsibilities.</p>
+  {% if not positions %}
+  <form method="post"><input type="hidden" name="csrf_token" value="{{ token }}"><input type="hidden" name="revision" value="{{ revision }}"><input type="hidden" name="action" value="seed"><input type="hidden" name="reason" value="Install approved editable starter organisation"><button>Install starter structure with G1, G2, G3</button></form>
+  <p>Includes your current kitchen branches and future disabled positions, plus Barista, Service and Management ladders. No employees are assigned automatically.</p>
+  {% endif %}
+</section>
+{% macro tree(parent) %}
+<ul class="org-tree">
+{% for p in children.get(parent, []) %}
+<li><div class="org-node {% if not p.enabled %}org-off{% endif %}">
+  <a href="#position-{{ p.id }}">{{ p.title }}</a> · {{ p.department }}
+  <small>— {{ 'Disabled' if not p.enabled else 'Assigned' if p.employees else 'Vacant' }}</small>
+  {% if p.scope %}<br><small>{{ scopes.get(p.scope, 'Archived station/group: ' ~ p.scope) }}</small>{% endif %}
+  {% if p.employees %}<br><small>{% for uid in p.employees %}{{ names.get(uid, 'Former employee #' ~ uid) }}{% if not loop.last %}, {% endif %}{% endfor %}</small>{% endif %}
+</div>{% if children.get(p.id) %}{{ tree(p.id) }}{% endif %}</li>
+{% endfor %}
+</ul>
+{% endmacro %}
+{% if positions %}<section class="panel"><h3>Reporting tree</h3>{{ tree(none) }}</section>{% endif %}
+{% macro editor(p) %}
+<form method="post" class="org-form">
+  <input type="hidden" name="csrf_token" value="{{ token }}"><input type="hidden" name="revision" value="{{ revision }}"><input type="hidden" name="action" value="save"><input type="hidden" name="position_id" value="{{ p.id }}">
+  <label>Position name<input name="title" value="{{ p.title }}" maxlength="120" required></label>
+  <label>Department<input name="department" value="{{ p.department }}" list="departments" maxlength="80" required></label>
+  <label>Status<select name="enabled"><option value="yes" {% if p.enabled %}selected{% endif %}>Active</option><option value="no" {% if not p.enabled %}selected{% endif %}>Disabled / future</option></select></label>
+  <label>Station or station group<select name="scope"><option value="">Department-wide / not linked</option>{% if p.scope and p.scope not in scopes %}<option value="{{ p.scope }}" selected>Archived: {{ p.scope }}</option>{% endif %}{% for key, label in scopes.items() %}<option value="{{ key }}" {% if p.scope == key %}selected{% endif %}>{{ label }}</option>{% endfor %}</select></label>
+  <label>Reports to<select name="parent"><option value="">No supervisor / root</option>{% for target in positions if target.id != p.id %}<option value="{{ target.id }}" {% if p.parent == target.id %}selected{% endif %}>{{ target.title }}{{ ' (disabled)' if not target.enabled else '' }}</option>{% endfor %}</select></label>
+  <label>Next career position<select name="progression"><option value="">Not configured / top of ladder</option>{% for target in positions if target.id != p.id %}<option value="{{ target.id }}" {% if p.progression == target.id %}selected{% endif %}>{{ target.title }}{{ ' (future)' if not target.enabled else '' }}</option>{% endfor %}</select></label>
+  <label class="org-wide">Assigned employees (Ctrl/Cmd to select multiple; clear to leave vacant)<select name="employees" multiple size="5">{% for user in employees %}<option value="{{ user.id }}" {% if user.id in p.employees %}selected{% endif %}>{{ user.full_name }}</option>{% endfor %}{% for uid in p.employees %}{% if uid not in employees|map(attribute='id')|list %}<option value="{{ uid }}" selected>{{ names.get(uid, 'Former employee') }} (inactive—retained)</option>{% endif %}{% endfor %}</select></label>
+  <label class="org-wide">Responsibilities<textarea name="responsibilities" maxlength="4000" placeholder="Accountabilities, required skills, supervision and handover responsibilities">{{ p.responsibilities }}</textarea></label>
+  {% for grade in p.grades %}{% set i=loop.index0 %}
+  <fieldset><legend>Grade {{ loop.index }}</legend>
+    <label>Grade name<input name="grade_{{ i }}" value="{{ grade.name }}" maxlength="40" required></label>
+    <label>Monthly minimum (₹)<input type="number" name="min_{{ i }}" value="{{ grade.minimum }}" min="0" max="99999999" step="0.01" placeholder="Not configured"></label>
+    <label>Monthly maximum (₹)<input type="number" name="max_{{ i }}" value="{{ grade.maximum }}" min="0" max="99999999" step="0.01" placeholder="Not configured"></label>
+    <label>Evaluation &amp; progression criteria<textarea name="criteria_{{ i }}" maxlength="4000" placeholder="Define each metric, target, weight, review period, required evidence and approval criteria. No scores or pay changes are automatic.">{{ grade.criteria }}</textarea></label>
+  </fieldset>
+  {% endfor %}
+  <label class="org-wide">Reason for change<input name="reason" maxlength="500" required></label>
+  <button type="submit">{{ 'Save position' if p.id else 'Create position' }}</button>
+</form>
+{% endmacro %}
+<datalist id="departments">{% for department in positions|map(attribute='department')|unique %}<option value="{{ department }}">{% endfor %}</datalist>
+<section class="panel"><h3>Positions &amp; grades</h3><p>Disable positions instead of deleting them to retain history. Reassign direct reports before disabling their supervisor. Future positions can remain in the career ladder.</p>
+{% for p in positions %}<details class="org-editor" id="position-{{ p.id }}"><summary>{{ p.department }} · {{ p.title }} · {{ 'Active' if p.enabled else 'Disabled' }}</summary>{{ editor(p) }}</details>{% endfor %}
+<details class="org-editor"><summary>+ Add a position / department</summary>{{ editor(blank) }}</details>
+</section>
+<section class="panel"><h3>Recent change history</h3><p>Each save retains a full structure snapshot. Timestamps below are IST.</p>{% for a in audits %}<p>Revision {{ a.revision }} · {{ names.get(a.actor_id, 'Administrator') }} · {{ (a.created_at + ist_offset).strftime('%d %b %Y %H:%M') }} IST<br>{{ a.reason }}</p>{% else %}<p>No changes yet.</p>{% endfor %}</section>
+<script>function openPosition(){const id=location.hash.slice(1);const el=document.getElementById(id);if(el && el.tagName==='DETAILS')el.open=true;}window.addEventListener('hashchange',openPosition);openPosition();</script>
+{% endblock %}

@@ -50,7 +50,7 @@ def service_allowance(year, month, joined_on, left_on=None):
     return Decimal(2 if count == last.day else 1 if count >= 15 else 0)
 
 
-def calculate_days(days, *, joined_on=None, left_on=None):
+def calculate_days(days, *, joined_on=None, left_on=None, allowance_for_day=None):
     """Evaluate a person's complete policy-period history in date order.
 
     Callers must supply preceding days in the relevant month/year, not merely
@@ -72,7 +72,8 @@ def calculate_days(days, *, joined_on=None, left_on=None):
         eligible = ((entry.status == 'PL' and notice_ok)
                     or (entry.status == 'SL' and entry.notified_on is not None)
                     or (entry.status in {'FH', 'SH'} and entry.half_day_applied and notice_ok))
-        allowance = service_allowance(*month, joined_on, left_on) if joined_on else MONTHLY_ALLOWANCE
+        allowance = (allowance_for_day(entry.day) if allowance_for_day else
+                     service_allowance(*month, joined_on, left_on) if joined_on else MONTHLY_ALLOWANCE)
         paid = min(missing, max(Decimal('0'), allowance-monthly_used.get(month, Decimal('0')))) if eligible else Decimal('0')
         bereavement = Decimal('0')
         if entry.status == 'BL' and entry.bereavement_eligible:
@@ -83,7 +84,8 @@ def calculate_days(days, *, joined_on=None, left_on=None):
     return results
 
 
-def month_cash_entitlement(year, month, monthly_salary, results, *, joined_on=None, left_on=None):
+def month_cash_entitlement(year, month, monthly_salary, results, *, joined_on=None, left_on=None,
+                           monthly_allowance=None):
     """Value UNUSED entitlement using that earning month's stored salary.
 
     Caller must finalize attendance for the entire month before posting this.
@@ -95,7 +97,10 @@ def month_cash_entitlement(year, month, monthly_salary, results, *, joined_on=No
     if not salary.is_finite() or salary < 0:
         raise ValueError('A valid monthly salary snapshot is required.')
     used = sum((row.paid_leave for row in results if (row.day.year, row.day.month) == (year, month)), Decimal('0'))
-    allowance = service_allowance(year, month, joined_on, left_on) if joined_on else MONTHLY_ALLOWANCE
+    allowance = (Decimal(str(monthly_allowance)) if monthly_allowance is not None else
+                 service_allowance(year, month, joined_on, left_on) if joined_on else MONTHLY_ALLOWANCE)
+    if not allowance.is_finite() or allowance < 0:
+        raise ValueError('A valid monthly allowance is required.')
     days = max(Decimal('0'), allowance-used)
     value = (days*salary/Decimal(calendar.monthrange(year, month)[1])).quantize(Decimal('.01'), rounding=ROUND_HALF_UP)
     return days, value

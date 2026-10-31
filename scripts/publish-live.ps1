@@ -106,7 +106,7 @@ cleanup() {
 trap cleanup EXIT
 runuser -u brownberries -- git worktree add --detach "$preflight" "$target"
 cd "$preflight"
-PYTHONWARNINGS=ignore /srv/brownberries/app/.venv/bin/python -m unittest discover -s tests -q
+runuser -u brownberries -- env PYTHONWARNINGS=ignore /srv/brownberries/app/.venv/bin/python -m unittest discover -s tests -q
 started=$(date +%s)
 systemctl start brownberries-backup.service
 /srv/brownberries/app/.venv/bin/python -c 'import json,os,sys; p="/srv/brownberries/last-backup.json"; d=json.load(open(p)); assert d.get("verified") and os.path.getmtime(p)>=int(sys.argv[1]); print(d)' "$started"

@@ -25,6 +25,8 @@
 
 <section class="library-layout">
   <aside class="library-sidebar panel">
+    {% if user_has_any_role(g.current_user, 'admin', 'owner', 'manager') %}<a href="{{ url_for('performance.workspace') }}">Performance Reviews</a>{% endif %}
+    {% if user_has_any_role(g.current_user, 'admin', 'owner') %}<a href="{{ url_for('organisation.workspace') }}">Organisation &amp; Career Structure</a>{% endif %}
     <a href="{{ url_for('cafe.staff', section='add_new_staff') }}" class="{% if active_staff_section == 'add_new_staff' %}active{% endif %}">Add New Staff</a>
     <a href="{{ url_for('cafe.staff', section='active_staff') }}" class="{% if active_staff_section == 'active_staff' %}active{% endif %}">Active Staff</a>
     <a href="{{ url_for('cafe.staff', section='archived_staff') }}" class="{% if active_staff_section == 'archived_staff' %}active{% endif %}">Archived Staff</a>
