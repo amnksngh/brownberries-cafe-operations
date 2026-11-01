@@ -1,0 +1,20 @@
+{% extends 'base.html' %}
+{% block content %}
+<section class="panel"><h2>Kitchen KOT Printer</h2><a href="{{ url_for('cafe.cashier') }}">← Cashier Desk</a>
+<p>Approvals from any device can send tickets here. Receipts are unaffected. The kitchen machine must run the agent with its station key.</p>
+{% if pairing_key %}<p><strong>Copy this secret station key now; it is shown once. Do not share it with staff devices.</strong></p><code style="overflow-wrap:anywhere">{{ pairing_key }}</code>{% endif %}
+{% if not station %}<form method="post"><input name="csrf_token" type="hidden" value="{{ csrf }}"><button name="action" value="register">Register kitchen station</button></form>
+{% else %}
+<p>{{ station.name }} · {{ 'Connected' if online else 'Offline / awaiting agent' }} · {{ 'Test mode' if station.test_mode else 'Live printing' }} · {{ 'Enabled' if station.enabled else 'Disabled' }}</p>
+<form method="post" class="grid"><input name="csrf_token" type="hidden" value="{{ csrf }}"><input name="action" type="hidden" value="configure">
+<label>Printer installed on kitchen machine<select name="printer" required>{% for printer in printers %}<option value="{{ printer }}" {% if printer == station.printer %}selected{% endif %}>{{ printer }}</option>{% endfor %}</select></label>
+<label>Mode<select name="test_mode"><option value="test" {% if station.test_mode %}selected{% endif %}>Test — agent records ticket, no paper</option><option value="live" {% if not station.test_mode %}selected{% endif %}>Live — ESC/POS compatible thermal printer required</option></select></label>
+<label><input name="enabled" type="checkbox" value="yes" {% if station.enabled %}checked{% endif %}> Route new KOT print requests to this station</label><button>Save printer configuration</button></form>
+<p>Printer choices appear after the agent connects. Disabling routing restores browser printing and pauses queued jobs. Pending jobs use the mode/printer configured when claimed.</p>
+<form method="post"><input name="csrf_token" type="hidden" value="{{ csrf }}"><button name="action" value="rotate">Replace station key (disconnects old agent and disables routing)</button></form>
+{% endif %}</section>
+<section class="panel"><h3>Latest 100 jobs</h3><p>“Spooled” means Windows accepted the ticket, not proof of physical printing. A claimed job with no result is uncertain—check the printer before reprinting. Queued jobs remain pending while the agent is offline. Test jobs never print paper.</p>
+{% for job in jobs %}<details class="panel"><summary>Job #{{ job.id }} · Ticket #{{ job.ticket_id }} · Attempt {{ job.attempt }} · {{ job.status }}</summary><p>Printer: {{ job.printer or 'Awaiting claim' }} · {{ job.detail }}</p>
+{% if job.status != 'queued' %}<form method="post"><input name="csrf_token" type="hidden" value="{{ csrf }}"><input name="action" type="hidden" value="reprint"><input name="job_id" type="hidden" value="{{ job.id }}"><label>Reprint reason<input name="reason" maxlength="200" required></label><label><input name="confirm" type="checkbox" value="yes" required> I checked the printer and accept that this may produce a duplicate.</label><button>Create explicit reprint</button></form>{% else %}<form method="post"><input name="csrf_token" type="hidden" value="{{ csrf }}"><input name="action" type="hidden" value="cancel"><input name="job_id" type="hidden" value="{{ job.id }}"><label>Cancellation reason<input name="reason" maxlength="200" required></label><button>Cancel queued ticket</button></form>{% endif %}
+</details>{% else %}<p>No queued jobs.</p>{% endfor %}</section>
+{% endblock %}
