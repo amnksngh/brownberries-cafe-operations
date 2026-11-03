@@ -33,6 +33,7 @@
 {% set session_notice = cash_session_notice() %}{% if session_notice %}<section class="panel"><strong>{{ session_notice }}</strong><p><a href="{{ url_for('cash_desk.workspace') }}">Open / close cash session</a></p></section>{% endif %}
 {% include "cafe/receipt_print_prompt.html" %}
 {% include "cafe/kot_prompt.html" %}
+{% if not kiosk_mode %}<p><a href="{{ url_for('kot_printing.changes') }}">Kitchen changes awaiting acknowledgement</a></p>{% endif %}
 {% if user_has_any_role(g.current_user, 'admin', 'owner') %}<p><a href="{{ url_for('kot_printing.settings') }}">Kitchen KOT Printer &amp; Queue</a></p>{% endif %}
 {% if tab == "running" %}
 <section class="cashier-workspace">
@@ -184,6 +185,9 @@
                 <label><input type="checkbox" name="is_parcel_{{ oi.id }}" {% if oi.is_parcel %}checked{% endif %} /> Parcel</label>
                 {% endif %}
                 {% endfor %}
+                <input type="hidden" name="csrf_token" value="{{ kot_print_csrf() }}">
+                <input type="hidden" name="edit_version" value="{{ kot_edit_version(order) }}">
+                <label>Reason for change <input name="change_reason" maxlength="500" required placeholder="Customer changed quantity / cancelled item"></label>
                 <button type="submit">Save Edit</button>
               </form>
             </details>
@@ -207,8 +211,10 @@
       <h3>Table Settlement</h3>
       <p><strong>Approved Orders Ready To Settle:</strong> <span id="settlement-grand-total">₹{{ "%.2f"|format(table_settle_total) }}</span></p>
     </div>
+    {% if unpaid_orders %}<a class="button-link" href="{% if kiosk_mode %}{{ url_for('cafe.reception_feedback_card', access_key=kiosk_access_key, order_id=unpaid_orders[0].id, scope='table') }}{% else %}{{ url_for('cafe.feedback_card', order_id=unpaid_orders[0].id, scope='table') }}{% endif %}" target="_blank" rel="noopener">Print feedback card</a>{% endif %}
     {% if latest_settled_order %}
     <div class="cashier-feedback-cta">
+      <a class="button-link" href="{% if kiosk_mode %}{{ url_for('cafe.reception_feedback_card', access_key=kiosk_access_key, order_id=latest_settled_order.id, scope='settlement') }}{% else %}{{ url_for('cafe.feedback_card', order_id=latest_settled_order.id, scope='settlement') }}{% endif %}" target="_blank" rel="noopener">Print feedback card</a>
       <a class="button-link" href="{% if kiosk_mode %}{{ url_for('cafe.reception_kiosk_settlement_feedback', access_key=kiosk_access_key, order_id=latest_settled_order.id, next=current_cashier_url) }}{% else %}{{ url_for('cafe.settlement_feedback', order_id=latest_settled_order.id, next=current_cashier_url) }}{% endif %}">
         {% if latest_settled_feedback %}Edit Feedback{% else %}Add Feedback{% endif %}
       </a>
@@ -410,6 +416,7 @@
         <div class="all-orders-group-total">
           <span class="cashier-inline-state">{{ group.status }}</span>
           <strong>₹{{ "%.2f"|format(group.total) }}</strong>
+          <a class="button-link" href="{% if kiosk_mode %}{{ url_for('cafe.reception_feedback_card', access_key=kiosk_access_key, order_id=group.primary_order_id, scope='order') }}{% else %}{{ url_for('cafe.feedback_card', order_id=group.primary_order_id, scope='order') }}{% endif %}" target="_blank" rel="noopener">Print feedback card</a>
           {% if group.is_settled %}
         <a class="all-orders-print-link" href="{{ url_for('cafe.public_receipt', order_id=group.primary_order_id, format='thermal', print=1) }}" target="_blank" rel="noopener">Print Receipt</a>
           {% else %}

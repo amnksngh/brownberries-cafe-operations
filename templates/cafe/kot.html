@@ -11,10 +11,10 @@ tbody tr:last-child td{padding-bottom:0}
 @media print{html,body{margin:0!important;padding:0!important}body>*:not(.ticket){display:none!important}.actions{display:none!important}@page{size:portrait;margin:0}}
 </style></head><body>
 <div class="actions"><button onclick="window.print()">Print KOT</button><p>Brownberries Cashier · same paper and margin settings as receipts.</p></div>
-<article class="ticket"><h1>KITCHEN ORDER TICKET</h1>
-<div class="meta"><strong>Table: {{ kot.table }} | Order: #{{ kot.order_id }}</strong><br>{{ kot.approved_at }} IST<br>Ref: {{ kot.reference }}</div>
+<article class="ticket"><h1>{{ kot.kind or 'NEW KITCHEN ORDER' }}</h1>
+<div class="meta"><strong>Table: {{ kot.table }} | Order: #{{ kot.order_id }}</strong><br>{{ kot.approved_at }} IST<br>Ref: {{ kot.reference }} · Ticket: {{ kot.sequence or '-' }}{% if kot.reason %}<br><strong>Reason: {{ kot.reason }}</strong>{% endif %}</div>
 <table><thead><tr><th>Item / variety</th><th>Count</th></tr></thead><tbody>
-{% for item in kot['items'] %}<tr><td><div class="item">{{ item.name }}</div>
+{% for item in kot['items'] %}<tr><td><div class="item">{% if item.action %}{{ item.action }}: {{ item.quantity }}<br>{% endif %}{% if item.action == 'CANCEL ITEM' %}<s>{{ item.name }}</s>{% else %}{{ item.name }}{% endif %}</div>{% if item.previous is defined %}<div><strong>{{ item.previous }} → {{ item.current }} total</strong></div>{% endif %}
 {% if item.size or item.parcel %}<div>{{ item.size }}{% if item.parcel %} · PARCEL{% endif %}</div>{% endif %}
 </td><td>{{ item.quantity }}</td></tr>{% endfor %}
 </tbody></table></article>

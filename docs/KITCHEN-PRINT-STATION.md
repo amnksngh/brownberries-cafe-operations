@@ -40,7 +40,7 @@ Unicode raster printing is not implemented in this first version.
 ```powershell
 cd C:\BrownberriesKitchen
 py -3 -m venv .venv
-& .\.venv\Scripts\python.exe -m pip install pywin32
+& .\.venv\Scripts\python.exe -m pip install pywin32 Pillow
 & .\.venv\Scripts\python.exe -c "import win32print; print([p[2] for p in win32print.EnumPrinters(6)])"
 ```
 
@@ -61,9 +61,8 @@ py -3 -m venv .venv
    Then switch to **Live**, save, and verify a supervised physical KOT using an
    explicit reprint or the next legitimate approved order. Completed test jobs
    do not print automatically when the mode changes.
-6. Keep the agent running. Unattended Windows-service installation/autostart still
-   needs packaging and testing on the new kitchen machine. This script is currently
-   a foreground agent, not an installed Windows service. Logging out stops it.
+6. For unattended operation, follow **Automatic startup** below. Otherwise keep
+   the foreground agent running.
 
 Only outbound HTTPS is needed. Do not expose the Windows printer or a local HTTP
 listener to the internet. Never put the station key in Git or a command line.
@@ -109,7 +108,92 @@ long-offline station back online. Exact-once physical printing cannot be guarant
 ## Limitations and hardware commissioning
 
 - Test the actual printer model, width, cutter, encoding and paper length.
-- Package unattended startup under the dedicated Windows account.
+- Commission the startup task under the dedicated Windows account.
 - Review manual queue cancellation and offline recovery with staff before
   enabling unattended live printing. Automatic expiry is not implemented.
 - Validate physical output and power/network interruption recovery on kitchen hardware.
+
+## Automatic startup (Windows Task Scheduler)
+
+Copy the updated `kitchen_print_agent.py` and `install_kitchen_startup.ps1`
+into `C:\BrownberriesKitchen`, beside the existing `.venv` directory.
+Stop any foreground agent first. Open PowerShell **as administrator under the
+same kitchen Windows account** that owns the printer, then run:
+
+```powershell
+cd C:\BrownberriesKitchen
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\install_kitchen_startup.ps1
+```
+
+Enter that Windows account's **password**, not its PIN. Then paste the live
+station key at the hidden prompt. Task Scheduler stores the Windows credentials;
+the station key is encrypted using Windows current-user DPAPI and bound to the
+server URL. Neither credential is placed in task arguments or logs.
+
+The task starts immediately and at every Windows startup, without requiring
+interactive sign-in. It retries network failures and restarts after process
+failure. Keep the PC awake and printer connected. Check the portal's Connected
+status and installed printer before enabling live printing. Verify again after
+a reboot while the Windows account is signed out; printer-driver availability
+in this background context must be checked on the actual kitchen machine.
+
+Logs: `%LOCALAPPDATA%\BrownberriesKitchen\agent.log` (rotating, up to four 1MB files).
+Task Scheduler task: **Brownberries Kitchen KOT**.
+
+```powershell
+Get-ScheduledTaskInfo -TaskName 'Brownberries Kitchen KOT'
+Stop-ScheduledTask -TaskName 'Brownberries Kitchen KOT'
+Start-ScheduledTask -TaskName 'Brownberries Kitchen KOT'
+```
+
+Registration is done once by an admin in the live portal. The server stores only
+a hash, so it cannot return the original key. Subsequent boots automatically load
+the saved encrypted key; they do not register again. If the key is lost or revoked,
+an admin must replace it in the portal and rerun setup with the new key. Reselect
+and enable the printer after rotation. Never silently rotate keys on authentication
+failures. If the Windows account password changes, rerun setup to update the task.
+Uninstall with `Unregister-ScheduledTask -TaskName 'Brownberries Kitchen KOT'`;
+this does not delete the print journal or saved credential.
+
+## Approved-order changes and kitchen acknowledgement
+
+Use Cashier Desk > Edit Order. Enter a reason, adjust quantities or uncheck items,
+then save. Cancelled rows remain in the database with their original quantities;
+an audit record stores before/after snapshots and the acting staff account (or
+an authorized reception kiosk context). A stale form must be refreshed before saving.
+
+- An increase prints ADD with the increment, previous quantity and new total.
+- A decrease prints REDUCE BY; removal prints CANCEL ITEM.
+- Removing all kitchen items prints CANCEL KITCHEN ORDER.
+- Water, barista items, plain ice cream, and operational items explicitly classified
+  Purchased–Resale / Direct resale produce no kitchen ticket. A prepared dessert
+  must retain its preparation classification if the kitchen needs a ticket.
+- When every prior ticket is known to be unclaimed, queued tickets are superseded
+  and replaced by the full revised kitchen list. Otherwise deltas are queued in
+  order after earlier tickets. Historical ticket snapshots are never overwritten.
+- Change jobs are queued automatically when the station is enabled. They also
+  remain visible on Kitchen Display > Kitchen changes awaiting acknowledgement
+  for browser printing if the station is unavailable or disabled.
+- Kitchen staff must explicitly acknowledge the change after adjusting preparation.
+  Windows spool completion does not acknowledge it. This records receipt of the
+  instruction; it cannot prove the physical preparation was stopped.
+- The generic kitchen status endpoint no longer silently cancels or revives orders;
+  use Cashier Desk cancellation so the reason and change ticket are retained.
+
+### Upgrade order and physical print test
+
+Install the updated agent on the kitchen PC before using approved-order edits.
+Stop its scheduled task, replace `kitchen_print_agent.py` without deleting the
+journal/key, and start the task again. The updated agent advertises protocol 2;
+an older agent holds change tickets unclaimed rather than printing ambiguous
+quantities. No station-key rotation is needed for this update.
+
+The RAW ESC/POS layout resets Font A, uses bold/double-height emphasis (not
+sideways printing), explicit 32-dot line spacing and 24-dot side insets on a
+576-dot head. The resulting 528-dot printable width allows 44 Font A columns.
+These settings assume an 80mm, 203dpi ESC/POS printer. Test a long item name,
+variety, parcel flag, ADD, REDUCE and CANCEL on the actual hardware before rollout.
+The cutter feeds only two final lines; the printer's physical cutter offset may
+still require paper. Browser print settings do not affect these RAW jobs.
+
+Cancelled item names are struck through using ESC/POS raster text. Install Pillow in the agent environment before using cancellation tickets. Served items show a check mark on displays; paper already printed cannot update when service status changes.

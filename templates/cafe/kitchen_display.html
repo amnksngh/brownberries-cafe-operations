@@ -5,6 +5,7 @@
 <link href="https://fonts.googleapis.com/css2?family=Kalam:wght@400;700&family=Nunito:wght@400;600;700;800&family=Patrick+Hand&family=Quicksand:wght@400;500;600;700&display=swap" rel="stylesheet" />
 {% endblock %}
 {% block content %}
+<p><a class="button-link" href="{% if kiosk_mode %}{{ url_for('kot_printing.kiosk_changes', access_key=kiosk_access_key) }}{% else %}{{ url_for('kot_printing.changes') }}{% endif %}">Kitchen changes awaiting acknowledgement ({{ kot_pending_changes() }})</a></p>
 {% set display_title = station_name ~ " Display" %}
 <section class="panel kds-shell">
   <div class="kds-header">

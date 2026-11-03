@@ -4279,13 +4279,23 @@ def approve_order(order_id):
 def _include_in_kot(menu_item):
     if not menu_item:
         return True
+    if getattr(menu_item, 'id', None):
+        profile = OperationalItem.query.filter_by(menu_item_id=menu_item.id).first()
+        if profile and (profile.production_type == 'purchased_resale' or profile.production_route == 'direct_resale'):
+            return False
     if (menu_item.prep_station or '').strip().casefold() in {'barista', 'barista-counter', 'barista_counter'}:
         return False
+    if re.fullmatch(r'(?:ice[ -]?creams?|ice[ -]?cream scoops?)(?:\s*\([^)]*\))?', (menu_item.name or '').strip().casefold()):
+        return False
+    return not _is_drinking_water(menu_item)
+
+
+def _is_drinking_water(menu_item):
     # Exclude drinking water, not dishes/drinks such as watermelon juice.
     name = re.sub(r'\s+', ' ', (menu_item.name or '').strip().casefold())
-    return not re.fullmatch(
+    return bool(re.fullmatch(
         r'(?:water|drinking water|mineral water|packaged drinking water|bottled water|water bottle|पानी)'
-        r'(?:\s*\([^)]*\)|\s+\d+(?:\.\d+)?\s*(?:ml|l|litre|liter)s?)*', name)
+        r'(?:\s*\([^)]*\)|\s+\d+(?:\.\d+)?\s*(?:ml|l|litre|liter)s?)*', name))
 
 
 def _approve_order_impl(order_id: int, next_url: str = ""):
@@ -4336,7 +4346,9 @@ def _approve_order_impl(order_id: int, next_url: str = ""):
         ticket = CafeKitchenTicket(token=secrets.token_urlsafe(32), order_id=order.id,
             contents_json=json.dumps(dict(table=order.table.name if order.table else 'Delivery',
                 order_id=_format_pickup_number(order), reference=order.display_code or str(order.id),
-                approved_at=_format_ist(datetime.utcnow(), '%d %b %Y, %I:%M %p'), items=kot_lines)))
+                approved_at=_format_ist(datetime.utcnow(), '%d %b %Y, %I:%M %p'),
+                kind='ADD ITEMS' if CafeKitchenTicket.query.filter_by(order_id=order.id).first() else 'NEW KITCHEN ORDER',
+                sequence=CafeKitchenTicket.query.filter_by(order_id=order.id).count()+1, items=kot_lines)))
         db.session.add(ticket)
     db.session.commit()
     payload = _serialize_order(order)
@@ -4367,6 +4379,9 @@ def _approve_order_impl(order_id: int, next_url: str = ""):
 def kitchen_ticket(token):
     from .models import CafeKitchenTicket
     ticket = CafeKitchenTicket.query.filter_by(token=token).first_or_404()
+    from .kot_printing import KotPrintJob
+    if KotPrintJob.query.filter_by(ticket_id=ticket.id, status='superseded').first():
+        return Response('This ticket was superseded. Use the latest kitchen ticket.', status=409)
     response = current_app.make_response(render_template('cafe/kot.html', kot=json.loads(ticket.contents_json)))
     response.headers['Cache-Control'] = 'no-store'
     response.headers['Referrer-Policy'] = 'no-referrer'
@@ -5129,6 +5144,62 @@ def reception_kiosk_manifest(access_key):
     )
 
 
+
+def _rating_card_items(orders):
+    stations = {row.slug for row in Workstation.query.all()}
+    unique = {}
+    for order in orders:
+        for line in order.order_items:
+            item = line.menu_item
+            if (not item or line.approval_status != 'approved' or
+                    int(line.quantity or 0) <= 0 or _is_drinking_water(item) or
+                    (item.prep_station or '').strip() not in stations):
+                continue
+            if item.id in unique or not _ticket_responsibility_summary(line).get('primary'):
+                continue
+            unique[item.id] = dict(id=item.id, name=item.name)
+    return list(unique.values())
+
+
+@bp.route('/feedback-card/<int:order_id>')
+@roles_required('owner', 'admin', 'manager', 'cashier')
+def feedback_card(order_id):
+    return _render_rating_card(order_id)
+
+
+@bp.route('/reception/<string:access_key>/feedback-card/<int:order_id>')
+def reception_feedback_card(access_key, order_id):
+    if not _has_valid_reception_kiosk_access(access_key):
+        return Response('Invalid reception kiosk access key.', status=403)
+    return _render_rating_card(order_id)
+
+
+def _render_rating_card(order_id):
+    order = CafeOrder.query.get_or_404(order_id)
+    if order.status == 'cancelled':
+        return Response('Cancelled orders have no feedback card.', status=409)
+    if order.status == 'paid':
+        orders = _receipt_orders_for_settlement(order)
+    elif request.args.get('scope') == 'table':
+        day_start, day_end = _current_ist_day_bounds()
+        if not day_start <= order.created_at < day_end:
+            return Response('This is not a current running order.', status=409)
+        orders = CafeOrder.query.options(
+            joinedload(CafeOrder.order_items).joinedload(CafeOrderItem.menu_item)
+        ).filter(CafeOrder.table_id == order.table_id,
+                 CafeOrder.status.notin_(['paid', 'cancelled']),
+                 CafeOrder.created_at >= day_start, CafeOrder.created_at < day_end
+        ).order_by(CafeOrder.created_at, CafeOrder.id).all()
+    else:
+        orders = [order]
+    return render_template('cafe/feedback_card.html',
+        table_name=order.table.name if order.table else '-',
+        order_refs=', '.join(o.display_code or str(o.id) for o in orders),
+        issued_at=_format_ist(datetime.utcnow(), '%d %b %Y, %I:%M %p'),
+        items=_rating_card_items(orders)), 200, {
+            'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer'}
+
+
 @bp.route("/receipt/<int:order_id>")
 def public_receipt(order_id):
     order = CafeOrder.query.options(
@@ -5383,39 +5454,51 @@ def edit_order_items(order_id):
 
 
 def _edit_order_items_impl(order_id: int, next_url: str = ""):
-    blocked = _cash_session_gate()
+    from .kot_printing import check_csrf, lock, edit_version, order_snapshot, kitchen_snapshot, record_order_edit
+    lock()
+    blocked = _cash_session_gate(locked=True)
     if blocked:
         return blocked
+    check_csrf()
     order = CafeOrder.query.get_or_404(order_id)
-    if order.status in ["paid", "cancelled"]:
-        flash("Paid/cancelled orders cannot be edited.", "error")
-        return redirect(next_url or url_for("cafe.cashier", table_id=order.table_id, tab="running"))
-    rows = list(order.order_items)
-    kept = 0
-    for oi in rows:
-        keep_values = request.form.getlist(f"keep_{oi.id}")
-        include_flag = "1" in keep_values
-        qty_raw = (request.form.get(f"qty_{oi.id}") or "").strip()
-        qty = int(qty_raw) if qty_raw.isdigit() else 0
-        if not include_flag or qty <= 0:
-            db.session.delete(oi)
+    destination = next_url or url_for('cafe.cashier', table_id=order.table_id, tab='running')
+    if order.status in ['paid', 'cancelled']:
+        flash('Paid/cancelled orders cannot be edited.', 'error')
+        return redirect(destination)
+    if request.form.get('edit_version') != edit_version(order):
+        flash('Order changed on another screen. Refresh and review quantities before saving.', 'error')
+        return redirect(destination)
+    reason = (request.form.get('change_reason') or '').strip()
+    if not reason or len(reason) > 500:
+        flash('Enter a reason for this order change (up to 500 characters).', 'error')
+        return redirect(destination)
+    before, kitchen_before = order_snapshot(order), kitchen_snapshot(order)
+    for oi in order.order_items:
+        if oi.approval_status == 'rejected':
             continue
-        oi.quantity = qty
-        oi.is_parcel = True if request.form.get(f"is_parcel_{oi.id}") else False
-        kept += 1
-    db.session.flush()
-    order = CafeOrder.query.options(joinedload(CafeOrder.order_items)).get(order_id)
-    if kept == 0:
-        order.status = "cancelled"
+        raw = (request.form.get(f'qty_{oi.id}') or '').strip()
+        if not raw.isdigit() or int(raw) > 999:
+            db.session.rollback()
+            flash('Quantities must be whole numbers from 0 to 999.', 'error')
+            return redirect(destination)
+        qty = int(raw)
+        if '1' not in request.form.getlist(f'keep_{oi.id}') or qty == 0:
+            oi.approval_status = 'rejected'  # Preserve original quantity and audit history.
+        else:
+            oi.quantity = qty
+            oi.is_parcel = bool(request.form.get(f'is_parcel_{oi.id}'))
+    if all(x.approval_status == 'rejected' for x in order.order_items):
+        order.status = 'cancelled'
     else:
         _refresh_order_status_from_items(order)
     _recalculate_order_totals(order)
+    ticket = record_order_edit(order, before, kitchen_before, reason)
     db.session.commit()
     payload = _serialize_order(order)
-    socketio.emit("order_updated", payload, namespace="/kitchen")
-    socketio.emit("order_updated", payload, namespace="/table")
-    flash("Order updated.", "success")
-    return redirect(next_url or url_for("cafe.cashier", table_id=order.table_id, tab="running"))
+    socketio.emit('order_updated', payload, namespace='/kitchen')
+    socketio.emit('order_updated', payload, namespace='/table')
+    flash('Order updated. Kitchen change requires acknowledgement.' if ticket else 'Order updated.', 'success')
+    return redirect(destination)
 
 
 @bp.route("/table-order", methods=["POST"])
@@ -6137,6 +6220,9 @@ def update_order_status(order_id):
 def _update_order_status_impl(order_id: int, next_url: str = ""):
     order = CafeOrder.query.get_or_404(order_id)
     new_status = request.form["status"]
+    if new_status == 'cancelled' or order.status == 'cancelled':
+        flash('Use Cashier Desk > Edit Order to cancel items with a reason and kitchen notification. Cancelled orders cannot be reopened.', 'error')
+        return redirect(next_url or url_for('cafe.kitchen_display'))
     if new_status not in ["open", "preparing", "ready", "served", "cancelled", "paid"]:
         flash("Invalid status.", "error")
         return redirect(next_url or url_for("cafe.kitchen_display"))

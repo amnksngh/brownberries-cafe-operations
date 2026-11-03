@@ -3194,11 +3194,8 @@ th {
   color: var(--muted);
 }
 
-.kds-item-shell.item-served .kds-item-main strong {
-  text-decoration: line-through;
-  text-decoration-thickness: 2px;
-  text-decoration-color: #6e5e52;
-}
+.kds-item-shell.item-served .kds-item-main strong { text-decoration: none; }
+.kds-item-shell.item-served .kds-item-main strong::before { content: '\2713  '; color: #167442; font-weight: 800; }
 
 .kds-item-side {
   width: 100%;
@@ -4255,11 +4252,8 @@ body.cashier-shell.cashier-tablet-portrait .cashier-selected-sections {
   margin-bottom: 0.32rem;
 }
 
-.cashier-item-line.served > :first-child {
-  text-decoration: line-through;
-  text-decoration-thickness: 2px;
-  text-decoration-color: #6e5e52;
-}
+.cashier-item-line.served > :first-child { text-decoration: none; }
+.cashier-item-line.served > :first-child::before { content: '\2713  '; color: #167442; font-weight: 800; }
 
 .cashier-item-line.rejected > :first-child {
   text-decoration: line-through;
@@ -6656,3 +6650,5 @@ code,
     gap: 4px;
   }
 }
+
+.cashier-item-line.rejected > :first-child::before { content: ""; }

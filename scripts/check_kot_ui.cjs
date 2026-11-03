@@ -36,7 +36,7 @@ finally:t.tearDown()
   await page.setContent(fixture.html);
   await page.emulateMedia({media:'print'});
   await page.evaluate(()=>window.dispatchEvent(new Event('beforeprint')));
-  assert(await page.getByText('KITCHEN ORDER TICKET',{exact:true}).isVisible());
+  assert(await page.getByText('NEW KITCHEN ORDER',{exact:true}).isVisible());
   const size=await page.locator('.ticket').evaluate(e=>({width:e.clientWidth,scroll:e.scrollWidth}));
   assert(size.scroll<=size.width);
   assert(fixture.html.includes('@page{size:portrait;margin:0}'));

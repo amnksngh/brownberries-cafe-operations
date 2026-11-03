@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 from flask import Blueprint, abort, g, jsonify, redirect, render_template, request, session, url_for, flash
 from .extensions import db
 from .models import TimestampMixin, CafeKitchenTicket
-from .auth_helpers import login_required
+from .auth_helpers import login_required, roles_required
 
 
 class KotPrintStation(TimestampMixin, db.Model):
@@ -42,6 +42,93 @@ class KotPrintAudit(TimestampMixin, db.Model):
     detail = db.Column(db.String(1000), nullable=False)
 
 
+class KotOrderEdit(TimestampMixin, db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    order_id = db.Column(db.Integer, db.ForeignKey('cafe_order.id'), nullable=False)
+    ticket_id = db.Column(db.Integer, db.ForeignKey('cafe_kitchen_ticket.id'))
+    actor_id = db.Column(db.Integer, db.ForeignKey('user.id'))
+    reason = db.Column(db.String(500), nullable=False)
+    before_json = db.Column(db.Text, nullable=False)
+    after_json = db.Column(db.Text, nullable=False)
+    acknowledged_at = db.Column(db.DateTime)
+    acknowledged_by = db.Column(db.Integer, db.ForeignKey('user.id'))
+
+
+def order_snapshot(order):
+    return [dict(id=x.id, menu_id=x.menu_item_id,
+                 name=x.menu_item.name if x.menu_item else 'Item', size=x.size_label or '',
+                 parcel=bool(x.is_parcel), quantity=x.quantity, approval=x.approval_status)
+            for x in sorted(order.order_items, key=lambda x: x.id)]
+
+
+def pending_changes():
+    superseded = db.session.query(KotPrintJob.ticket_id).filter(KotPrintJob.status == 'superseded')
+    return KotOrderEdit.query.filter(KotOrderEdit.ticket_id.isnot(None),
+        KotOrderEdit.acknowledged_at.is_(None), ~KotOrderEdit.ticket_id.in_(superseded))
+
+
+def edit_version(order):
+    return hashlib.sha256(json.dumps(order_snapshot(order), sort_keys=True).encode()).hexdigest()
+
+
+def kitchen_snapshot(order):
+    from .cafe import _include_in_kot
+    return [dict(id=x.id, name=x.menu_item.name if x.menu_item else 'Item',
+                 size=x.size_label or '', parcel=bool(x.is_parcel), quantity=x.quantity)
+            for x in order.order_items
+            if x.approval_status == 'approved' and x.quantity > 0 and _include_in_kot(x.menu_item)]
+
+
+def record_order_edit(order, before, kitchen_before, reason):
+    """Called inside the order-edit transaction; never commits independently."""
+    from .cafe import _format_pickup_number, _format_ist
+    after = order_snapshot(order)
+    if before == after:
+        return None
+    record = KotOrderEdit(order_id=order.id, actor_id=g.current_user.id if g.current_user else None,
+        reason=reason, before_json=json.dumps(before), after_json=json.dumps(after))
+    db.session.add(record)
+    kitchen_after = kitchen_snapshot(order)
+    def index(rows):
+        return {(x['id'], x['size'], x['parcel']): x for x in rows}
+    old, new = index(kitchen_before), index(kitchen_after)
+    lines = []
+    for key in dict.fromkeys([*old, *new]):
+        previous = old.get(key, {}).get('quantity', 0)
+        current = new.get(key, {}).get('quantity', 0)
+        if previous == current:
+            continue
+        row = dict(new.get(key) or old[key])
+        row.update(previous=previous, current=current, quantity=abs(current-previous),
+                   action='ADD' if current > previous else ('CANCEL ITEM' if current == 0 else 'REDUCE BY'))
+        lines.append(row)
+    if not lines:
+        return None
+    previous_tickets = CafeKitchenTicket.query.filter_by(order_id=order.id).order_by(CafeKitchenTicket.id).all()
+    jobs = KotPrintJob.query.filter(KotPrintJob.ticket_id.in_([t.id for t in previous_tickets])).all() if previous_tickets else []
+    # Only replace when every prior ticket is positively known to be unclaimed.
+    queued_only = bool(jobs) and all(j.status in {'queued','superseded'} for j in jobs) and all(any(j.ticket_id == t.id for j in jobs) for t in previous_tickets)
+    kind = 'CANCEL KITCHEN ORDER' if kitchen_before and not kitchen_after else 'ORDER CHANGE'
+    if queued_only:
+        for job in jobs:
+            if job.status == 'queued':
+                job.status, job.detail = 'superseded', 'Replaced before kitchen claim by an audited order edit.'
+        if kitchen_after:
+            kind = 'REVISED ORDER - REPLACES QUEUED'
+            lines = [dict(x, action='PREPARE', current=x['quantity']) for x in kitchen_after]
+    ticket = CafeKitchenTicket(token=secrets.token_urlsafe(32), order_id=order.id,
+        contents_json=json.dumps(dict(table=order.table.name if order.table else 'Delivery',
+            order_id=_format_pickup_number(order), reference=order.display_code or str(order.id),
+            approved_at=_format_ist(datetime.utcnow(), '%d %b %Y, %I:%M %p'),
+            kind=kind, sequence=len(previous_tickets)+1, reason=reason, protocol=2, items=lines)))
+    db.session.add(ticket); db.session.flush()
+    record.ticket_id = ticket.id
+    station = db.session.get(KotPrintStation, 1)
+    if station and station.enabled and station.printer:
+        db.session.add(KotPrintJob(ticket_id=ticket.id, station_id=station.id))
+    return ticket
+
+
 bp = Blueprint('kot_printing', __name__)
 
 
@@ -71,7 +158,7 @@ def agent():
 
 @bp.app_context_processor
 def context():
-    return dict(kot_remote_enabled=lambda: bool((s := db.session.get(KotPrintStation, 1)) and s.enabled), kot_print_csrf=csrf)
+    return dict(kot_remote_enabled=lambda: bool((s := db.session.get(KotPrintStation, 1)) and s.enabled), kot_print_csrf=csrf, kot_edit_version=edit_version, kot_pending_changes=lambda: pending_changes().count())
 
 
 @bp.route('/cafe/kot-print/jobs/<token>', methods=['POST'])
@@ -108,6 +195,9 @@ def poll():
     if station.enabled and station.printer in printers:
         job = KotPrintJob.query.filter_by(station_id=station.id, status='queued').order_by(KotPrintJob.id).first()
     response = dict(job=None)
+    if job and json.loads(db.session.get(CafeKitchenTicket, job.ticket_id).contents_json).get('protocol', 1) > (2 if data.get('protocol') == 2 else 1):
+        db.session.commit()
+        return jsonify(job=None, upgrade_required=True)
     if job:
         job.status, job.claimed_at, job.claim_key = 'claimed', datetime.utcnow(), secrets.token_urlsafe(32)
         job.printer, job.test_mode = station.printer, station.test_mode
@@ -184,7 +274,7 @@ def settings():
                 if not job or not reason or len(reason) > 200:
                     raise ValueError('Select a job and supply a reason (up to 200 characters).')
                 latest = KotPrintJob.query.filter_by(ticket_id=job.ticket_id).order_by(KotPrintJob.attempt.desc()).first()
-                if latest.id != job.id or job.status == 'queued' or (job.status == 'claimed' and job.claimed_at > datetime.utcnow()-timedelta(minutes=2)):
+                if latest.id != job.id or job.status in {'queued', 'superseded'} or (job.status == 'claimed' and job.claimed_at > datetime.utcnow()-timedelta(minutes=2)):
                     raise ValueError('A newer or pending attempt exists. Wait and check the printer first.')
                 db.session.add(KotPrintJob(ticket_id=job.ticket_id, station_id=1, attempt=job.attempt+1))
                 action = f'reprint job {job.id}'
@@ -205,3 +295,37 @@ def settings():
         pairing_key=session.pop('kot_new_station_key', None), csrf=csrf(),
         jobs=KotPrintJob.query.order_by(KotPrintJob.id.desc()).limit(100).all())
     return response, 200, {'Cache-Control':'no-store', 'Referrer-Policy':'no-referrer'}
+
+
+@bp.route('/cafe/kot-changes', methods=['GET', 'POST'])
+@roles_required('owner', 'admin', 'manager', 'cashier', 'chef', 'barista', 'staff')
+def changes():
+    return changes_view()
+
+
+@bp.route('/cafe/display/<access_key>/kot-changes', methods=['GET', 'POST'])
+def kiosk_changes(access_key):
+    from .cafe import _has_valid_kiosk_access
+    if not _has_valid_kiosk_access(access_key):
+        abort(403)
+    return changes_view()
+
+
+def changes_view():
+    if request.method == 'POST':
+        check_csrf(); lock()
+        row = db.session.get(KotOrderEdit, request.form.get('edit_id', type=int))
+        if not row or not row.ticket_id:
+            abort(404)
+        if KotPrintJob.query.filter_by(ticket_id=row.ticket_id, status='superseded').first():
+            abort(409)
+        if not row.acknowledged_at:
+            row.acknowledged_at = datetime.utcnow()
+            row.acknowledged_by = g.current_user.id if g.current_user else None
+            db.session.add(KotPrintAudit(actor_id=row.acknowledged_by, action='kitchen_acknowledgement',
+                detail=f'Order edit {row.id} acknowledged via ' + ('staff account' if row.acknowledged_by else 'authorized kitchen display')))
+            db.session.commit()
+        return redirect(request.path)
+    rows = pending_changes().order_by(KotOrderEdit.id).all()
+    cards = [(r, json.loads(db.session.get(CafeKitchenTicket, r.ticket_id).contents_json), db.session.get(CafeKitchenTicket, r.ticket_id).token) for r in rows]
+    return render_template('cafe/kot_changes.html', cards=cards, csrf=csrf()), 200, {'Cache-Control':'no-store'}

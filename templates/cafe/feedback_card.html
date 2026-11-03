@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Brownberries Café · Feedback card</title>
+<style>
+* { box-sizing:border-box; }
+body { margin:0; background:#f4efe8; color:#23160f; font-family:Arial,sans-serif; }
+.actions { text-align:center; padding:16px; font-size:13px; }
+button { background:#65442f; color:white; border:0; border-radius:8px; padding:12px 20px; cursor:pointer; }
+.paper { width:72mm; max-width:100%; margin:0 auto 20px; padding:2mm 0; background:white; color:black; }
+header { text-align:center; border-bottom:1px solid black; padding-bottom:3mm; }
+.logo { display:block; width:22mm; height:22mm; object-fit:contain; margin:0 auto 1mm; }
+h1 { font-size:18px; margin:0; } h2 { font-size:13px; margin:2mm 0 1mm; letter-spacing:1px; text-transform:uppercase; }
+p { font-size:11px; line-height:1.4; margin:1mm 0; }
+.meta { font-size:10px; padding:2mm 0; border-bottom:1px dashed black; overflow-wrap:anywhere; }
+table { width:100%; table-layout:fixed; border-collapse:collapse; margin:2mm 0; }
+col.item { width:50%; } col.rating { width:10%; }
+th { font-size:10px; padding:2mm 0; text-align:center; border-bottom:1px solid black; }
+th:first-child { text-align:left; }
+td { padding:2.5mm 0; text-align:center; border-bottom:1px dotted #777; vertical-align:middle; }
+td:first-child { text-align:left; font-size:11px; line-height:1.35; padding-right:2mm; overflow-wrap:anywhere; }
+.circle { display:inline-block; width:3.5mm; height:3.5mm; border:1px solid black; border-radius:50%; }
+.comments { break-inside:avoid; margin-top:3mm; }
+.comments h3 { font-size:11px; margin:0 0 2mm; }
+.comment-box { height:22mm; border:1px solid black; border-radius:2mm; }
+footer { text-align:center; border-top:1px solid black; margin-top:3mm; padding-top:2mm; }
+tr, header, footer { break-inside:avoid; }
+@media print {
+ @page { margin:0; }
+ body { background:white; }
+ .actions { display:none; }
+ .paper { margin:0 auto; max-width:none; }
+}
+</style>
+<style id="feedback-page-size"></style>
+</head>
+<body>
+<div class="actions">
+{% if items %}<button type="button" onclick="printCard()">Print feedback card</button>
+<p>Select the same 80 mm printer used for receipts. Margins: None; headers/footers: Off.</p>{% endif %}
+</div>
+<article class="paper">
+<header>
+<img class="logo" src="{{ url_for('static', filename='images/cafe-logo.png') }}" alt="Brownberries Café logo" width="84" height="84">
+<h1>Brownberries Café</h1><h2>A little taste of feedback</h2>
+<p>Your thoughts help us serve you better.</p>
+</header>
+<div class="meta"><strong>Table {{ table_name }}</strong> · {{ issued_at }} IST<br><strong>Order IDs:</strong> {{ order_refs }}</div>
+{% if items %}
+<p style="margin-top:2mm">Please fill one circle for each item.<br>1 = Poor &nbsp; · &nbsp; 5 = Excellent</p>
+<table aria-label="Item star ratings">
+<colgroup><col class="item">{% for star in range(1,6) %}<col class="rating">{% endfor %}</colgroup>
+<thead><tr><th>How was it?</th>{% for star in range(1,6) %}<th>{{ star }}★</th>{% endfor %}</tr></thead>
+<tbody>{% for item in items %}<tr><td>{{ item.name }}</td>{% for star in range(1,6) %}<td><span class="circle" aria-label="{{ star }} stars"></span></td>{% endfor %}</tr>{% endfor %}</tbody>
+</table>
+<section class="comments"><h3>Anything else you’d like to tell us?</h3><div class="comment-box"></div></section>
+<footer><p><strong>Thank you for being our guest!</strong><br>Please hand this card to our team.</p></footer>
+{% else %}<p style="padding:5mm 0">No eligible items to rate. Items must be approved and have both a workstation and a primary responsible person. Water is excluded.</p>{% endif %}
+</article>
+<script>
+function sizeCard() {
+ const height = Math.ceil(document.querySelector('.paper').getBoundingClientRect().height * 25.4 / 96) + 2;
+ document.getElementById('feedback-page-size').textContent = `@page { size: 80mm ${Math.max(81,height)}mm; margin: 0; }`;
+}
+async function printCard() {
+ await document.fonts.ready;
+ await Promise.all(Array.from(document.images).map(img => img.decode().catch(() => {})));
+ sizeCard(); window.print();
+}
+window.addEventListener('beforeprint', sizeCard);
+window.addEventListener('load', sizeCard);
+</script>
+</body></html>

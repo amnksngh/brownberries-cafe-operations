@@ -1,0 +1,10 @@
+{% extends 'base.html' %}
+{% block content %}
+<section class="panel"><h2>Kitchen order changes</h2><p>Review every change. Acknowledge only after the kitchen has adjusted preparation. Printing alone does not acknowledge a change.</p>
+{% for row, ticket, token in cards %}
+<article class="panel"><h3>{{ ticket.kind }} — Table {{ ticket.table }} / Order {{ ticket.order_id }}</h3><p>Ticket {{ ticket.sequence }} · {{ ticket.approved_at }} IST</p><p>Reason: {{ row.reason }}</p>
+<ul>{% for item in ticket['items'] %}<li><strong>{{ item.action }} {{ item.quantity }}</strong> × {% if item.action == 'CANCEL ITEM' %}<s>{{ item.name }}</s>{% else %}{{ item.name }}{% endif %} {{ item.size }}{% if item.parcel %} · PARCEL{% endif %}{% if item.previous is defined %} — {{ item.previous }} → {{ item.current }} total{% endif %}</li>{% endfor %}</ul>
+<a href="{{ url_for('cafe.kitchen_ticket', token=token) }}" target="_blank" rel="noopener">View / print ticket</a>
+<form method="post"><input type="hidden" name="csrf_token" value="{{ csrf }}"><input type="hidden" name="edit_id" value="{{ row.id }}"><button type="submit">Kitchen has received and actioned this change</button></form></article>
+{% else %}<p>No changes awaiting acknowledgement.</p>{% endfor %}</section>
+{% endblock %}
