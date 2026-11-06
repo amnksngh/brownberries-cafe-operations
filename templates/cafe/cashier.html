@@ -170,27 +170,7 @@
             {% else %}
             <div class="muted">Ready for table settlement below.</div>
             {% endif %}
-            <details style="margin-top:0.4rem;">
-              <summary>Edit Order</summary>
-              <form method="post" action="{% if kiosk_mode %}{{ url_for('cafe.reception_kiosk_edit_order_items', access_key=kiosk_access_key, order_id=order.id) }}{% else %}{{ url_for('cafe.edit_order_items', order_id=order.id) }}{% endif %}" class="grid">
-                <input type="hidden" name="next" value="{{ current_cashier_url }}" />
-                {% for oi in order.order_items %}
-                {% if (oi.approval_status or "pending") != "rejected" %}
-                <input type="hidden" name="keep_{{ oi.id }}" value="0" />
-                <label>
-                  <input type="checkbox" name="keep_{{ oi.id }}" value="1" checked />
-                  {{ oi.menu_item.name }}{% if oi.size_label %} ({{ oi.size_label }}){% endif %}{% if oi.is_parcel %} (Parcel){% endif %}
-                </label>
-                <label>Qty <input type="number" min="1" name="qty_{{ oi.id }}" value="{{ oi.quantity }}" /></label>
-                <label><input type="checkbox" name="is_parcel_{{ oi.id }}" {% if oi.is_parcel %}checked{% endif %} /> Parcel</label>
-                {% endif %}
-                {% endfor %}
-                <input type="hidden" name="csrf_token" value="{{ kot_print_csrf() }}">
-                <input type="hidden" name="edit_version" value="{{ kot_edit_version(order) }}">
-                <label>Reason for change <input name="change_reason" maxlength="500" required placeholder="Customer changed quantity / cancelled item"></label>
-                <button type="submit">Save Edit</button>
-              </form>
-            </details>
+            {% include 'cafe/order_edit_form.html' %}
           </td>
         </tr>
         {% else %}

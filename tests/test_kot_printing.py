@@ -51,6 +51,9 @@ class KitchenPrintQueueTests(KitchenTicketTests):
             self.assertEqual(KotPrintJob.query.one().status, 'test_complete')
 
     def test_csrf_missing_and_disabled_queue(self):
+        with self.app.app_context():
+            db.session.get(KotPrintStation, 1).enabled = False
+            db.session.commit()
         token = self.ticket()
         self.assertEqual(self.client.post('/cafe/kot-print/jobs/'+token).status_code, 400)
         with self.app.app_context():
@@ -104,3 +107,14 @@ class KitchenPrintQueueTests(KitchenTicketTests):
         self.assertIn(b'REPRINT', payload)
         self.assertNotIn(b'Coffee\x1b', payload)
         self.assertLess(len(payload), 1000)
+
+    def test_approval_automatically_queues_without_print_flag(self):
+        response = self.client.post(f'/cafe/orders/{self.oid}/approve', data={
+            'pending_item_ids': [str(i) for i in self.ids], 'decision': 'approve'})
+        self.assertNotIn('print_kot=', response.location)
+        with self.app.app_context():
+            self.assertEqual(KotPrintJob.query.count(), 1)
+        self.approve(self.ids)
+        with self.app.app_context():
+            self.assertEqual(KotPrintJob.query.count(), 1)
+        self.assertIsNotNone(self.poll().json['job'])

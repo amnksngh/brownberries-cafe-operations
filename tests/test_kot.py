@@ -41,7 +41,10 @@ class KitchenTicketTests(unittest.TestCase):
 
     def test_partial_approval_snapshot_and_repeat(self):
         response=self.approve(self.ids[:1])
-        self.assertIn('print_kot=',response.location)
+        from app.kot_printing import KotPrintJob
+        with self.app.app_context():
+            auto_queued = KotPrintJob.query.count() > 0
+        self.assertEqual('print_kot=' in response.location, not auto_queued)
         with self.app.app_context():
             ticket=CafeKitchenTicket.query.one();token=ticket.token
             data=json.loads(ticket.contents_json)

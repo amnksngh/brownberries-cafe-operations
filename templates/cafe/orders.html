@@ -203,6 +203,11 @@
         {% else %}
         -
         {% endif %}
+        {% if user_has_any_role(g.current_user, "admin", "manager", "cashier", "librarian", "staff") and order.status not in ['paid', 'cancelled'] %}
+          {% with current_cashier_url=request.url %}
+            {% include 'cafe/order_edit_form.html' %}
+          {% endwith %}
+        {% endif %}
       </td>
     </tr>
     {% else %}

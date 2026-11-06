@@ -4341,6 +4341,7 @@ def _approve_order_impl(order_id: int, next_url: str = ""):
     _recalculate_order_totals(order)
     _refresh_order_status_from_items(order)
     ticket = None
+    kot_auto_queued = False
     if kot_lines:
         from .models import CafeKitchenTicket
         ticket = CafeKitchenTicket(token=secrets.token_urlsafe(32), order_id=order.id,
@@ -4350,6 +4351,12 @@ def _approve_order_impl(order_id: int, next_url: str = ""):
                 kind='ADD ITEMS' if CafeKitchenTicket.query.filter_by(order_id=order.id).first() else 'NEW KITCHEN ORDER',
                 sequence=CafeKitchenTicket.query.filter_by(order_id=order.id).count()+1, items=kot_lines)))
         db.session.add(ticket)
+        from .kot_printing import KotPrintStation, KotPrintJob
+        station = db.session.get(KotPrintStation, 1)
+        if station and station.enabled and station.printer:
+            db.session.flush()
+            db.session.add(KotPrintJob(ticket_id=ticket.id, station_id=station.id))
+            kot_auto_queued = True
     db.session.commit()
     payload = _serialize_order(order)
     socketio.emit("order_updated", payload, namespace="/kitchen")
@@ -4366,7 +4373,9 @@ def _approve_order_impl(order_id: int, next_url: str = ""):
         },
     )
     flash(f"Order #{_format_pickup_number(order)}: selected items {decision}d.", "success")
-    if ticket and request.form.get('print_kot') == '1':
+    if kot_auto_queued:
+        flash('KOT queued automatically for the kitchen printer.', 'success')
+    if ticket and not kot_auto_queued and request.form.get('print_kot') == '1':
         access_key = (request.view_args or {}).get('access_key')
         destination = url_for('cafe.reception_kiosk', access_key=access_key, table_id=order.table_id,
                               print_kot=ticket.token) if access_key else url_for(
@@ -5447,7 +5456,7 @@ def _send_order_receipt_sms_impl(order_id: int):
 
 
 @bp.route("/orders/<int:order_id>/edit-items", methods=["POST"])
-@roles_required("admin", "manager", "cashier")
+@roles_required("admin", "manager", "cashier", "librarian", "staff")
 def edit_order_items(order_id):
     next_url = request.form.get("next", "").strip() or request.args.get("next", "").strip()
     return _edit_order_items_impl(order_id, next_url)
@@ -5468,9 +5477,11 @@ def _edit_order_items_impl(order_id: int, next_url: str = ""):
     if request.form.get('edit_version') != edit_version(order):
         flash('Order changed on another screen. Refresh and review quantities before saving.', 'error')
         return redirect(destination)
-    reason = (request.form.get('change_reason') or '').strip()
+    from .kot_printing import ORDER_CHANGE_REASONS
+    reason_code = request.form.get('change_reason_code')
+    reason = dict(ORDER_CHANGE_REASONS).get(reason_code, '') if reason_code is not None else (request.form.get('change_reason') or '').strip()
     if not reason or len(reason) > 500:
-        flash('Enter a reason for this order change (up to 500 characters).', 'error')
+        flash('Select a valid reason for this order change.', 'error')
         return redirect(destination)
     before, kitchen_before = order_snapshot(order), kitchen_snapshot(order)
     for oi in order.order_items:
@@ -5482,6 +5493,12 @@ def _edit_order_items_impl(order_id: int, next_url: str = ""):
             flash('Quantities must be whole numbers from 0 to 999.', 'error')
             return redirect(destination)
         qty = int(raw)
+        changed = (qty != oi.quantity or '1' not in request.form.getlist(f'keep_{oi.id}')
+                   or bool(request.form.get(f'is_parcel_{oi.id}')) != bool(oi.is_parcel))
+        if changed and reason_code == 'change_before_preparation' and oi.approval_status == 'approved' and oi.prep_status not in (None, 'pending', 'queued'):
+            db.session.rollback()
+            flash('Preparation has started for a changed item. Review the change and choose the appropriate reason.', 'error')
+            return redirect(destination)
         if '1' not in request.form.getlist(f'keep_{oi.id}') or qty == 0:
             oi.approval_status = 'rejected'  # Preserve original quantity and audit history.
         else:

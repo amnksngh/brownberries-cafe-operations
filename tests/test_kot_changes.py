@@ -94,3 +94,40 @@ class KotChangesTests(KitchenPrintQueueTests):
             self.assertEqual(pending_changes().count(),1)
         self.assertEqual(self.client.post('/cafe/kot-changes',data={'csrf_token':'csrf-test','edit_id':old_id}).status_code,409)
         self.assertEqual(sum(i['quantity'] for i in self.latest()['items']),4)
+
+    def test_staff_table_order_approval_edit_and_cashier_sync(self):
+        from app.models import User
+        with self.app.app_context():
+            db.session.get(User,self.uid).role='staff'
+            table_id=db.session.get(CafeOrder,self.oid).table_id
+            db.session.commit()
+        page=self.client.get(f'/cafe/orders?table_id={table_id}')
+        self.assertEqual(page.status_code,200)
+        self.assertIn(f'/cafe/orders/{self.oid}/edit-items'.encode(),page.data)
+        self.assertIn(b'change_reason',page.data)
+        self.approve(self.ids)
+        with self.app.app_context():self.assertEqual(KotPrintJob.query.count(),1)
+        self.poll()
+        self.edit(self.form({self.ids[0]:3}))
+        with self.app.app_context():
+            self.assertEqual(db.session.get(CafeOrderItem,self.ids[0]).quantity,3)
+            self.assertEqual(KotPrintJob.query.count(),2)
+            db.session.get(User,self.uid).role='cashier';db.session.commit()
+        page=self.client.get(f'/cafe/cashier?table_id={table_id}')
+        self.assertEqual(page.status_code,200)
+        self.assertIn(f'name="qty_{self.ids[0]}" value="3"'.encode(),page.data)
+
+    def test_dropdown_reason_validation_and_preparation_guard(self):
+        self.approve(self.ids)
+        data=self.form({self.ids[0]:3});data.pop('change_reason')
+        data['change_reason_code']='invalid'
+        self.edit(data)
+        with self.app.app_context():
+            self.assertEqual(db.session.get(CafeOrderItem,self.ids[0]).quantity,1)
+            db.session.get(CafeOrderItem,self.ids[0]).prep_status='preparing';db.session.commit()
+        data['change_reason_code']='change_before_preparation';self.edit(data)
+        with self.app.app_context():self.assertEqual(db.session.get(CafeOrderItem,self.ids[0]).quantity,1)
+        data['change_reason_code']='more';self.edit(data)
+        with self.app.app_context():
+            self.assertEqual(KotOrderEdit.query.one().reason,'Customer wants more!')
+            self.assertEqual(db.session.get(CafeOrderItem,self.ids[0]).quantity,3)

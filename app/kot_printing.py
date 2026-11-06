@@ -10,6 +10,19 @@ from .models import TimestampMixin, CafeKitchenTicket
 from .auth_helpers import login_required, roles_required
 
 
+ORDER_CHANGE_REASONS = (
+    ('water', 'More Drinking Water Needed!'),
+    ('time', 'Customer does not have enough time'),
+    ('change_before_preparation', 'Customer wants to change the order (preparation not started)'),
+    ('item_issue', 'There was some issue with the item'),
+    ('more', 'Customer wants more!'),
+    ('less', 'Customer wants less!'),
+    ('blacklisted', 'Customer is blacklisted due to prior behaviour'),
+    ('entry_error', 'Staff entered the wrong item or quantity'),
+    ('unavailable', 'Item is unavailable'),
+    ('parcel', 'Customer changed dine-in / parcel preference'),
+)
+
 class KotPrintStation(TimestampMixin, db.Model):
     id = db.Column(db.Integer, primary_key=True)
     name = db.Column(db.String(120), nullable=False)
@@ -158,7 +171,7 @@ def agent():
 
 @bp.app_context_processor
 def context():
-    return dict(kot_remote_enabled=lambda: bool((s := db.session.get(KotPrintStation, 1)) and s.enabled), kot_print_csrf=csrf, kot_edit_version=edit_version, kot_pending_changes=lambda: pending_changes().count())
+    return dict(kot_remote_enabled=lambda: bool((s := db.session.get(KotPrintStation, 1)) and s.enabled), kot_print_csrf=csrf, kot_edit_version=edit_version, order_change_reasons=ORDER_CHANGE_REASONS, kot_pending_changes=lambda: pending_changes().count())
 
 
 @bp.route('/cafe/kot-print/jobs/<token>', methods=['POST'])
