@@ -9,6 +9,7 @@ if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administra
 $python = Join-Path $PSScriptRoot '.venv\Scripts\python.exe'
 $agent = Join-Path $PSScriptRoot 'kitchen_print_agent.py'
 if (!(Test-Path -LiteralPath $python) -or !(Test-Path -LiteralPath $agent)) { throw 'Place setup and agent beside the .venv folder.' }
+if (!(Test-Path -LiteralPath (Join-Path $PSScriptRoot 'kot_windows_raster.py'))) { throw 'Copy kot_windows_raster.py beside kitchen_print_agent.py before setup.' }
 $server = [uri]$ServerUrl
 if ($server.Scheme -ne 'https' -or $server.UserInfo -or $server.Query -or $server.Fragment -or $server.AbsolutePath -ne '/') { throw 'Use the HTTPS server origin only.' }
 $ServerUrl = $server.GetLeftPart([System.UriPartial]::Authority)

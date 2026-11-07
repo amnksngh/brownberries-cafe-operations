@@ -256,6 +256,7 @@
         </label>
         <label>Image URL <input name="image_url" value="{{ add_form.image_url }}" /></label>
         <label>Upload Image <input name="image_file" type="file" accept="image/*" /></label>
+        <label>Hindi name (optional) <input name="hindi_name" maxlength="120" /></label>
         <label>Short Description <input name="short_description" maxlength="140" placeholder="One-line card text" value="{{ add_form.short_description }}" /></label>
         <label>Description <input name="description" value="{{ add_form.description }}" /></label>
         <label>Calories <input name="calories" type="number" min="0" value="{{ add_form.calories }}" /></label>
@@ -291,7 +292,7 @@
           <div class="menu-sheet-header" role="row"><div role="columnheader">Item</div><div role="columnheader">Serving Hours</div><div role="columnheader">Customer-facing</div><div role="columnheader">Menu Location</div><div role="columnheader">Type</div><div role="columnheader">Workstation</div><div role="columnheader">Responsible Staff</div><div role="columnheader">Image URL</div><div role="columnheader">Upload Image</div><div role="columnheader">Short Description</div><div role="columnheader">Description</div><div role="columnheader">Calories</div><div role="columnheader">Price (₹)</div><div role="columnheader">Multiple Sizes</div><div role="columnheader">Size Prices</div><div role="columnheader">Available</div><div role="columnheader">Special</div><div role="columnheader">Actions</div></div>
           {% for item in items %}
           <form method="post" action="{{ url_for('cafe.update_menu_item', item_id=item.id) }}" class="menu-item-edit-form menu-sheet-row" role="row" data-item-id="{{ item.id }}" enctype="multipart/form-data">
-<label>Name <input name="name" value="{{ item.name }}" required /></label>
+<label>Name <input name="name" value="{{ item.name }}" required /><span>Hindi name (optional)</span><input name="hindi_name" maxlength="120" value="{{ item.hindi_name or '' }}" /></label>
                 <label>Serving Hours
                   <select name="serving_hours" required>{% for value, label in serving_hours_options %}<option value="{{ value }}" {% if item.serving_hours == value %}selected{% endif %}>{{ label }}</option>{% endfor %}</select>
                 </label>

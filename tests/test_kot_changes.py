@@ -33,19 +33,18 @@ class KotChangesTests(KitchenPrintQueueTests):
         self.assertEqual(ticket['items'][0]['current'],3)
         self.edit(data)
         with self.app.app_context():self.assertEqual(KotOrderEdit.query.count(),1)
-        self.assertTrue(self.poll().json['upgrade_required'])
-        job=self.client.post('/api/kot-station/poll',json={'printers':['Kitchen Printer'],'protocol':2},headers={'Authorization':'Bearer agent-secret'}).json['job']
+        self.assertTrue(self.client.post('/api/kot-station/poll', json={'printers':['Kitchen Printer'],'protocol':1}, headers={'Authorization':'Bearer agent-secret'}).json['upgrade_required'])
+        job=self.client.post('/api/kot-station/poll',json={'printers':['Kitchen Printer'],'protocol':3},headers={'Authorization':'Bearer agent-secret'}).json['job']
         self.assertEqual(job['ticket']['kind'],'ORDER CHANGE')
 
-    def test_unclaimed_replaced_not_double_prepared(self):
+    def test_unclaimed_tickets_preserve_table_count_sequence(self):
         token=self.ticket();self.enqueue(token)
         self.edit(self.form({self.ids[0]:4}))
         with self.app.app_context():
-            self.assertEqual(KotPrintJob.query.order_by(KotPrintJob.id).first().status,'superseded')
-        self.assertEqual(self.client.get('/cafe/kot/'+token).status_code,409)
-        ticket=self.latest()
-        self.assertEqual(ticket['kind'],'REVISED ORDER - REPLACES QUEUED')
-        self.assertEqual(sum(i['quantity'] for i in ticket['items']),6)
+            self.assertEqual(KotPrintJob.query.order_by(KotPrintJob.id).first().status,'queued')
+        self.assertEqual(self.client.get('/cafe/kot/'+token).status_code,200)
+        item=self.latest()['table_items'][0]
+        self.assertEqual((item['previous'],item['current']),(1,4))
 
     def test_reduce_cancel_preserved_and_acknowledged(self):
         self.enqueue(self.ticket());self.poll()
@@ -83,17 +82,14 @@ class KotChangesTests(KitchenPrintQueueTests):
         self.assertIn(b'\x1d!\x01',payload)
         self.assertNotIn(b'\x1d!\x11',payload)
 
-    def test_superseded_change_not_actionable_and_latest_full_list(self):
+    def test_sequential_changes_remain_actionable(self):
         from app.kot_printing import pending_changes
         self.enqueue(self.ticket())
         self.edit(self.form({self.ids[0]:4}))
-        with self.app.app_context():
-            old_id=KotOrderEdit.query.one().id
         self.edit(self.form({self.ids[0]:2}))
-        with self.app.app_context():
-            self.assertEqual(pending_changes().count(),1)
-        self.assertEqual(self.client.post('/cafe/kot-changes',data={'csrf_token':'csrf-test','edit_id':old_id}).status_code,409)
-        self.assertEqual(sum(i['quantity'] for i in self.latest()['items']),4)
+        with self.app.app_context():self.assertEqual(pending_changes().count(),2)
+        item=self.latest()['table_items'][0]
+        self.assertEqual((item['previous'],item['current']),(4,2))
 
     def test_staff_table_order_approval_edit_and_cashier_sync(self):
         from app.models import User
@@ -131,3 +127,34 @@ class KotChangesTests(KitchenPrintQueueTests):
         with self.app.app_context():
             self.assertEqual(KotOrderEdit.query.one().reason,'Customer wants more!')
             self.assertEqual(db.session.get(CafeOrderItem,self.ids[0]).quantity,3)
+
+    def test_table_totals_across_orders_and_settlement_reset(self):
+        from app.kot_table import table_state
+        from datetime import datetime
+        with self.app.app_context():
+            item=db.session.get(MenuItem,self.mid);item.hindi_name='चाय'
+            # Same variety merges into one table total.
+            for line in CafeOrderItem.query.all():line.size_label='Regular'
+            db.session.get(CafeOrderItem,self.ids[0]).quantity=2
+            db.session.commit()
+        self.approve(self.ids[:1])
+        self.assertEqual(self.latest()['print_label'],'NEW ORDER')
+        with self.app.app_context():
+            first=db.session.get(CafeOrder,self.oid)
+            tid=first.table_id
+            second=CafeOrder(table_id=first.table_id,ordered_by_user_id=self.uid,status='pending_approval')
+            db.session.add(second);db.session.flush()
+            line=CafeOrderItem(order_id=second.id,menu_item_id=self.mid,quantity=3,unit_price=100,approval_status='pending',size_label='Regular')
+            db.session.add(line);db.session.commit();sid=second.id;lid=line.id
+        self.client.post(f'/cafe/orders/{sid}/approve',data={'pending_item_ids':[str(lid)],'decision':'approve'})
+        self.assertEqual((self.latest()['table_items'][0]['previous'],self.latest()['table_items'][0]['current']),(2,5))
+        self.edit(self.form({self.ids[0]:1}))
+        item=self.latest()['table_items'][0]
+        self.assertEqual((item['previous'],item['current']),(5,4))
+        self.assertEqual(item['hindi_name'],'चाय')
+        with self.app.app_context():
+            for order in CafeOrder.query.all():order.status='paid';order.paid_at=datetime.utcnow()
+            db.session.commit()
+            fresh=CafeOrder(table_id=tid,ordered_by_user_id=self.uid,status='pending_approval')
+            db.session.add(fresh);db.session.flush()
+            self.assertFalse(table_state(fresh)['has_ticket'])

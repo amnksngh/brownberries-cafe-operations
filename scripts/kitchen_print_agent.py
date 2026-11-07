@@ -38,7 +38,91 @@ def clean(value):
     return ''.join(c if c.isprintable() else ' ' for c in str(value))
 
 
+def compact_image(ticket, attempt=1):
+    """Windows DrawTextW shapes Hindi using the installed Devanagari font."""
+    import ctypes
+    from ctypes import wintypes
+    import win32con
+    try:
+        from kot_windows_raster import DrawingSurface
+    except ImportError:
+        from scripts.kot_windows_raster import DrawingSurface
+    from PIL import Image
+    width, margin = 576, 24
+    rows = [(ticket['print_label'], True, False)]
+    if attempt > 1:
+        rows.append(('REPRINT', True, False))
+    rows.append((f'{ticket.get("table", "")} | {ticket["print_time"]}', True, False))
+    rows.append(None)
+    for item in ticket['table_items']:
+        name = item.get('hindi_name') or item['name']
+        if item.get('size'):
+            name += ' ('+item['size']+')'
+        if item.get('parcel'):
+            name += ' (पैक)'
+        rows.append((f'{name} × {item["current"]}', False, item.get('cancelled', False)))
+        if ticket['print_label'] != 'NEW ORDER':
+            rows.append((f'पहले {item["previous"]} → अब {item["current"]}', False, False))
+    if ticket.get('reason_hindi'):
+        rows.extend([None, ('कारण: '+ticket['reason_hindi'],False,False)])
+    draw_text = ctypes.windll.user32.DrawTextW
+    draw_text.argtypes = [wintypes.HDC, wintypes.LPCWSTR, ctypes.c_int, ctypes.POINTER(wintypes.RECT), wintypes.UINT]
+    draw_text.restype = ctypes.c_int
+    dc = DrawingSurface()
+    fonts = {}
+    try:
+        for hindi in (False, True):
+            family = 'Nirmala UI' if hindi else os.environ.get('BROWNBERRIES_KOT_FONT', 'Arial')
+            fonts[hindi] = dc.font(family)
+        measured=[]
+        total=8
+        for row in rows:
+            if row is None:
+                measured.append((None,24)); total+=24; continue
+            text,centered,strike=row
+            hindi=any('\u0900' <= c <= '\u097f' for c in text)
+            dc.SelectObject(fonts[hindi])
+            rect=wintypes.RECT(margin,0,width-margin,0)
+            flags=win32con.DT_WORDBREAK | win32con.DT_NOPREFIX | (win32con.DT_CENTER if centered else win32con.DT_LEFT)
+            height=draw_text(dc.GetSafeHdc(),clean(text),-1,ctypes.byref(rect),flags|win32con.DT_CALCRECT)
+            if height <= 0:
+                raise RuntimeError('Windows could not measure the KOT text.')
+            measured.append(((clean(text),fonts[hindi],flags,strike),height+8));total+=height+8
+        dc.bitmap(width,total)
+        dc.FillSolidRect((0,0,width,total),0xffffff)
+        dc.SetTextColor(0);dc.SetBkMode(win32con.TRANSPARENT)
+        y=4
+        for row,height in measured:
+            if row is None:
+                for x in range(margin,width-margin,10):dc.FillSolidRect((x,y+10,4,1),0)
+            else:
+                text,font,flags,strike=row
+                dc.SelectObject(font)
+                rect=wintypes.RECT(margin,y,width-margin,y+height)
+                draw_text(dc.GetSafeHdc(),text,-1,ctypes.byref(rect),flags)
+                if strike:dc.FillSolidRect((margin,y+height//2,width-2*margin,2),0)
+            y+=height
+        return Image.frombytes('RGB',(width,total),dc.pixels(),'raw','BGRX').convert('1')
+    finally:
+        dc.close()
+
+
+def render_compact(ticket, attempt=1):
+    image = compact_image(ticket, attempt)
+    width,height=image.size
+    if height > 65535:
+        raise ValueError('KOT is too long for this printer.')
+    raster=bytearray()
+    for y in range(height):
+        for x in range(0,width,8):
+            raster.append(sum(1 << (7-bit) for bit in range(8) if not image.getpixel((x+bit,y))))
+    return (b'\x1b@\x1dL\x00\x00\x1dv0\x00' + (width//8).to_bytes(2,'little') +
+            height.to_bytes(2,'little') + bytes(raster) + b'\n\n\x1dV\x00')
+
+
 def render(ticket, attempt=1):
+    if ticket.get("protocol") == 3:
+        return render_compact(ticket, attempt)
     # 80mm / 203dpi head: 576 dots, 24-dot inset each side, Font A 12 dots.
     # Use explicit printer settings rather than whatever the preceding receipt left.
     out = bytearray(b'\x1b@\x1bt\x00\x1bM\x00\x1b3\x20\x1dL\x18\x00\x1dW\x10\x02')
@@ -175,7 +259,7 @@ def main():
                 conn.execute('UPDATE jobs SET ack=1 WHERE server=? AND id=?', (base,jid))
                 conn.commit()
             installed = ['SIMULATED KOT PRINTER'] if args.simulate else printers()
-            poll_result = api('/api/kot-station/poll', dict(printers=installed, protocol=2))
+            poll_result = api('/api/kot-station/poll', dict(printers=installed, protocol=3))
             if poll_result.get('upgrade_required'):
                 report('Agent upgrade required; no job claimed.')
             job = poll_result.get('job')

@@ -92,7 +92,7 @@ def kitchen_snapshot(order):
             if x.approval_status == 'approved' and x.quantity > 0 and _include_in_kot(x.menu_item)]
 
 
-def record_order_edit(order, before, kitchen_before, reason):
+def record_order_edit(order, before, kitchen_before, reason, table_before=None):
     """Called inside the order-edit transaction; never commits independently."""
     from .cafe import _format_pickup_number, _format_ist
     after = order_snapshot(order)
@@ -120,7 +120,7 @@ def record_order_edit(order, before, kitchen_before, reason):
     previous_tickets = CafeKitchenTicket.query.filter_by(order_id=order.id).order_by(CafeKitchenTicket.id).all()
     jobs = KotPrintJob.query.filter(KotPrintJob.ticket_id.in_([t.id for t in previous_tickets])).all() if previous_tickets else []
     # Only replace when every prior ticket is positively known to be unclaimed.
-    queued_only = bool(jobs) and all(j.status in {'queued','superseded'} for j in jobs) and all(any(j.ticket_id == t.id for j in jobs) for t in previous_tickets)
+    queued_only = table_before is None and bool(jobs) and all(j.status in {'queued','superseded'} for j in jobs) and all(any(j.ticket_id == t.id for j in jobs) for t in previous_tickets)
     kind = 'CANCEL KITCHEN ORDER' if kitchen_before and not kitchen_after else 'ORDER CHANGE'
     if queued_only:
         for job in jobs:
@@ -134,6 +134,11 @@ def record_order_edit(order, before, kitchen_before, reason):
             order_id=_format_pickup_number(order), reference=order.display_code or str(order.id),
             approved_at=_format_ist(datetime.utcnow(), '%d %b %Y, %I:%M %p'),
             kind=kind, sequence=len(previous_tickets)+1, reason=reason, protocol=2, items=lines)))
+    if table_before is not None:
+        from .kot_table import compact_payload
+        payload = json.loads(ticket.contents_json)
+        payload.update(compact_payload(order, table_before, reason))
+        ticket.contents_json = json.dumps(payload)
     db.session.add(ticket); db.session.flush()
     record.ticket_id = ticket.id
     station = db.session.get(KotPrintStation, 1)
@@ -208,15 +213,22 @@ def poll():
     if station.enabled and station.printer in printers:
         job = KotPrintJob.query.filter_by(station_id=station.id, status='queued').order_by(KotPrintJob.id).first()
     response = dict(job=None)
-    if job and json.loads(db.session.get(CafeKitchenTicket, job.ticket_id).contents_json).get('protocol', 1) > (2 if data.get('protocol') == 2 else 1):
-        db.session.commit()
-        return jsonify(job=None, upgrade_required=True)
     if job:
+        ticket = db.session.get(CafeKitchenTicket, job.ticket_id)
+        payload = json.loads(ticket.contents_json)
+        agent_protocol = data.get('protocol') if data.get('protocol') in (2, 3) else 1
+        required = payload.get('protocol', 1)
+        if required == 3 and agent_protocol < 3:
+            # Preserve existing English printing while the kitchen PC is upgraded.
+            required = 2 if any(x.get('action') for x in payload['items']) else 1
+            payload['protocol'] = required
+        if required > agent_protocol:
+            db.session.commit()
+            return jsonify(job=None, upgrade_required=True)
         job.status, job.claimed_at, job.claim_key = 'claimed', datetime.utcnow(), secrets.token_urlsafe(32)
         job.printer, job.test_mode = station.printer, station.test_mode
-        ticket = db.session.get(CafeKitchenTicket, job.ticket_id)
         response['job'] = dict(id=job.id, claim_key=job.claim_key, printer=job.printer,
-            test_mode=job.test_mode, attempt=job.attempt, ticket=json.loads(ticket.contents_json))
+            test_mode=job.test_mode, attempt=job.attempt, ticket=payload)
     db.session.commit()
     return jsonify(response)
 

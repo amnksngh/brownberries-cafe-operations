@@ -60,7 +60,7 @@ class KitchenTicketTests(unittest.TestCase):
         self.assertIn(b'Regular',page.data)
         self.assertNotIn(b'With Ice Cream',page.data)
         self.assertNotIn(b'Changed later',page.data)
-        self.assertIn(b'IST',page.data)
+        self.assertRegex(page.data, rb'\d{2}:\d{2}:\d{2} [AP]M')
         self.assertIn('no-store',page.headers['Cache-Control'])
         self.approve(self.ids[1:])
         with self.app.app_context():self.assertEqual(CafeKitchenTicket.query.count(),2)

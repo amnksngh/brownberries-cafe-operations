@@ -2019,6 +2019,11 @@ def _apply_menu_item_form_values(item: MenuItem, form, files, prefix: str = "") 
     description = _menu_form_value(form, "description", prefix)
     if _menu_form_has(form, "description", prefix):
         item.description = description or None
+    if _menu_form_has(form, "hindi_name", prefix):
+        hindi_name = _menu_form_value(form, "hindi_name", prefix)
+        if len(hindi_name) > 120:
+            return "Hindi name must be at most 120 characters."
+        item.hindi_name = hindi_name or None
     short_description = _menu_form_value(form, "short_description", prefix)
     if _menu_form_has(form, "short_description", prefix):
         item.short_description = short_description or None
@@ -3230,6 +3235,7 @@ def menu():
             navigation_section_id=navigation_section.id,
             name=name,
             image_url=image_url,
+            hindi_name=request.form.get("hindi_name", "").strip()[:120] or None,
             short_description=request.form.get("short_description", "").strip() or None,
             description=request.form.get("description", "").strip() or None,
             calories=int(request.form["calories"]) if request.form.get("calories") else None,
@@ -4321,6 +4327,8 @@ def _approve_order_impl(order_id: int, next_url: str = ""):
     if not selected_ids:
         flash("Select at least one pending item.", "error")
         return redirect(next_url or url_for("cafe.cashier", table_id=order.table_id))
+    from .kot_table import table_state, compact_payload
+    table_before = table_state(order)
     approved_names = []
     kot_lines = []
     rejected_names = []
@@ -4350,6 +4358,9 @@ def _approve_order_impl(order_id: int, next_url: str = ""):
                 approved_at=_format_ist(datetime.utcnow(), '%d %b %Y, %I:%M %p'),
                 kind='ADD ITEMS' if CafeKitchenTicket.query.filter_by(order_id=order.id).first() else 'NEW KITCHEN ORDER',
                 sequence=CafeKitchenTicket.query.filter_by(order_id=order.id).count()+1, items=kot_lines)))
+        payload = json.loads(ticket.contents_json)
+        payload.update(compact_payload(order, table_before))
+        ticket.contents_json = json.dumps(payload)
         db.session.add(ticket)
         from .kot_printing import KotPrintStation, KotPrintJob
         station = db.session.get(KotPrintStation, 1)
@@ -5483,6 +5494,8 @@ def _edit_order_items_impl(order_id: int, next_url: str = ""):
     if not reason or len(reason) > 500:
         flash('Select a valid reason for this order change.', 'error')
         return redirect(destination)
+    from .kot_table import table_state
+    table_before = table_state(order)
     before, kitchen_before = order_snapshot(order), kitchen_snapshot(order)
     for oi in order.order_items:
         if oi.approval_status == 'rejected':
@@ -5509,7 +5522,7 @@ def _edit_order_items_impl(order_id: int, next_url: str = ""):
     else:
         _refresh_order_status_from_items(order)
     _recalculate_order_totals(order)
-    ticket = record_order_edit(order, before, kitchen_before, reason)
+    ticket = record_order_edit(order, before, kitchen_before, reason, table_before=table_before)
     db.session.commit()
     payload = _serialize_order(order)
     socketio.emit('order_updated', payload, namespace='/kitchen')

@@ -30,7 +30,7 @@ class KitchenPrintQueueTests(KitchenTicketTests):
         return self.client.post('/cafe/kot-print/jobs/'+token, headers={'X-CSRF-Token':'csrf-test'})
 
     def poll(self, key='agent-secret'):
-        return self.client.post('/api/kot-station/poll', json={'printers':['Kitchen Printer']}, headers={'Authorization':'Bearer '+key})
+        return self.client.post('/api/kot-station/poll', json={'printers':['Kitchen Printer'], 'protocol':3}, headers={'Authorization':'Bearer '+key})
 
     def test_queue_idempotent_claim_and_ack(self):
         token = self.ticket()

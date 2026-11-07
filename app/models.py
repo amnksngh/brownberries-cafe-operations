@@ -192,6 +192,7 @@ class MenuItem(TimestampMixin, db.Model):
     customer_visible = db.Column(db.Boolean, nullable=True)
     navigation_section_id = db.Column(db.Integer, db.ForeignKey("menu_nav_section.id"), nullable=True)
     name = db.Column(db.String(120), nullable=False)
+    hindi_name = db.Column(db.String(120), nullable=True)
     image_url = db.Column(db.String(255), nullable=True)
     short_description = db.Column(db.String(140), nullable=True)
     description = db.Column(db.String(500), nullable=True)

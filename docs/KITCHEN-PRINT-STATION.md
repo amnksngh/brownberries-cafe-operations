@@ -16,19 +16,16 @@ printer selections or test jobs to AWS. Register the live station separately.
 
 4. Paste the key at the hidden terminal prompt. Refresh the settings page. Select
    **SIMULATED KOT PRINTER**, keep **Test** mode and enable kitchen routing.
-5. Approve a test order and click Yes. The modal reports queued, without opening
-   browser print settings. Refresh the queue to see `test_complete` after polling.
-6. Stop the agent, approve another test order and click Yes. It remains queued.
-   Restart the agent to collect it. Clicking No never creates a job.
+5. Approve a test order. It queues automatically without opening browser print settings. Refresh the queue to see `test_complete` after polling.
+6. Stop the agent and approve another test order. It remains queued. Restart the agent to collect it.
 
 Do not create fake orders on production. Use the copied local database for this test.
 
 ## Dedicated kitchen Windows machine
 
-The first agent supports **ESC/POS-compatible thermal printers**, 42-column text,
-CP437 character encoding. Verify the printer model/emulation before live use.
-Non-CP437 text (including Hindi) is rejected for review, not silently corrupted.
-Unicode raster printing is not implemented in this first version.
+The agent supports 80mm, 203dpi ESC/POS-compatible thermal printers. Protocol 3
+prints Unicode raster images, using Windows text shaping for Hindi. Copy both
+`kitchen_print_agent.py` and `kot_windows_raster.py` into the kitchen folder.
 
 1. Install the Windows printer driver and print its Windows test page.
 2. Install Python 3.11 or newer with the Python launcher. Create a dedicated folder,
@@ -162,15 +159,16 @@ then save. Cancelled rows remain in the database with their original quantities;
 an audit record stores before/after snapshots and the acting staff account (or
 an authorized reception kiosk context). A stale form must be refreshed before saving.
 
-- An increase prints ADD with the increment, previous quantity and new total.
-- A decrease prints REDUCE BY; removal prints CANCEL ITEM.
-- Removing all kitchen items prints CANCEL KITCHEN ORDER.
-- Water, barista items, plain ice cream, and operational items explicitly classified
-  Purchased–Resale / Direct resale produce no kitchen ticket. A prepared dessert
-  must retain its preparation classification if the kitchen needs a ticket.
-- When every prior ticket is known to be unclaimed, queued tickets are superseded
-  and replaced by the full revised kitchen list. Otherwise deltas are queued in
-  order after earlier tickets. Historical ticket snapshots are never overwritten.
+- The first kitchen ticket for an unsettled table is NEW ORDER; subsequent
+  tickets are RUNNING (MODIFIED), or RUNNING (CANCELLED) when the affected items
+  have no remaining quantity. Identical item/variety/parcel combinations are summed
+  across the table's unpaid orders. For example, 2 cups then 3 more prints 2 → 5;
+  cancelling one from the first order prints 5 → 4. Settlement starts a new cycle.
+- Hindi names are optional in Menu Management. Blank names fall back to English.
+  Dropdown reasons print in Hindi. Varieties remain as configured in the menu.
+- Water, barista items, plain ice cream, and direct-resale items produce no KOT.
+- Queued tickets stay in sequence, so the kitchen receives each quantity transition.
+  Historical snapshots are never overwritten.
 - Change jobs are queued automatically when the station is enabled. They also
   remain visible on Kitchen Display > Kitchen changes awaiting acknowledgement
   for browser printing if the station is unavailable or disabled.
@@ -182,18 +180,40 @@ an authorized reception kiosk context). A stale form must be refreshed before sa
 
 ### Upgrade order and physical print test
 
-Install the updated agent on the kitchen PC before using approved-order edits.
-Stop its scheduled task, replace `kitchen_print_agent.py` without deleting the
-journal/key, and start the task again. The updated agent advertises protocol 2;
-an older agent holds change tickets unclaimed rather than printing ambiguous
-quantities. No station-key rotation is needed for this update.
+The server accepts existing protocol 2 agents using their previous English layout.
+To enable Hindi and table totals on paper, update the kitchen PC:
 
-The RAW ESC/POS layout resets Font A, uses bold/double-height emphasis (not
-sideways printing), explicit 32-dot line spacing and 24-dot side insets on a
-576-dot head. The resulting 528-dot printable width allows 44 Font A columns.
-These settings assume an 80mm, 203dpi ESC/POS printer. Test a long item name,
-variety, parcel flag, ADD, REDUCE and CANCEL on the actual hardware before rollout.
-The cutter feeds only two final lines; the printer's physical cutter offset may
-still require paper. Browser print settings do not affect these RAW jobs.
+1. Stop the scheduled task (or press Ctrl+C in the manually running agent).
+2. Copy **both** `kitchen_print_agent.py` and `kot_windows_raster.py` from this
+   release to `C:\BrownberriesKitchen`. Keep the existing saved key and journal.
+3. Run the following in PowerShell:
 
-Cancelled item names are struck through using ESC/POS raster text. Install Pillow in the agent environment before using cancellation tickets. Served items show a check mark on displays; paper already printed cannot update when service status changes.
+```powershell
+cd C:\BrownberriesKitchen
+& .\.venv\Scripts\python.exe -m pip install pywin32 Pillow
+Start-ScheduledTask -TaskName 'Brownberries Kitchen KOT'
+```
+
+If not using the startup task, run:
+
+```powershell
+& .\.venv\Scripts\python.exe .\kitchen_print_agent.py --url https://brownberriescafe.com
+```
+
+No key rotation or registration is required. Never run both agents simultaneously.
+
+The new layout uses a 576-dot raster with equal 24-dot (approximately 3mm) side
+insets, left-aligned items/reasons and centered headings. It prints only the measured
+content plus two final feed lines for the cutter. Browser or Windows page margins
+are not used by RAW ESC/POS printing. Do not change to landscape or a long paper size.
+The printer's physical head/cutter offset can still leave a small unavoidable gap.
+
+Latin text uses Arial (a Helvetica-style fallback); Helvetica is not bundled.
+If licensed Helvetica is installed for the agent's Windows account, set the user
+environment variable `BROWNBERRIES_KOT_FONT` to `Helvetica` and restart the task.
+Hindi uses Windows Nirmala UI. The preview has been visually checked; test an actual
+long Hindi name, variety, quantity increase/decrease and cancellation on the kitchen
+printer to confirm its hardware margins and raster support.
+
+Cancelled item names are struck through. Served items show a check mark on displays;
+paper already printed cannot update when service status changes.

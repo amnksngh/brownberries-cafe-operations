@@ -51,6 +51,7 @@ def _ensure_sqlite_schema_columns():
     # Lightweight forward-compatible schema patching for SQLite deployments without migrations.
     column_specs = {
         "menu_item": {
+            "hindi_name": "VARCHAR(120)",
             "prep_station": "TEXT NOT NULL DEFAULT 'kitchen'",
             "category_ids_json": "TEXT",
             "serving_hours": "VARCHAR(20)",

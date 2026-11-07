@@ -1,3 +1,4 @@
+{% if kot.protocol == 3 %}{% include 'cafe/kot_compact.html' %}{% else %}
 <!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>KOT #{{ kot.order_id }} — {{ kot.table }}</title>
@@ -23,3 +24,5 @@ tbody tr:last-child td{padding-bottom:0}
 // can be interpreted as landscape and rotated by the browser/thermal driver.
 window.addEventListener('load',()=>{if(new URLSearchParams(location.search).get('print')==='1')setTimeout(()=>window.print(),350);});
 </script></body></html>
+
+{% endif %}
