@@ -50,6 +50,7 @@ from .models import (
 def _ensure_sqlite_schema_columns():
     # Lightweight forward-compatible schema patching for SQLite deployments without migrations.
     column_specs = {
+        "kot_print_station": {"hindi_enabled": "BOOLEAN NOT NULL DEFAULT 0"},
         "menu_item": {
             "hindi_name": "VARCHAR(120)",
             "prep_station": "TEXT NOT NULL DEFAULT 'kitchen'",

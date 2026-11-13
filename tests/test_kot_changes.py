@@ -50,6 +50,7 @@ class KotChangesTests(KitchenPrintQueueTests):
         self.enqueue(self.ticket());self.poll()
         self.edit(self.form({self.ids[1]:1}))
         self.assertEqual(self.latest()['items'][0]['action'],'REDUCE BY')
+        self.assertEqual(self.latest()['print_label'],'MODIFIED')
         self.edit(self.form({self.ids[0]:0,self.ids[1]:0}))
         self.assertEqual(self.latest()['kind'],'CANCEL KITCHEN ORDER')
         with self.app.app_context():
@@ -132,6 +133,8 @@ class KotChangesTests(KitchenPrintQueueTests):
         from app.kot_table import table_state
         from datetime import datetime
         with self.app.app_context():
+            from app.kot_printing import KotPrintStation
+            db.session.get(KotPrintStation,1).hindi_enabled=True
             item=db.session.get(MenuItem,self.mid);item.hindi_name='चाय'
             # Same variety merges into one table total.
             for line in CafeOrderItem.query.all():line.size_label='Regular'
@@ -148,13 +151,56 @@ class KotChangesTests(KitchenPrintQueueTests):
             db.session.add(line);db.session.commit();sid=second.id;lid=line.id
         self.client.post(f'/cafe/orders/{sid}/approve',data={'pending_item_ids':[str(lid)],'decision':'approve'})
         self.assertEqual((self.latest()['table_items'][0]['previous'],self.latest()['table_items'][0]['current']),(2,5))
+        self.assertEqual(self.latest()['print_label'],'RUNNING ORDER')
         self.edit(self.form({self.ids[0]:1}))
         item=self.latest()['table_items'][0]
         self.assertEqual((item['previous'],item['current']),(5,4))
         self.assertEqual(item['hindi_name'],'चाय')
+        self.assertEqual(self.latest()['print_label'],'MODIFIED')
+        self.edit(self.form({self.ids[0]:0,self.ids[1]:0}))
+        self.assertEqual(self.latest()['print_label'],'CANCELLED')
+        self.assertEqual(self.latest()['table_items'][0]['current'],3)
         with self.app.app_context():
             for order in CafeOrder.query.all():order.status='paid';order.paid_at=datetime.utcnow()
             db.session.commit()
             fresh=CafeOrder(table_id=tid,ordered_by_user_id=self.uid,status='pending_approval')
             db.session.add(fresh);db.session.flush()
             self.assertFalse(table_state(fresh)['has_ticket'])
+
+    def test_language_toggle_access_and_english_content(self):
+        from app.models import User
+        from app.kot_printing import KotPrintStation
+        with self.app.app_context():
+            db.session.get(MenuItem,self.mid).hindi_name='चाय'
+            db.session.commit()
+        token=self.ticket()
+        self.assertFalse(self.latest()['hindi_enabled'])
+        self.assertEqual(self.latest()['table_items'][0]['hindi_name'],'')
+        data=self.form({self.ids[0]:3});data['change_reason']='Customer wants more!'
+        self.edit(data)
+        payload=self.latest()
+        self.assertEqual(payload['print_label'],'MODIFIED')
+        self.assertEqual(payload['reason_hindi'],'')
+        with self.app.app_context():
+            ticket=CafeKitchenTicket.query.order_by(CafeKitchenTicket.id.desc()).first()
+            token=ticket.token
+        page=self.client.get('/cafe/kot/'+token).get_data(as_text=True)
+        self.assertIn('Reason: Customer wants more!',page)
+        self.assertIn('Previous',page)
+        self.assertFalse(any('\u0900' <= c <= '\u097f' for c in page))
+        self.client.post('/cafe/kot-print',data={'csrf_token':'csrf-test','action':'language','hindi_enabled':'yes'})
+        with self.app.app_context():
+            self.assertTrue(db.session.get(KotPrintStation,1).hindi_enabled)
+            db.session.get(User,self.uid).role='cashier';db.session.commit()
+        self.assertEqual(self.client.post('/cafe/kot-print',data={'csrf_token':'csrf-test','action':'language'}).status_code,403)
+        with self.app.app_context():
+            self.assertTrue(db.session.get(KotPrintStation,1).hindi_enabled)
+            db.session.get(User,self.uid).role='admin';db.session.commit()
+        self.client.post('/cafe/kot-print',data={'csrf_token':'csrf-test','action':'language'})
+        with self.app.app_context():self.assertFalse(db.session.get(KotPrintStation,1).hindi_enabled)
+
+    def test_later_approval_same_order_is_modified(self):
+        self.approve(self.ids[:1])
+        self.assertEqual(self.latest()['print_label'],'NEW ORDER')
+        self.approve(self.ids[1:])
+        self.assertEqual(self.latest()['print_label'],'MODIFIED')

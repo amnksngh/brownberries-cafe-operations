@@ -48,6 +48,7 @@ def compact_image(ticket, attempt=1):
     except ImportError:
         from scripts.kot_windows_raster import DrawingSurface
     from PIL import Image
+    hindi = ticket.get('hindi_enabled', True)
     width, margin = 576, 24
     rows = [(ticket['print_label'], True, False)]
     if attempt > 1:
@@ -55,16 +56,17 @@ def compact_image(ticket, attempt=1):
     rows.append((f'{ticket.get("table", "")} | {ticket["print_time"]}', True, False))
     rows.append(None)
     for item in ticket['table_items']:
-        name = item.get('hindi_name') or item['name']
+        name = (item.get('hindi_name') or item['name']) if hindi else item['name']
         if item.get('size'):
             name += ' ('+item['size']+')'
         if item.get('parcel'):
-            name += ' (पैक)'
+            name += ' (पैक)' if hindi else ' (Parcel)'
         rows.append((f'{name} × {item["current"]}', False, item.get('cancelled', False)))
         if ticket['print_label'] != 'NEW ORDER':
-            rows.append((f'पहले {item["previous"]} → अब {item["current"]}', False, False))
-    if ticket.get('reason_hindi'):
-        rows.extend([None, ('कारण: '+ticket['reason_hindi'],False,False)])
+            rows.append((f'पहले {item["previous"]} → अब {item["current"]}' if hindi else f'Previous {item["previous"]} → Now {item["current"]}', False, False))
+    reason = ticket.get('reason_hindi') if hindi else ticket.get('reason')
+    if reason:
+        rows.extend([None, (('कारण: ' if hindi else 'Reason: ')+reason,False,False)])
     draw_text = ctypes.windll.user32.DrawTextW
     draw_text.argtypes = [wintypes.HDC, wintypes.LPCWSTR, ctypes.c_int, ctypes.POINTER(wintypes.RECT), wintypes.UINT]
     draw_text.restype = ctypes.c_int

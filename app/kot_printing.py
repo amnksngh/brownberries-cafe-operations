@@ -32,6 +32,7 @@ class KotPrintStation(TimestampMixin, db.Model):
     printers_json = db.Column(db.Text, nullable=False, default='[]')
     last_seen = db.Column(db.DateTime)
     test_mode = db.Column(db.Boolean, nullable=False, default=True)
+    hindi_enabled = db.Column(db.Boolean, nullable=False, default=False)
 
 
 class KotPrintJob(TimestampMixin, db.Model):
@@ -137,7 +138,7 @@ def record_order_edit(order, before, kitchen_before, reason, table_before=None):
     if table_before is not None:
         from .kot_table import compact_payload
         payload = json.loads(ticket.contents_json)
-        payload.update(compact_payload(order, table_before, reason))
+        payload.update(compact_payload(order, table_before, reason, event='edit'))
         ticket.contents_json = json.dumps(payload)
     db.session.add(ticket); db.session.flush()
     record.ticket_id = ticket.id
@@ -277,6 +278,9 @@ def settings():
                 station.enabled, station.last_seen = False, None
                 station.printer, station.printers_json = '', '[]'
                 session['kot_new_station_key'] = token
+            elif action == 'language' and station:
+                station.hindi_enabled = request.form.get('hindi_enabled') == 'yes'
+                action = 'language Hindi' if station.hindi_enabled else 'language English'
             elif action == 'configure' and station:
                 printer = request.form.get('printer', '')
                 if printer not in json.loads(station.printers_json):

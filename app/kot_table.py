@@ -43,9 +43,10 @@ def table_state(order):
             entry = totals.setdefault(key, dict(name=item.name, hindi_name=item.hindi_name or '',
                 size=line.size_label or '', parcel=bool(line.is_parcel), quantity=0))
             entry['quantity'] += int(line.quantity or 0)
-    return dict(totals=totals, has_ticket=has_ticket)
+    return dict(totals=totals, has_ticket=has_ticket,
+        order_has_ticket=bool(CafeKitchenTicket.query.filter_by(order_id=order.id).first()))
 
-def compact_payload(order, before, reason=''):
+def compact_payload(order, before, reason='', event='approval'):
     from .cafe import _format_ist
     after = table_state(order)
     lines = []
@@ -58,8 +59,19 @@ def compact_payload(order, before, reason=''):
         row.update(previous=old, current=new, delta=new-old, quantity=new,
             cancelled=new == 0)
         lines.append(row)
-    label = 'NEW ORDER' if not before['has_ticket'] else 'RUNNING'
-    if before['has_ticket']:
-        label += ' (CANCELLED)' if lines and all(x['delta'] < 0 for x in lines) and all(x['current']==0 for x in lines) else ' (MODIFIED)'
+    from .kot_printing import KotPrintStation, kitchen_snapshot
+    station = db.session.get(KotPrintStation, 1)
+    hindi = bool(station and station.hindi_enabled)
+    if not hindi:
+        for row in lines:
+            row['hindi_name'] = ''
+    if event == 'edit':
+        label = 'MODIFIED' if kitchen_snapshot(order) else 'CANCELLED'
+    elif before.get('order_has_ticket'):
+        label = 'MODIFIED'
+    else:
+        label = 'RUNNING ORDER' if before['has_ticket'] else 'NEW ORDER'
     return dict(print_label=label, print_time=_format_ist(datetime.utcnow(), '%I:%M:%S %p'),
-        table_items=lines, reason_hindi=HINDI_REASONS.get(reason, 'ऑर्डर में बदलाव' if reason else ''), protocol=3)
+        table_items=lines, hindi_enabled=hindi,
+        reason_hindi=HINDI_REASONS.get(reason, 'ऑर्डर में बदलाव' if reason else '') if hindi else '',
+        reason=reason, protocol=3)

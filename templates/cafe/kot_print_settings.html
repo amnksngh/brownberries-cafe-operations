@@ -6,6 +6,9 @@
 {% if not station %}<form method="post"><input name="csrf_token" type="hidden" value="{{ csrf }}"><button name="action" value="register">Register kitchen station</button></form>
 {% else %}
 <p>{{ station.name }} · {{ 'Connected' if online else 'Offline / awaiting agent' }} · {{ 'Test mode' if station.test_mode else 'Live printing' }} · {{ 'Enabled' if station.enabled else 'Disabled' }}</p>
+<form method="post"><input name="csrf_token" type="hidden" value="{{ csrf }}"><input name="action" type="hidden" value="language">
+<label><input type="checkbox" name="hindi_enabled" value="yes" {% if station.hindi_enabled %}checked{% endif %}> Print KOT in Hindi (use English when a Hindi name is missing)</label>
+<button>Save KOT language</button><p>Unchecked: English names, reasons and quantity labels. Applies to newly created tickets. Update the kitchen agent to apply English quantity labels.</p></form>
 <form method="post" class="grid"><input name="csrf_token" type="hidden" value="{{ csrf }}"><input name="action" type="hidden" value="configure">
 <label>Printer installed on kitchen machine<select name="printer" required>{% for printer in printers %}<option value="{{ printer }}" {% if printer == station.printer %}selected{% endif %}>{{ printer }}</option>{% endfor %}</select></label>
 <label>Mode<select name="test_mode"><option value="test" {% if station.test_mode %}selected{% endif %}>Test — agent records ticket, no paper</option><option value="live" {% if not station.test_mode %}selected{% endif %}>Live — ESC/POS compatible thermal printer required</option></select></label>

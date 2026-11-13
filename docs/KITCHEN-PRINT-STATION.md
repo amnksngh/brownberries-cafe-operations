@@ -217,3 +217,22 @@ printer to confirm its hardware margins and raster support.
 
 Cancelled item names are struck through. Served items show a check mark on displays;
 paper already printed cannot update when service status changes.
+
+## English / Hindi selection (November 2026)
+
+Admins and owners can open Kitchen KOT Printer and use **Print KOT in Hindi**,
+then **Save KOT language**. It is off by default, including on existing stations.
+The selected language is captured in each new ticket; historical tickets and
+reprints retain their original language. English mode uses English item names,
+Reason, Previous/Now and Parcel labels. Hindi mode uses optional Hindi names,
+falling back to English for missing names. Menu varieties retain their configured text.
+
+Update kitchen_print_agent.py on the kitchen PC for English quantity/reason labels;
+keep kot_windows_raster.py beside it. Restart the existing scheduled task. The
+station key does not change. Do not run a manual agent beside the scheduled task.
+
+Labels: NEW ORDER for the first KOT after settlement; RUNNING ORDER for a new
+order ID on an unsettled table; MODIFIED for changes/additions to an already
+printed order ID; CANCELLED when no kitchen items remain in the edited order ID,
+even when another order on that table still has kitchen items. Previous/Now counts
+continue to be cumulative for the table, with varieties and parcel items separate.
