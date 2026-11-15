@@ -4,7 +4,7 @@
 .manual-payroll{min-width:0;max-width:100%}.manual-payroll .scroll{max-width:100%;overflow-x:auto}.manual-payroll table{width:100%;border-collapse:collapse}.manual-payroll th,.manual-payroll td{padding:.55rem;text-align:left;vertical-align:top;border-bottom:1px solid #ddd}.manual-payroll input,.manual-payroll select{max-width:100%;box-sizing:border-box}.manual-payroll .fields{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,180px),1fr));gap:12px}.manual-payroll .day-editor{min-width:245px}.manual-payroll details{margin:.4rem 0}.manual-payroll .warning{background:#fff4d6;padding:12px;border-radius:8px}.manual-payroll pre{white-space:pre-wrap;overflow-wrap:anywhere}.manual-payroll .status{white-space:nowrap}
 </style>
 <div class="manual-payroll">
-<section class="panel"><h2>Manual Attendance &amp; Payroll</h2>
+<section class="panel"><h2>Manual Attendance &amp; Payroll</h2>{% if manager %}<p><a href="{{ url_for('staff_operations.attendance_grid',user_id=user.id,month=raw_month) }}">Monthly half-day attendance editor</a> · <a href="{{ url_for('staff_operations.penalties') }}">Absence penalty ledger</a></p>{% endif %}
 <p><a href="{{ url_for('cafe.staff', section='active_staff') }}">Staff Management</a> · <a href="{{ url_for('main.profile') }}">My Profile</a></p>
 <p>Effective October 1, 2026. Existing attendance must be reviewed by an admin; it is not automatically treated as paid or unpaid.</p>
 <form method="get" class="fields">
@@ -31,7 +31,7 @@
 <section class="panel"><h3>Daily review</h3><p>Blank means <strong>not reviewed</strong>, not absent. Legacy entries are preserved alongside the new decisions.</p>
 <div class="scroll"><table><thead><tr><th>Date</th><th>Legacy entry</th><th>Reviewed status</th><th>Payable / unpaid days</th>{% if admin %}<th>Admin review</th>{% endif %}</tr></thead><tbody>
 {% for day in days %}{% set r=by_day.get(day) %}{% set p=results.get(day) %}<tr>
-<td class="status">{{ day }}</td><td>{{ old.get(day,[])|join(', ') or '—' }}</td><td>{{ r.status if r else 'Not reviewed' }}</td><td>{% if p %}{{ p.payable }} / {{ p.unpaid }}{% else %}—{% endif %}</td>
+<td class="status">{{ day }}</td><td>{{ old.get(day,[])|join(', ') or '—' }}</td><td>{% if r and r.first_half %}1st: {{ r.first_half }} / 2nd: {{ r.second_half }}{% else %}{{ r.status if r else 'Not reviewed' }}{% endif %}</td><td>{% if p %}{{ p.payable }} / {{ p.unpaid }}{% else %}—{% endif %}</td>
 {% if admin %}<td>{% if emp and not locked and day<=today and day>=emp.joined_on and (not emp.left_on or day<=emp.left_on) %}
 <details class="day-editor"><summary>{{ 'Edit review' if r else 'Review day' }}</summary><form method="post">
 <input type="hidden" name="csrf_token" value="{{ csrf }}"><input type="hidden" name="action" value="day"><input type="hidden" name="day" value="{{ day }}"><input type="hidden" name="version" value="{{ r.version if r else 0 }}">

@@ -19,6 +19,8 @@ class ManualAttendance(TimestampMixin, db.Model):
     user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
     day = db.Column(db.Date, nullable=False)
     status = db.Column(db.String(2), nullable=False)
+    first_half = db.Column(db.String(2))
+    second_half = db.Column(db.String(2))
     notified_on = db.Column(db.Date)
     half_day_applied = db.Column(db.Boolean, nullable=False, default=False)
     bereavement_eligible = db.Column(db.Boolean, nullable=False, default=False)

@@ -128,6 +128,8 @@ def save_day(user_id, actor, day, status, notified_on, half_applied, bereavement
     if not row:
         row = ManualAttendance(user_id=user_id, day=day)
         db.session.add(row)
+    if row.first_half or row.second_half:
+        raise ValueError("Use the half-day attendance calendar to edit this reviewed day.")
     row.status, row.notified_on = status, notified_on
     row.half_day_applied, row.bereavement_eligible = half_applied, bereavement
     row.notes, row.reviewed_by = notes[:500], actor.id
@@ -144,7 +146,7 @@ def month_preview(user_id, month, salary=None):
     rows = ManualAttendance.query.filter(ManualAttendance.user_id == user_id,
         ManualAttendance.day >= max(EFFECTIVE_DATE, date(month.year,1,1)), ManualAttendance.day <= end).all()
     results = calculate_days([ManualDay(r.day, r.status, r.notified_on, r.half_day_applied,
-        r.bereavement_eligible) for r in rows], joined_on=emp.joined_on, left_on=emp.left_on)
+        r.bereavement_eligible, r.first_half, r.second_half) for r in rows], joined_on=emp.joined_on, left_on=emp.left_on)
     selected = [r for r in results if start <= r.day <= end]
     reviewed = {r.day for r in selected}
     required = [service_start + timedelta(days=i) for i in range(max(0,(service_end-service_start).days+1))]
@@ -193,9 +195,12 @@ def finalize(user_id, actor, month, salary):
         pending = ManualPayrollMonth.query.filter(ManualPayrollMonth.user_id == user_id,
             ManualPayrollMonth.month <= month, ~ManualPayrollMonth.id.in_(db.select(ManualCashAllocation.month_id))).all()
         forfeited = exit_month and not (emp.management_released or emp.notice_days >= 15)
+        from .staff_operations import StaffPenaltyLot, StaffAbsencePenalty
+        reserved = db.session.query(db.func.sum(StaffPenaltyLot.amount)).join(StaffAbsencePenalty).filter(
+            StaffPenaltyLot.month_id.in_([r.id for r in pending]),StaffAbsencePenalty.status!='revoked').scalar() or Decimal(0)
         settlement = ManualCashSettlement(user_id=user_id,payroll_month_id=row.id,
             reason='forfeited' if forfeited else 'exit' if exit_month else 'march',
-            amount=0 if forfeited else sum((r.cash_value for r in pending),Decimal(0)),actor_id=actor.id)
+            amount=0 if forfeited else max(Decimal(0),sum((r.cash_value for r in pending),Decimal(0))-reserved),actor_id=actor.id)
         db.session.add(settlement)
         db.session.flush()
         for source in pending:
@@ -221,7 +226,11 @@ def finalize(user_id, actor, month, salary):
 
 def total_due(row):
     settlement = ManualCashSettlement.query.filter_by(payroll_month_id=row.id).first()
-    return money(row.gross_pay + (settlement.amount if settlement else 0) - row.asset_charge)
+    payment=ManualPayrollPayment.query.filter_by(payroll_month_id=row.id).first()
+    if payment:return money(payment.amount)
+    from .staff_operations import manual_penalty_plan
+    base=row.gross_pay + (settlement.amount if settlement else 0) - row.asset_charge
+    return money(base-sum((take for _,take in manual_penalty_plan(row,base)),Decimal(0)))
 
 
 def record_payment(row,actor,paid_on,mode,reference,funding_source):
@@ -232,6 +241,10 @@ def record_payment(row,actor,paid_on,mode,reference,funding_source):
         raise ValueError('Invalid payment date or payment method.')
     if not reference.strip() or funding_source not in {'cafe_operations','owner_personal'}:
         raise ValueError('Payment reference and funding source are required.')
+    from .staff_operations import manual_penalty_plan, StaffPenaltyRecovery, recovered, next_instalment
+    settlement=ManualCashSettlement.query.filter_by(payroll_month_id=row.id).first()
+    base=row.gross_pay+(settlement.amount if settlement else 0)-row.asset_charge
+    penalty_plan=manual_penalty_plan(row,base)
     amount = total_due(row)
     category = InventoryCategory.query.filter_by(name='Staff Payroll').first()
     if not category:
@@ -247,6 +260,11 @@ def record_payment(row,actor,paid_on,mode,reference,funding_source):
         db.session.flush()
     db.session.add(ManualPayrollPayment(payroll_month_id=row.id,paid_on=paid_on,amount=amount,mode=mode,
         reference=reference[:160],expense_id=expense.id if expense else None,actor_id=actor.id))
+    for penalty,take in penalty_plan:
+        outstanding=penalty.cash_amount-recovered(penalty)
+        db.session.add(StaffPenaltyRecovery(penalty_id=penalty.id,amount=take,due_date=penalty.due_date,reference=f'Payroll #{row.id}: {reference[:100]}',actor_id=actor.id))
+        if take==outstanding:penalty.status='deducted'
+        else:penalty.due_date=next_instalment(row.user_id,max(today(),penalty.due_date)+timedelta(days=1))
     audit(row.user_id,actor,'payment',{'payroll_id':row.id,'amount':amount,'mode':mode,'reference':reference[:160]})
     db.session.flush()
     for item in ManualPayrollAsset.query.filter_by(month_id=row.id):

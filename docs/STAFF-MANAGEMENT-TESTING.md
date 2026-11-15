@@ -1,0 +1,15 @@
+# Staff management testing
+
+Use the local copied database at http://127.0.0.1:5052. AWS has not been changed by this update.
+
+1. Add New Staff: enter a username such as test.staff23. The domain is fixed. Generate a password, optionally reveal it, supply a personal email, and save. Prepare email opens your mail app for review; it does not create a mailbox or send automatically. Passwords are hashed on the server and are not stored in plaintext or audit records.
+2. Active Staff: confirm the table, expand Edit / discharge, and edit a test account. Planned notice ends 15 calendar days after the start date, inclusive of that final working day. Access ends the following day. Abrupt departure disables access immediately and preserves history. Admin accounts are protected.
+3. Leave Requests: pending requests appear first. Use the lower history tabs to inspect or correct previous decisions.
+4. Attendance Calendar: only the personal calendar and shared time-off calendar appear. Reviewed first/second-half codes appear separately.
+5. Attendance Entry: choose a staff member and month, pick P and whole day, then tap/drag across dates. Change to one half and choose IU to mark only the touched half unpaid. Enable finger dragging on touch devices; otherwise tap and scroll. Save only after reviewing the selection. A first-time date needs both halves specified; register times are preserved. Open register sessions, approved leave, stale revisions and finalized payroll block unsafe changes.
+6. PL requires notification two days before the date, SL requires notification by that day. They share the existing allowance. Excess is unpaid; earlier pooled leave does not pay for it. BL uses the separate annual allowance. IU creates no penalty. UA creates an admin review, including 0.5 day for one missing half.
+7. Penalties: managers can record attendance, only admins can approve/revoke penalties. Confirm the salary for the absence month. Available accumulated prior-month leave is used first, then the shortfall is valued using that salary divided by calendar days. The cash amount goes to the next unpaid instalment, separately from the ordinary unpaid attendance deduction.
+8. Salary reconciliation: after paying an instalment, record only the additional amount actually deducted (or refunded), with its payment reference. No duplicate salary expense is created. Partial deductions move forward; a repeat close is rejected. Revoking a recovered penalty creates a future refund and retains the original recovery. Previously settled manual leave pools require a payroll correction rather than rewriting paid history.
+9. Payroll: verify first-/second-half gross estimates and the separate penalty column. Missing attendance is not treated as present. Historical login IDs and attendance are retained. No previous absences are automatically penalized.
+
+The payroll policy activation flag is unchanged. The calendar supports the existing attendance setup and the reviewed manual-payroll setup without automatically migrating historical records.

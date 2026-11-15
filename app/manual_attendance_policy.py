@@ -23,6 +23,8 @@ class ManualDay:
     notified_on: date | None = None
     half_day_applied: bool = False
     bereavement_eligible: bool = False
+    first_half: str | None = None
+    second_half: str | None = None
 
 
 @dataclass(frozen=True)
@@ -78,6 +80,18 @@ def calculate_days(days, *, joined_on=None, left_on=None, allowance_for_day=None
         bereavement = Decimal('0')
         if entry.status == 'BL' and entry.bereavement_eligible:
             bereavement = min(missing, max(Decimal('0'), ANNUAL_BEREAVEMENT_ALLOWANCE-annual_used.get(entry.day.year, Decimal('0'))))
+        if entry.first_half or entry.second_half:
+            valid = {'P','PL','SL','BL','IU','UA'}
+            if entry.first_half not in valid or entry.second_half not in valid:
+                raise ValueError('Both half-day statuses are required.')
+            worked = Decimal('0'); paid = Decimal('0'); bereavement = Decimal('0')
+            for half in (entry.first_half, entry.second_half):
+                if half == 'P': worked += Decimal('.5')
+                elif half == 'BL' and entry.bereavement_eligible:
+                    bereavement += min(Decimal('.5'), max(Decimal('0'), ANNUAL_BEREAVEMENT_ALLOWANCE-annual_used.get(entry.day.year,Decimal('0'))-bereavement))
+                elif (half == 'PL' and notice_ok) or (half == 'SL' and entry.notified_on is not None):
+                    paid += min(Decimal('.5'), max(Decimal('0'), allowance-monthly_used.get(month,Decimal('0'))-paid))
+            missing = Decimal('1')-worked
         monthly_used[month] = monthly_used.get(month, Decimal('0')) + paid
         annual_used[entry.day.year] = annual_used.get(entry.day.year, Decimal('0')) + bereavement
         results.append(DayPay(entry.day, entry.status, worked, paid, bereavement, missing-paid-bereavement))

@@ -1,5 +1,6 @@
 {% extends "base.html" %}
 {% block content %}
+<style>.staff-master-scroll{max-width:100%;overflow:auto}.staff-master{min-width:800px}.staff-master td{vertical-align:top}.staff-table-editor[open]{width:min(520px,80vw)}.staff-table-editor .staff-accordion-columns{display:block}.staff-login-id{display:flex;align-items:center;flex-wrap:wrap;gap:4px}.staff-login-id input{min-width:100px;flex:1}</style>
 <section class="panel">
   <a class="staff-summary-heading" href="{{ url_for('cafe.staff', section='active_staff') }}">
     <h2>Staff Management</h2>
@@ -32,10 +33,11 @@
     <a href="{{ url_for('cafe.staff', section='archived_staff') }}" class="{% if active_staff_section == 'archived_staff' %}active{% endif %}">Archived Staff</a>
     {% if manual_payroll_active %}
     <a href="{{ url_for('manual_payroll.workspace') }}">Manual Attendance &amp; Payroll</a>
-    {% else %}
+    {% endif %}
     <a href="{{ url_for('cafe.staff', section='attendance_calendar', attendance_user_id=attendance_user_id, attendance_month=attendance_month, attendance_year=attendance_year) }}" class="{% if active_staff_section == 'attendance_calendar' %}active{% endif %}">Attendance Calendar</a>
     <a href="{{ url_for('cafe.staff', section='attendance_entry', attendance_user_id=attendance_user_id, attendance_month=attendance_month, attendance_year=attendance_year) }}" class="{% if active_staff_section == 'attendance_entry' %}active{% endif %}">Attendance Entry</a>
     <a href="{{ url_for('cafe.staff', section='leave_requests') }}" class="{% if active_staff_section == 'leave_requests' %}active{% endif %}">Leave Requests</a>
+    {% if not manual_payroll_active %}
     <a href="{{ url_for('cafe.staff', section='leave_settings') }}" class="{% if active_staff_section == 'leave_settings' %}active{% endif %}">Leave Settings</a>
     <a href="{{ url_for('cafe.staff', section='rulebook') }}" class="{% if active_staff_section == 'rulebook' %}active{% endif %}">Attendance Rule Book</a>
     {% endif %}
@@ -47,11 +49,13 @@
     {% if active_staff_section == "add_new_staff" %}
     <section class="panel">
       <h3>Add New Staff</h3>
-      <form method="post" enctype="multipart/form-data" class="grid grid-4">
-        <input type="hidden" name="action" value="create" />
+      <form method="post" enctype="multipart/form-data" class="grid grid-4" id="staff-onboarding-form">
+        <input type="hidden" name="action" value="create" /><input type="hidden" name="csrf_token" value="{{ staff_ops_csrf }}" />
         <label>Full Name<input name="full_name" required /></label>
-        <label>Email<input type="email" name="email" required /></label>
-        <label>Password<input type="password" name="password" required /></label>
+        <label>Staff login ID<span class="staff-login-id"><input name="username" required maxlength="64" pattern="[A-Za-z0-9]+([.][A-Za-z0-9]+)*" placeholder="firstName.lastName or firstName123" autocomplete="off" /><span>@brownberriescafe.com</span></span></label>
+        <label>Password<input type="password" name="password" id="staff-new-password" autocomplete="new-password" required minlength="12" /></label>
+        <div><button type="button" id="staff-generate-password">Generate password</button> <button type="button" id="staff-show-password">Show</button></div>
+        <label>Staff personal email for sharing (optional)<input type="email" id="staff-share-email" autocomplete="off" /><small>The login ID does not create an email mailbox.</small></label>
         <div class="full">
           <strong>Roles</strong>
           <div class="inventory-category-grid">
@@ -69,15 +73,15 @@
         <label>DOB<input type="date" name="dob" /></label>
         <label>Gender<input name="gender" /></label>
         <button type="submit">Add Staff Member</button>
-      </form>
+      </form><div id="staff-created-result" hidden><p>Staff account created successfully.</p><button type="button" id="staff-email-credentials">Prepare email with login details</button><p>This opens your email application for review and sending. The password is available only while this page remains open.</p><a href="{{ url_for('cafe.staff',section='active_staff') }}">View Active Staff</a></div><p id="staff-create-message" role="status"></p>
+      <script src="{{ url_for('static',filename='js/staff_onboarding.js') }}" defer></script>
     </section>
     {% endif %}
 
     {% if active_staff_section == "active_staff" %}
     <section class="panel">
       <h3>Active Staff</h3>
-      <p class="muted staff-accordion-hint">Select a staff member’s name to view their details and edit their record.</p>
-      <div class="staff-accordion-list">
+      <div class="staff-master-scroll"><table class="staff-master"><thead><tr><th>Name</th><th>Login ID</th><th>Roles</th><th>Joined</th><th>Shift</th><th>Salary</th><th>Manage</th></tr></thead><tbody>
         {% for s in active_profiles %}
         {% set is_cafe_admin = (s.user.email == "admin@brownberries.local") or (user_has_any_role(s.user, "admin") and s.user.full_name|lower == "cafe admin") %}
         {% set mark = attendance_today.get(s.user_id) %}
@@ -85,18 +89,7 @@
         {% set leaves = leave_summary.get(s.user_id, {"pending": 0, "approved": 0}) %}
         {% set balance = staff_leave_balances.get(s.user_id) %}
         {% set current_roles = s.user.assigned_roles() %}
-        <details class="staff-accordion">
-          <summary>
-            <span class="staff-accordion-name">
-              <strong>{{ s.user.full_name }}</strong>
-              <small>{{ s.user.email }}</small>
-            </span>
-            <span class="staff-accordion-meta">
-              <span class="staff-role-pill">{{ user_display_roles(s.user) }}</span>
-              <span>{{ 'Manual attendance' if manual_payroll_active else (mark.status.replace("_", " ").title() if mark else "Not logged") }}</span>
-              <span class="staff-accordion-chevron" aria-hidden="true">⌄</span>
-            </span>
-          </summary>
+        <tr><td>{{ s.user.full_name }}</td><td>{{ s.user.email }}</td><td>{{ user_display_roles(s.user) }}</td><td>{{ s.joining_date or '—' }}</td><td>{{ s.shift_start_time.strftime('%H:%M') if s.shift_start_time else '09:00' }}–{{ s.shift_end_time.strftime('%H:%M') if s.shift_end_time else '18:00' }}</td><td>₹{{ '%.2f'|format(s.salary_amount or 0) }} / {{ s.salary_type or 'month' }}</td><td><details class="staff-table-editor"><summary>Edit / discharge</summary>
           <div class="staff-accordion-body">
             <div class="staff-detail-strip">
               <div><span>Joined</span><strong>{{ s.joining_date or "-" }}</strong></div>
@@ -170,6 +163,13 @@
                 </form>
               </div>
             </div>
+            {% if user_has_any_role(g.current_user,'admin') and not user_has_any_role(s.user,'admin') %}
+            <form method="post" action="{{ url_for('staff_operations.discharge',uid=s.user_id) }}" class="grid" onsubmit="return confirm('Save this staff departure? Abrupt departure disables access immediately.');">
+            <h4>Staff departure</h4><input type="hidden" name="csrf_token" value="{{ staff_ops_csrf }}">
+            {% set discharge=discharge_map.get(s.user_id) %}{% if discharge and not discharge.completed %}<p>Notice: {{ discharge.notice_start }} · Last working day: <strong>{{ discharge.last_working_day }}</strong></p>{% endif %}
+            <label>Departure<select name="kind"><option value="planned">15-day notice</option><option value="abrupt">Abrupt departure — disable now</option>{% if discharge and not discharge.completed %}<option value="cancel">Cancel pending notice</option>{% endif %}</select></label>
+            <label>Notice start date<input type="date" name="notice_start" value="{{ today_date }}" max="{{ today_date }}" data-notice-start></label><output data-notice-end>Last working day: start date + 15 calendar days</output>
+            <label>Reason<input name="reason" required maxlength="500"></label><button>Save departure</button></form>{% endif %}
             <div class="staff-accordion-actions">
               <a class="button-link" href="{{ url_for('cafe.download_staff_id_card', user_id=s.user_id) }}">Download Staff ID</a>
               {% if s.govt_id_file_path %}
@@ -191,11 +191,11 @@
               {% endif %}
             </div>
           </div>
-        </details>
+        </details></td></tr>
         {% else %}
-        <p class="muted">No active staff found.</p>
+        <tr><td colspan="7">No active staff found.</td></tr>
         {% endfor %}
-      </div>
+      </tbody></table></div>
     </section>
     {% endif %}
 
@@ -276,7 +276,7 @@
         <label>Year<input type="number" min="2000" max="2100" name="attendance_year" value="{{ attendance_year }}" /></label>
         <button type="submit">View Calendar</button>
       </form>
-      <p class="muted">Present = green, Half Day = yellow, Short Attendance = amber, Absent = red, Earned Leave = blue, Urgent Leave = red, Company Holiday = purple, Weekly Off = gray.</p>
+      <p class="muted">P: Present · PL: Applied leave · SL: Sick · BL: Bereavement · IU: Informed unpaid · UA: Unnotified absence. Each half is shown separately.<br>Present = green, Half Day = yellow, Short Attendance = amber, Absent = red, Earned Leave = blue, Urgent Leave = red, Company Holiday = purple, Weekly Off = gray.</p>
       <div class="attendance-calendar">
         <div class="cal-head">Mon</div><div class="cal-head">Tue</div><div class="cal-head">Wed</div><div class="cal-head">Thu</div><div class="cal-head">Fri</div><div class="cal-head">Sat</div><div class="cal-head">Sun</div>
         {% for week in attendance_month_rows %}
@@ -285,7 +285,7 @@
             <div class="cal-cell empty"></div>
             {% else %}
             {% set st = selected_attendance_map.get(day) %}
-            <div class="cal-cell"><span class="day-dot {% if st in ['present','present_all_day','pending_correction','missed_checkout'] %}st-present{% elif st in ['half-day','first_half','second_half','half_day_leave','half_day_earned_leave','half_day_urgent_leave'] %}st-half{% elif st in ['short_attendance','absent','urgent_leave'] %}st-absent{% elif st in ['on-leave','on_leave','earned_leave'] %}st-leave{% elif st in ['company_holiday'] %}st-holiday{% elif st in ['weekly_off'] %}st-weekly-off{% endif %}" title="{{ st or 'No attendance record' }}">{{ day }}</span></div>
+            <div class="cal-cell"><span class="day-dot {% if st in ['present','present_all_day','pending_correction','missed_checkout'] %}st-present{% elif st in ['half-day','first_half','second_half','half_day_leave','half_day_earned_leave','half_day_urgent_leave'] %}st-half{% elif st in ['short_attendance','absent','urgent_leave'] %}st-absent{% elif st in ['on-leave','on_leave','earned_leave'] %}st-leave{% elif st in ['company_holiday'] %}st-holiday{% elif st in ['weekly_off'] %}st-weekly-off{% endif %}" title="{{ st or 'No attendance record' }}">{{ day }}</span>{% set halves=half_day_map.get(day) %}{% if halves %}<small style="display:block;font-size:11px">1st: {{ halves.first_half }}<br>2nd: {{ halves.second_half }}</small>{% endif %}</div>
             {% endif %}
           {% endfor %}
         {% endfor %}
@@ -294,72 +294,6 @@
       <p><a class="button-link" href="{{ url_for('cafe.export_staff_attendance', user_id=attendance_user_id, month=attendance_month, year=attendance_year) }}">Download Attendance (Month/Year)</a></p>
       {% endif %}
 
-      {% if selected_day_detail and selected_day_detail.name %}
-      <div class="selected-attendance-day-detail">
-        <div class="section-heading-row">
-          <div>
-            <p class="eyebrow">Selected Day Detail</p>
-            <h4>{{ selected_day_detail.name }} · {{ selected_day_detail.date.strftime('%d %b %Y') }}</h4>
-            <p class="muted">Detailed IST attendance for the timeline date.</p>
-          </div>
-          <strong class="attendance-detail-status">{{ selected_day_detail.status }}</strong>
-        </div>
-        <div class="attendance-detail-grid">
-          <div><span>Check-In</span><strong>{{ selected_day_detail.check_in_at.strftime('%I:%M:%S %p') if selected_day_detail.check_in_at else '—' }}</strong></div>
-          <div><span>Check-Out</span><strong>{{ selected_day_detail.check_out_at.strftime('%I:%M:%S %p') if selected_day_detail.check_out_at else '—' }}</strong></div>
-          <div><span>Total Duration</span><strong>{{ selected_day_detail.worked_duration }}</strong></div>
-          <div><span>Check-In Distance</span><strong>{{ '%.0f m'|format(selected_day_detail.check_in_distance_m) if selected_day_detail.check_in_distance_m is not none else '—' }}</strong></div>
-          <div><span>Check-Out Distance</span><strong>{{ '%.0f m'|format(selected_day_detail.check_out_distance_m) if selected_day_detail.check_out_distance_m is not none else '—' }}</strong></div>
-          <div><span>Override</span><strong>{{ 'Admin / Manager' if selected_day_detail.manager_override else 'Automatic / Staff' }}</strong></div>
-        </div>
-        <p class="muted attendance-detail-meta">
-          Check-in: {{ selected_day_detail.check_in_method or '—' }} · Check-out: {{ selected_day_detail.check_out_method or '—' }}{% if selected_day_detail.auto_checkout_reason %} · Auto reason: {{ selected_day_detail.auto_checkout_reason }}{% endif %}{% if selected_day_detail.notes %} · Note: {{ selected_day_detail.notes }}{% endif %}
-        </p>
-        <div class="attendance-detail-links">
-          {% if selected_day_detail.check_in_lat is not none and selected_day_detail.check_in_lng is not none %}
-          <a class="button-link" target="_blank" rel="noopener" href="https://www.google.com/maps/search/?api=1&query={{ selected_day_detail.check_in_lat }},{{ selected_day_detail.check_in_lng }}">Open Check-In Location</a>
-          {% endif %}
-          {% if selected_day_detail.check_out_lat is not none and selected_day_detail.check_out_lng is not none %}
-          <a class="button-link" target="_blank" rel="noopener" href="https://www.google.com/maps/search/?api=1&query={{ selected_day_detail.check_out_lat }},{{ selected_day_detail.check_out_lng }}">Open Check-Out Location</a>
-          {% endif %}
-        </div>
-      </div>
-      {% endif %}
-    </section>
-
-    <section class="panel staff-team-timeline-panel">
-      <div class="section-heading-row">
-        <div>
-          <h3>Team Day Timeline</h3>
-          <p class="muted">Shared IST view: green = present, yellow = partial, red = absent, blue = approved leave, gray = unknown. The outlined strip shows the assigned shift.</p>
-        </div>
-        <form method="get" class="inline-form timeline-date-form">
-          <input type="hidden" name="section" value="attendance_calendar" />
-          <input type="hidden" name="attendance_user_id" value="{{ attendance_user_id or '' }}" />
-          <input type="hidden" name="attendance_month" value="{{ attendance_month }}" />
-          <input type="hidden" name="attendance_year" value="{{ attendance_year }}" />
-          <label>Timeline date<input type="date" name="timeline_date" value="{{ timeline_date.isoformat() }}" /></label>
-          <button type="submit">View Day</button>
-        </form>
-      </div>
-      <div class="staff-timeline-scroll">
-        <div class="timeline-hours">
-          {% for hour in range(0, 25, 2) %}<span style="left: {{ (hour / 24 * 100)|round(3) }}%;">{{ "%02d:00"|format(hour) }}</span>{% endfor %}
-        </div>
-        {% for staff in team_timeline %}
-        <div class="staff-timeline-row">
-          <div class="staff-timeline-label"><strong>{{ staff.name }}</strong><span>{{ staff.status }}</span><small>Worked {{ staff.worked_duration }} · Shift {{ staff.shift_start }}–{{ staff.shift_end }}</small></div>
-          <div class="staff-timeline-track" aria-label="{{ staff.name }}: {{ staff.status }}">
-            <span class="timeline-shift" style="left: {{ staff.shift_left }}%; width: {{ staff.shift_width }}%;"></span>
-            <span class="timeline-marker" style="left: {{ staff.shift_left }}%;"></span>
-            <span class="timeline-marker" style="left: {{ staff.shift_left + staff.shift_width }}%;"></span>
-            {% for bar in staff.bars %}
-            <span class="timeline-bar" style="left: {{ bar.left }}%; width: {{ bar.width }}%; background: {{ bar.color }};"></span>
-            {% endfor %}
-          </div>
-        </div>
-        {% else %}<p class="muted">No active staff members found.</p>{% endfor %}
-      </div>
     </section>
 
     <section class="panel staff-shared-calendar-panel">
@@ -390,111 +324,14 @@
     </section>
     {% endif %}
 
-    {% if active_staff_section == "attendance_entry" %}
-    <section class="panel">
-      <h3>Attendance Entry</h3>
-      <p class="muted">Staff should normally use one-tap check-in and check-out from their own profile. Use this section for admin or manager override only.</p>
-      <div class="grid grid-2" style="margin-bottom:0.9rem;">
-        <form method="post" class="grid">
-          <input type="hidden" name="action" value="checkout_all_active_sessions" />
-          <label>Bulk Check-Out Time<input type="time" name="bulk_check_out_time" /></label>
-          <button type="submit">Check Out All Active Sessions</button>
-        </form>
-        <div class="flash success">
-          <strong>Open Sessions:</strong> {{ active_attendance_sessions|length }}
-        </div>
-      </div>
-      <div style="overflow:auto; margin-bottom:0.9rem;">
-        <table>
-          <thead><tr><th>Staff</th><th>Date</th><th>Check-In</th><th>Source</th><th>Distance</th><th>Action</th></tr></thead>
-          <tbody>
-            {% for row in active_attendance_sessions %}
-            <tr>
-              <td>{{ row.user.full_name if row.user else "-" }}</td>
-              <td>{{ row.attendance_date }}</td>
-              <td>{{ row.check_in_at.strftime("%I:%M:%S %p") if row.check_in_at else "-" }}</td>
-              <td>{{ row.check_in_method or "manual" }}</td>
-              <td>{% if row.check_in_distance_m is not none %}{{ "%.0f"|format(row.check_in_distance_m) }} m{% else %}-{% endif %}</td>
-              <td>
-                <form method="post" class="grid">
-                  <input type="hidden" name="action" value="checkout_active_session" />
-                  <input type="hidden" name="attendance_id" value="{{ row.id }}" />
-                  <label>Check-Out Time<input type="time" name="check_out_time" /></label>
-                  <button type="submit">Check Out</button>
-                </form>
-              </td>
-            </tr>
-            {% else %}
-            <tr><td colspan="6">No active attendance sessions right now.</td></tr>
-            {% endfor %}
-          </tbody>
-        </table>
-      </div>
-      <form method="post" class="grid grid-4">
-        <input type="hidden" name="action" value="attendance_for_user" />
-        <label>Staff
-          <select name="target_user_id" required>
-            {% for s in active_profiles %}
-            <option value="{{ s.user_id }}" {% if attendance_user_id == s.user_id %}selected{% endif %}>{{ s.user.full_name }}</option>
-            {% endfor %}
-          </select>
-        </label>
-        <label>Date<input type="date" name="attendance_date" value="{{ today_date }}" required /></label>
-        <label>Status
-          <select name="status">
-            {% for value, label in attendance_status_options %}
-            <option value="{{ value }}">{{ label }}</option>
-            {% endfor %}
-          </select>
-        </label>
-        <label>Check-In Time<input type="time" name="check_in_time" /></label>
-        <label>Check-Out Time<input type="time" name="check_out_time" /></label>
-        <label>Notes<input name="notes" /></label>
-        <button type="submit">Save Override</button>
-      </form>
-    </section>
-    {% endif %}
-
+    {% if active_staff_section == "attendance_entry" %}<section class="panel"><h3>Attendance Entry</h3><p>Select an employee and paint whole or half-days in the monthly register. Review your selection before saving.</p><a class="button-link" href="{{ url_for('staff_operations.attendance_grid',user_id=attendance_user_id) }}">Open monthly attendance entry</a><a class="button-link" href="{{ url_for('staff_operations.penalties') }}">Absence penalty review</a></section>{% endif %}
     {% if active_staff_section == "leave_requests" %}
-    <section class="panel">
-      <h3>Leave Requests</h3>
-      <div style="overflow:auto">
-        <table>
-          <thead><tr><th>Staff</th><th>Type</th><th>Dates / Shifts</th><th>Duration</th><th>Reason</th><th>Status</th><th>Admin Action</th></tr></thead>
-          <tbody>
-            {% for leave in leave_requests %}
-            <tr>
-              <td>{{ leave.user.full_name }}</td>
-              <td>{{ leave.leave_type }}</td>
-              <td>{{ leave.start_date }} {{ leave.from_shift.replace('_', ' ') }} to {{ leave.end_date }} {{ leave.to_shift.replace('_', ' ') }}</td>
-              <td>{{ "%.1f"|format(leave.duration_days or 0) }} day(s)</td>
-              <td>{{ leave.reason or "-" }}</td>
-              <td>{{ leave.status }}</td>
-              <td>
-                <form method="post" class="grid">
-                  <input type="hidden" name="action" value="leave_decision" />
-                  <input type="hidden" name="leave_id" value="{{ leave.id }}" />
-                  <label>Decision
-                  <select name="decision">
-                      <option value="pending" {% if leave.status == "pending" %}selected{% endif %}>Pending</option>
-                      <option value="approved" {% if leave.status == "approved" %}selected{% endif %}>Approved</option>
-                      <option value="rejected" {% if leave.status == "rejected" %}selected{% endif %}>Rejected</option>
-                      <option value="requested_changes" {% if leave.status == "requested_changes" %}selected{% endif %}>Request Changes</option>
-                      <option value="cancelled" {% if leave.status == "cancelled" %}selected{% endif %}>Cancelled</option>
-                    </select>
-                  </label>
-                  <label>Remarks<input name="admin_remarks" value="{{ leave.admin_remarks or '' }}" /></label>
-                  <button type="submit">Update</button>
-                </form>
-              </td>
-            </tr>
-            {% else %}
-            <tr><td colspan="7">No leave requests yet.</td></tr>
-            {% endfor %}
-          </tbody>
-        </table>
-      </div>
-    </section>
+    {% from 'cafe/staff_leave_table.html' import leave_table %}
+    <section class="panel"><h3>Pending Leave Requests</h3>{{ leave_table(leave_requests|selectattr('status','equalto','pending')|list, not manual_payroll_active) }}</section>
+    <section class="panel"><h3>Leave Request History</h3><div role="tablist" aria-label="Leave request history">
+    {% for value in ['approved','rejected','cancelled','requested_changes'] %}<button type="button" role="tab" id="history-tab-{{ value }}" aria-controls="history-{{ value }}" aria-selected="{{ 'true' if loop.first else 'false' }}" data-history-tab="{{ value }}">{{ value.replace('_',' ').title() }}</button>{% endfor %}</div>
+    {% for value in ['approved','rejected','cancelled','requested_changes'] %}<div role="tabpanel" aria-labelledby="history-tab-{{ value }}" id="history-{{ value }}" {% if not loop.first %}hidden{% endif %}>{{ leave_table(leave_requests|selectattr('status','equalto',value)|list, not manual_payroll_active) }}</div>{% endfor %}</section>
+    <script>document.querySelectorAll('[data-history-tab]').forEach(button=>button.addEventListener('click',()=>{document.querySelectorAll('[data-history-tab]').forEach(tab=>{const chosen=tab===button;tab.setAttribute('aria-selected',String(chosen));document.getElementById('history-'+tab.dataset.historyTab).hidden=!chosen;});}));</script>
     {% endif %}
 
     {% if active_staff_section == "leave_settings" %}
@@ -683,11 +520,11 @@
         <article class="inventory-kpi inventory-kpi-warning"><h4>Asset-Loss Charges</h4><p>₹{{ "%.2f"|format(total_asset_charge or 0) }}</p></article>
         <article class="inventory-kpi"><h4>Net Estimated Payroll</h4><p>₹{{ "%.2f"|format(total_net_payroll_estimate or 0) }}</p></article>
       </div>
-      <p class="muted">Pending and payroll-marked asset charges for the selected month are deducted from the estimate. Paid and waived charges are excluded.</p>
-      <p class="muted">{{ payroll_period.start.strftime('%B %Y') }}: estimates use recorded attendance and the month's calendar-day salary rate. Missing attendance is not assumed paid. The two halves are gross estimates before asset charges, not payment confirmations; no automatic payment is made. Monthly deductions remain shown separately and are not allocated to either half.</p>
+      <p><a href="{{ url_for('staff_operations.penalties') }}">Review absence penalties and salary deductions</a></p><p class="muted">Pending and payroll-marked asset charges for the selected month are deducted from the estimate. Paid and waived charges are excluded.</p>
+      <p class="muted">{{ payroll_period.start.strftime('%B %Y') }}: estimates use recorded attendance and the month's calendar-day salary rate. Missing attendance is not assumed paid. The two halves are gross estimates before asset charges, not payment confirmations; no automatic payment is made. Approved absence penalties are shown against their next unpaid instalment; actual deductions are reconciled in the penalty ledger. Asset deductions remain separate.</p>
       <div style="overflow:auto">
         <table>
-          <thead><tr><th>Staff</th><th>Salary</th><th>Gross Estimate · Month</th><th>First Half · 1–15<br><small>Pay {{ payroll_period.first_due.strftime('%d %b') }}</small></th><th>Second Half · 16–{{ payroll_period.end.day }}<br><small>Pay {{ payroll_period.second_due.strftime('%d %b %Y') }}</small></th><th>Asset Charge</th><th>Net Estimate · Month</th><th>Unrecovered Balance</th></tr></thead>
+          <thead><tr><th>Staff</th><th>Salary</th><th>Gross Estimate · Month</th><th>First Half · 1–15<br><small>Pay {{ payroll_period.first_due.strftime('%d %b') }}</small></th><th>Second Half · 16–{{ payroll_period.end.day }}<br><small>Pay {{ payroll_period.second_due.strftime('%d %b %Y') }}</small></th><th>Asset Charge</th><th>Absence penalty / refund</th><th>Net Estimate · Month</th><th>Unrecovered Balance</th></tr></thead>
           <tbody>
             {% for row in payroll_rows %}
             <tr>
@@ -696,7 +533,7 @@
               <td>₹{{ "%.2f"|format(row.estimated_pay or 0) }}</td>
               <td>₹{{ "%.2f"|format(row.first_half_estimate) }}</td>
               <td>₹{{ "%.2f"|format(row.second_half_estimate) }}</td>
-              <td>₹{{ "%.2f"|format(row.asset_charge or 0) }}</td>
+              <td>₹{{ "%.2f"|format(row.asset_charge or 0) }}</td><td>₹{{ "%.2f"|format(row.penalty_charge or 0) }}<br><small>1st: ₹{{ "%.2f"|format(row.penalty_first) }} · 2nd: ₹{{ "%.2f"|format(row.penalty_second) }}</small></td>
               <td><strong>₹{{ "%.2f"|format(row.net_estimated_pay or 0) }}</strong></td>
               <td>₹{{ "%.2f"|format(row.outstanding_asset_charge or 0) }}</td>
             </tr>
@@ -710,4 +547,5 @@
     {% endif %}
   </div>
 </section>
+<script>document.querySelectorAll('[data-notice-start]').forEach(input=>{const show=()=>{const out=input.closest('form').querySelector('[data-notice-end]');if(input.value){const day=new Date(input.value+'T12:00:00Z');day.setUTCDate(day.getUTCDate()+15);out.textContent='Last working day: '+day.toISOString().slice(0,10)+' (access ends the following day)';}};input.addEventListener('input',show);show();});</script>
 {% endblock %}

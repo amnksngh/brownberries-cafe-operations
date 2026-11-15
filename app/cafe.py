@@ -10980,11 +10980,22 @@ def staff():
             return _staff_redirect("rulebook")
 
         if action == "create":
-            email = request.form["email"].strip().lower()
+            from .staff_operations import check_token
+            check_token()
+            import re
+            username = request.form.get('username', '').strip().lower()
+            # Validate on the server as well as in the browser; existing IDs remain unchanged.
+            if not re.fullmatch(r'[a-z0-9]+(?:\.[a-z0-9]+)*', username) or len(username) > 64:
+                flash('Use a username such as firstName.lastName or firstName123 (letters, digits and single dots).', 'error')
+                return _staff_redirect('add_new_staff')
+            email = username + '@brownberriescafe.com'
             existing = User.query.filter_by(email=email).first()
             if existing:
                 flash("A user with this email already exists.", "error")
                 return _staff_redirect("add_new_staff")
+            if len(request.form.get('password','')) < 12 or len(request.form.get('password','')) > 128:
+                flash('Use a password with 12–128 characters.', 'error')
+                return _staff_redirect('add_new_staff')
             roles = _parse_roles_from_form()
 
             new_user = User(
@@ -11017,6 +11028,8 @@ def staff():
             profile.emergency_contact = request.form.get("emergency_contact", "").strip() or None
             profile.archived = False
             db.session.commit()
+            if request.headers.get('X-Staff-Onboarding') == '1':
+                return jsonify(ok=True, user_id=new_user.id, email=new_user.email)
             flash("Staff member added.", "success")
             return _staff_redirect("active_staff")
 
@@ -11360,7 +11373,6 @@ def staff():
         StaffLeaveRequest.query.join(User, StaffLeaveRequest.user_id == User.id)
         .filter(User.id.in_(active_staff_ids))
         .order_by(StaffLeaveRequest.created_at.desc())
-        .limit(80)
         .all()
     )
     active_attendance_sessions = (
@@ -11414,128 +11426,6 @@ def staff():
                 day_value = date(selected_year, selected_month, day_number)
                 if day_value.weekday() == weekly_config.weekday:
                     selected_attendance_map.setdefault(day_number, "weekly_off")
-
-    timeline_date_raw = (request.args.get("timeline_date") or "").strip()
-    try:
-        timeline_date = date.fromisoformat(timeline_date_raw) if timeline_date_raw else today_ist
-    except ValueError:
-        timeline_date = today_ist
-
-    def _clock_minutes(value):
-        return (value.hour * 60) + value.minute if value else 0
-
-    def _timeline_percent(minutes):
-        return round(max(0.0, min(100.0, minutes / 1440 * 100)), 3)
-
-    def _timeline_duration_text(row):
-        if not row:
-            return "00h 00m"
-        minutes = worked_minutes_for_row(row, now=now_ist_naive)
-        return f"{minutes // 60:02d}h {minutes % 60:02d}m"
-
-    timeline_rows = StaffAttendance.query.filter_by(attendance_date=timeline_date).all()
-    timeline_attendance = {
-        row.user_id: row
-        for row in aggregate_attendance_rows(timeline_rows, now=now_ist_naive)
-    }
-    approved_timeline_leave = {
-        leave.user_id: leave
-        for leave in StaffLeaveRequest.query.filter(
-            StaffLeaveRequest.status == "approved",
-            StaffLeaveRequest.start_date <= timeline_date,
-            StaffLeaveRequest.end_date >= timeline_date,
-        ).all()
-    }
-    team_timeline = []
-    for profile in active_profiles:
-        row = timeline_attendance.get(profile.user_id)
-        leave = approved_timeline_leave.get(profile.user_id)
-        shift_start = profile.shift_start_time or time(9, 0)
-        shift_end = profile.shift_end_time or time(18, 0)
-        shift_start_min = _clock_minutes(shift_start)
-        shift_end_min = max(shift_start_min + 30, _clock_minutes(shift_end))
-        timeline_bars = []
-        if row and row.check_in_at:
-            # ``row`` is the daily aggregate, while each ``session`` is one
-            # geofence interval.  A staff member can have several short
-            # intervals that add up to a full day.  Colouring from
-            # ``session.status`` made those intervals appear absent even
-            # though the aggregate correctly said Present All Day.
-            if row.status in {"first_half", "second_half", "short_attendance"}:
-                bar_color = "#f4c95d"
-            elif row.status in {"absent", "urgent_leave"}:
-                bar_color = "#e98b8b"
-            else:
-                bar_color = "#62b879"
-            for session in getattr(row, "session_rows", [row]):
-                if not session.check_in_at:
-                    continue
-                bar_start_min = _clock_minutes(session.check_in_at.time())
-                bar_end_dt = session.check_out_at or (now_ist_naive if timeline_date == today_ist else session.check_in_at)
-                bar_end_min = max(bar_start_min + 1, _clock_minutes(bar_end_dt.time()))
-                timeline_bars.append({
-                    "left": _timeline_percent(bar_start_min),
-                    "width": max(0.5, _timeline_percent(bar_end_min) - _timeline_percent(bar_start_min)),
-                    "color": bar_color,
-                })
-            display_status = attendance_status_label(row.status)
-        elif leave:
-            bar_start_min, bar_end_min, bar_color = 0, 1440, "#8bb7e8"
-            display_status = f"On Leave · {leave.leave_type.title()}"
-        elif timeline_date < today_ist:
-            bar_start_min, bar_end_min, bar_color = 0, 1440, "#e98b8b"
-            display_status = "Absent"
-        else:
-            bar_start_min, bar_end_min, bar_color = 0, 1440, "#c9c2bb"
-            display_status = "Unknown"
-        team_timeline.append({
-            "name": profile.user.full_name,
-            "status": display_status,
-            "worked_duration": _timeline_duration_text(row),
-            "shift_start": shift_start.strftime("%I:%M %p"),
-            "shift_end": shift_end.strftime("%I:%M %p"),
-            "shift_left": _timeline_percent(shift_start_min),
-            "shift_width": _timeline_percent(shift_end_min) - _timeline_percent(shift_start_min),
-            "bar_left": _timeline_percent(bar_start_min),
-            "bar_width": max(0.5, _timeline_percent(bar_end_min) - _timeline_percent(bar_start_min)),
-            "bar_color": bar_color,
-            "bars": timeline_bars,
-        })
-
-    selected_day_profile = next(
-        (profile for profile in active_profiles if profile.user_id == selected_user_id),
-        None,
-    )
-    selected_day_row = timeline_attendance.get(selected_user_id) if selected_user_id else None
-    selected_day_leave = approved_timeline_leave.get(selected_user_id) if selected_user_id else None
-    selected_day_detail = {
-        "name": selected_day_profile.user.full_name if selected_day_profile else "",
-        "date": timeline_date,
-        "status": attendance_status_label(selected_day_row.status) if selected_day_row else (
-            f"On Leave · {selected_day_leave.leave_type.title()}" if selected_day_leave else (
-                "Weekly Off" if weekly_off_config().enabled and timeline_date.weekday() == weekly_off_config().weekday else (
-                    "Company Holiday" if CompanyHoliday.query.filter_by(
-                        active=True,
-                        holiday_date=timeline_date,
-                    ).first() else ("Absent" if timeline_date < today_ist else "Unknown")
-                )
-            )
-        ),
-        "check_in_at": selected_day_row.check_in_at if selected_day_row else None,
-        "check_out_at": selected_day_row.check_out_at if selected_day_row else None,
-        "worked_duration": _timeline_duration_text(selected_day_row),
-        "check_in_distance_m": selected_day_row.check_in_distance_m if selected_day_row else None,
-        "check_out_distance_m": selected_day_row.check_out_distance_m if selected_day_row else None,
-        "check_in_method": selected_day_row.check_in_method if selected_day_row else None,
-        "check_out_method": selected_day_row.check_out_method if selected_day_row else None,
-        "auto_checkout_reason": selected_day_row.auto_checkout_reason if selected_day_row else None,
-        "manager_override": bool(selected_day_row.manager_override) if selected_day_row else False,
-        "notes": selected_day_row.notes if selected_day_row else None,
-        "check_in_lat": selected_day_row.check_in_lat if selected_day_row else None,
-        "check_in_lng": selected_day_row.check_in_lng if selected_day_row else None,
-        "check_out_lat": selected_day_row.check_out_lat if selected_day_row else None,
-        "check_out_lng": selected_day_row.check_out_lng if selected_day_row else None,
-    }
 
     shared_leave_map = {}
     approved_month_leaves = StaffLeaveRequest.query.filter(
@@ -11637,9 +11527,12 @@ def staff():
         per_day_salary = round((salary_amount / payroll_days), 2) if salary_amount else 0.0
         periods = salary_periods(payroll_year, payroll_month, salary_amount,
             [(row.attendance_date, attendance_pay_fraction(row.status)) for row in payroll_attendance_rows])
+        from .staff_operations import penalty_totals
+        penalty_first, penalty_second = penalty_totals(staff_user.id,periods['first_due'],periods['second_due'])
+        penalty_charge=float(penalty_first+penalty_second)
         estimated_pay = float(periods['gross'])
         asset_charge = payroll_asset_charge_map.get(staff_user.id, 0.0)
-        net_estimated_pay = round(max(0.0, estimated_pay - asset_charge), 2)
+        net_estimated_pay = round(max(0.0, estimated_pay - asset_charge - penalty_charge), 2)
         outstanding_asset_charge = round(max(0.0, asset_charge - estimated_pay), 2)
         total_payroll_estimate += estimated_pay
         total_asset_charge += asset_charge
@@ -11657,14 +11550,26 @@ def staff():
                 "estimated_pay": estimated_pay,
                 "first_half_estimate": float(periods['first']),
                 "second_half_estimate": float(periods['second']),
+                "penalty_charge": penalty_charge,
+                "penalty_first":float(penalty_first),"penalty_second":float(penalty_second),
                 "asset_charge": asset_charge,
                 "net_estimated_pay": net_estimated_pay,
                 "outstanding_asset_charge": outstanding_asset_charge,
             }
         )
 
+    from .staff_operations import StaffDischarge, StaffDayEntry, token as staff_ops_token
+    discharge_map={r.user_id:r for r in StaffDischarge.query.all()}
+    half_day_map={r.day.day:r for r in StaffDayEntry.query.filter_by(user_id=selected_user_id).filter(StaffDayEntry.day>=selected_start,StaffDayEntry.day<=selected_end)}
+    for half_entry in StaffDayEntry.query.filter(StaffDayEntry.user_id.in_(active_staff_ids),StaffDayEntry.day>=selected_start,StaffDayEntry.day<=selected_end):
+        off=[label+': '+value for label,value in [('1st',half_entry.first_half),('2nd',half_entry.second_half)]] if half_entry.first_half!='P' or half_entry.second_half!='P' else []
+        if off:
+            person=next((p.user.full_name for p in active_profiles if p.user_id==half_entry.user_id),'Staff')
+            shared_leave_map.setdefault(half_entry.day.isoformat(),[]).append(person+' ('+', '.join(off)+')')
+
     return render_template(
         "cafe/staff_admin.html",
+        discharge_map=discharge_map, staff_ops_csrf=staff_ops_token(), half_day_map=half_day_map,
         active_profiles=active_profiles,
         archived_profiles=archived_profiles,
         attendance_today=attendance_today,
@@ -11677,9 +11582,6 @@ def staff():
         attendance_month_rows=calendar_month_rows,
         today_date=today_ist.isoformat(),
         selected_attendance_map=selected_attendance_map,
-        timeline_date=timeline_date,
-        team_timeline=team_timeline,
-        selected_day_detail=selected_day_detail,
         shared_leave_map=shared_leave_map,
         staff_role_options=_get_role_options(),
         user_types=UserType.query.order_by(UserType.name.asc()).all(),

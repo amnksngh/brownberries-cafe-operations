@@ -439,6 +439,10 @@ def apply_leave_decision(leave: StaffLeaveRequest, decision: str, actor: User):
     decision = (decision or "pending").strip().lower()
     if decision not in {"pending", "approved", "rejected", "requested_changes", "cancelled"}:
         return False, ["Invalid leave decision."]
+    if decision == 'approved':
+        from .staff_operations import StaffDayEntry
+        if StaffDayEntry.query.filter(StaffDayEntry.user_id==leave.user_id, StaffDayEntry.day>=leave.start_date, StaffDayEntry.day<=leave.end_date).first():
+            return False, ['Reviewed half-day attendance exists. Review the calendar before approving overlapping leave.']
     old_status = leave.status
     if decision == "approved":
         if leave.leave_type in SUPPORTED_LEAVE_TYPES:

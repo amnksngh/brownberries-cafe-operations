@@ -122,10 +122,10 @@ def workspace():
     if request.args.get('export') == 'csv':
         output=io.StringIO()
         writer=csv.writer(output)
-        writer.writerow(['Date','Status','Reviewed','Notification date','Worked','Paid PL/SL','Paid BL','Unpaid'])
+        writer.writerow(['Date','Status','First half','Second half','Reviewed','Notification date','Worked','Paid PL/SL','Paid BL','Unpaid'])
         for day in days:
             r,p=by_day.get(day),results.get(day)
-            writer.writerow([day,r.status if r else '',bool(r),r.notified_on if r else '',
+            writer.writerow([day,r.status if r else '',r.first_half if r else '',r.second_half if r else '',bool(r),r.notified_on if r else '',
                 p.worked if p else '',p.paid_leave if p else '',p.paid_bereavement if p else '',p.unpaid if p else ''])
         writer.writerow([])
         writer.writerow(['Month','Finalized','Monthly salary','Gross pay','Asset deductions','Leave settlement','Net due','Paid on','Payment mode'])

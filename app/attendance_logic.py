@@ -5,6 +5,9 @@ from types import SimpleNamespace
 
 
 ATTENDANCE_STATUS_LABELS = {
+    "manual_paid": "Reviewed · fully paid",
+    "manual_half_paid": "Reviewed · half paid",
+    "manual_unpaid": "Reviewed · unpaid",
     "present_all_day": "Present All Day",
     "first_half": "Half Day",
     "second_half": "Half Day",
@@ -312,6 +315,7 @@ def attendance_flags_for_row(
 
 def attendance_pay_fraction(status: str | None) -> float:
     if status in [
+        "manual_paid",
         "present_all_day",
         "weekly_off",
         "late_entry",
@@ -321,7 +325,7 @@ def attendance_pay_fraction(status: str | None) -> float:
         "company_holiday",
     ]:
         return 1.0
-    if status in ["first_half", "second_half", "half_day_earned_leave", "half_day_leave"]:
+    if status in ["manual_half_paid", "first_half", "second_half", "half_day_earned_leave", "half_day_leave"]:
         return 0.5
     if status == "short_attendance":
         return 0.25

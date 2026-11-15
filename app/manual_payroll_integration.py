@@ -6,6 +6,15 @@ from .extensions import db
 
 
 def guard_legacy_attendance():
+    if request.method=='POST' and request.endpoint in ('cafe.staff','staff_proxy.workspace') and request.form.get('action') in ('attendance_for_user','attendance','register'):
+        from .staff_operations import StaffDayEntry
+        uid=request.form.get('target_user_id',type=int) or request.form.get('user_id',type=int)
+        raw=request.form.get('attendance_date') or request.form.get('day')
+        try:
+            day=date.fromisoformat(raw) if raw else None
+        except ValueError:day=None
+        if uid and day and StaffDayEntry.query.filter_by(user_id=uid,day=day).first():
+            abort(409,'This day is reviewed in the half-day calendar. Make attendance changes there.')
     if not active():
         return
     endpoint = request.endpoint or ''
@@ -42,7 +51,7 @@ def guard_legacy_attendance():
         return
     if endpoint == 'cafe.my_staff':
         return redirect(url_for('manual_payroll.workspace', user_id=g.current_user.id))
-    sections={'attendance_calendar','attendance_entry','leave_requests','leave_settings','payroll_summary','rulebook'}
+    sections={'leave_settings','payroll_summary','rulebook'}
     is_staff = endpoint == 'cafe.staff' and request.args.get('section') in sections
     is_profile = endpoint == 'main.profile' and request.args.get('section') in {'attendance','rulebook'}
     is_export = endpoint == 'cafe.export_staff_attendance'

@@ -50,6 +50,7 @@ from .models import (
 def _ensure_sqlite_schema_columns():
     # Lightweight forward-compatible schema patching for SQLite deployments without migrations.
     column_specs = {
+        "manual_attendance": {"first_half": "VARCHAR(2)", "second_half": "VARCHAR(2)"},
         "kot_print_station": {"hindi_enabled": "BOOLEAN NOT NULL DEFAULT 0"},
         "menu_item": {
             "hindi_name": "VARCHAR(120)",
@@ -624,6 +625,7 @@ def create_app(*, instance_path=None, initialize_legacy_leaves=True):
         from . import organisation  # additive organisation tables, no automatic seeding
         from . import performance  # versioned scorecards and reviews; no payroll writes
         from . import leave_opening  # snapshot storage only; never captures on startup
+        from . import staff_operations
         from . import kot_printing
         db.create_all()
         _ensure_sqlite_schema_columns()
@@ -661,6 +663,9 @@ def create_app(*, instance_path=None, initialize_legacy_leaves=True):
         _normalize_inventory_categories()
         _normalize_inventory_item_types()
         _ensure_other_inventory_vendor()
+    from .staff_operations import bp as staff_operations_bp, apply_due_discharges
+    app.register_blueprint(staff_operations_bp)
+    app.before_request(apply_due_discharges)
     app.before_request(load_current_user)
     from .manual_payroll_integration import guard_legacy_attendance
     app.before_request(guard_legacy_attendance)
